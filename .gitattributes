@@ -1,0 +1,4 @@
+# Shell scripts must keep LF: MSYS2 bash breaks on CRLF shebangs.
+*.sh text eol=lf
+# Normalize everything else in the repo; checkout follows core.autocrlf.
+* text=auto
