@@ -64,4 +64,3 @@ probe, RAM-inference minimal repro in `ramtest/`).
 
 - APF shell: `open-fpga/core-template` (Analogue openFPGA program).
 - Machine RTL: `Apple-II_MiSTer` project (Newsdee).
-- ROMs: `apple2e.hex` (Apple IIe BIOS), `video2.hex` (video ROM).
