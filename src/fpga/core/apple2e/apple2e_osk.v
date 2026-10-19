@@ -39,6 +39,7 @@ module apple2e_osk (
     input  wire        hblank,
     input  wire        vblank,
     output wire        video_out,    //   OSK-composited 1-bit video
+    output wire [23:0] video_rgb24,  //   OSK-composited 24-bit RGB (Phase 2 streaming)
     // Apple II keyboard interface (to the machine core)
     output wire [7:0]  K,
     input  wire        reads,      // machine-driven read strobe (clears the key)
@@ -353,5 +354,6 @@ module apple2e_osk (
                                                     : key_press_many);
 
     assign video_out = osk_rgb[17] | dbg_lit | dbg_cnt_lit;
+    assign video_rgb24 = osk_rgb;
 
 endmodule
