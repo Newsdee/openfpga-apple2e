@@ -1,0 +1,10 @@
+# apf_proto.qip - Phase 1 streaming-prototype APF wrapper (EXPERIMENTAL)
+# Same as apf.qip but uses apf_top_proto.v (which instantiates proto_core_top
+# instead of core_top). Used only by apf_stream_proto.qsf.
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "apf_top_proto.v"]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "common.v"]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "io_bridge_peripheral.v"]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "io_pad_controller.v"]
+set_global_assignment -name SDC_FILE [file join $::quartus(qip_path) "apf_constraints.sdc"]
+set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) "mf_ddio_bidir_12.qip"]
+set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) "mf_datatable.qip"]

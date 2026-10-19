@@ -18,3 +18,4 @@ verilog/ramtest/*.jdi
 output/
 sd_root/Cores/Newsdee.Apple2e/bitstream.rbf_r
 sd_root/Cores/Developer.Core Template/bitstream.rbf_r
+sd_root/Cores/Newsdee.Apple2eStreamProto/bitstream.rbf_r

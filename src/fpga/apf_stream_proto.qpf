@@ -1,0 +1,18 @@
+# -------------------------------------------------------------------------- #
+#
+# Quartus Prime project for the Phase 1 streaming-prototype build
+# (EXPERIMENTAL - see docs/NES_REFERENCE_STREAMING_RECOMMENDATION_2026-10-19.md)
+#
+# Compiles apf_stream_proto.qsf (top entity apf_top_proto), which streams the
+# native Apple II raster (560x192 @ 14.318 MHz) straight to the APF DDR pad
+# with no frame buffer. NOT the working core - the working build is
+# apple2e_core.qpf / apple2e_core.qsf.
+#
+# -------------------------------------------------------------------------- #
+
+QUARTUS_VERSION = "18.1"
+DATE = "Phase 1 streaming prototype"
+
+# Revisions
+
+PROJECT_REVISION = "apf_stream_proto"
