@@ -27,6 +27,10 @@ module tb_phase2_shots;
 
   localparam string SHOT_DIR = "E:/MiSTer/Apple-II_FPGAdev/apple2e-pocket/verilog/shots/";
 
+  // DEC=1: 280-px decimated capture (the DEC2X=1 experiment)
+  // DEC=0: native 560-px capture (shipping path) - -G DEC=0
+  parameter DEC = 1;
+
   // ------------------------------------------------------------------
   // Clocks (same as tb_p2b_shots)
   // ------------------------------------------------------------------
@@ -119,7 +123,7 @@ module tb_phase2_shots;
   // ------------------------------------------------------------------
   reg  [23:0] o_rgb;
   wire        o_de, o_vs, o_hs, o_skip;
-  apf_stream_video #(.DEC2X(1)) dut (
+  apf_stream_video #(.DEC2X(DEC)) dut (
     .clk(clk_14m), .reset(reset),
     .rgb_in(osk_rgb24), .hbl(w_hbl), .vbl(w_vbl),
     .video_rgb(o_rgb), .video_de(o_de), .video_vs(o_vs),
@@ -212,9 +216,9 @@ module tb_phase2_shots;
     integer f, y, x;
     begin
       f = $fopen(fname, "wb");
-      $fwrite(f, "P6\n280 192\n255\n");
+      $fwrite(f, "P6\n%0d 192\n255\n", DEC ? 280 : 560);
       for (y = 0; y < 192; y = y + 1)
-        for (x = 0; x < 280; x = x + 1) begin
+        for (x = 0; x < (DEC ? 280 : 560); x = x + 1) begin
           $fwrite(f, "%c", cur[y][x][23:16]);
           $fwrite(f, "%c", cur[y][x][15:8]);
           $fwrite(f, "%c", cur[y][x][7:0]);
@@ -246,7 +250,7 @@ module tb_phase2_shots;
       cx <= cx + 1;
     end else if (de_d) begin
       // 6. line end: exactly 280 contiguous DE pixels (DEC2X=1)
-      if (cx != 280) line_px_err <= line_px_err + 1;
+      if (cx != (DEC ? 280 : 560)) line_px_err <= line_px_err + 1;
       lines_this_frame <= lines_this_frame + 1;
       cx <= 0;
       cy <= (cy == 191) ? 10'd191 : cy + 10'd1; // clamp

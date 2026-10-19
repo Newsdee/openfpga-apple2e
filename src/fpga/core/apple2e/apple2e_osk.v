@@ -297,7 +297,10 @@ module apple2e_osk (
         .closed_apple(kb_closed_apple),
         .transparency(transp),          // cycled by face-select
         .overlay_top(osk_ov_top_w),
-        .pixel_clock_double(1'b0),      // native single-rate 14.318
+        .pixel_clock_double(1'b1),     // full 560-px raster: each font bit
+                                       // renders individually (8-column
+                                       // glyphs; pcd=0 OR-compresses 2 bits
+                                       // per column - "I" rendered as "C")
         .hblank(hblank),
         .vblank(vblank),
         .rgb_in(m_rgb),
