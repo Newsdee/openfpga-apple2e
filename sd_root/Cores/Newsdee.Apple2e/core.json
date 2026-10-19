@@ -4,7 +4,7 @@
         "metadata": {
             "platform_ids": ["apple2e"],
             "shortname": "Apple2e",
-            "description": "Apple IIe (NTSC, 6502/65C02, Disk II)",
+            "description": "Apple IIe (NTSC, 6502/65C02, virtual keyboard)",
             "author": "Newsdee",
             "url": "https://github.com/Newsdee",
             "version": "0.1.0",

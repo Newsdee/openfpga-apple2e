@@ -528,7 +528,8 @@ reg [1:0] lock_sync;
 always @(posedge clk_core_14318) begin
     lock_sync <= {lock_sync[0], pll_core_locked};
 end
-wire machine_reset = ~rst_sync[1] | ~lock_sync[1];
+wire machine_reset = ~rst_sync[1] | ~lock_sync[1] | osk_cmd_reset;
+wire osk_reset    = ~rst_sync[1] | ~lock_sync[1];   // host/POC only - the OSK must survive its own command reset (review #2)
 
 // Power-on PLL release pulse (clk_74a domain): hold the PLL in reset for
 // ~441 us after power-on (32767 x 13.47 ns), then release it to lock.
@@ -584,9 +585,31 @@ wire        m_video, m_hbl, m_vbl;
 wire        m_text_mode, m_hgr_mode, m_early_video, m_run_fill_ok;
 wire        m_col_line, m_hgr80_mode, m_gr2, m_col80, m_dhires;
 wire        m_read_key, m_spk;
+wire [7:0]  m_K;
+wire        m_akd;
 wire [7:0]  m_io_sel, m_dev_sel;
 wire        m_io_str, m_pdl, m_stb;
 wire [3:0]  m_an;
+
+// ---- OSK (buttons -> keystrokes; overlay over the native video) ----
+wire        osk_video;
+wire        osk_cmd_reset;
+wire        osk_open_apple, osk_closed_apple;
+apple2e_osk osk (
+    .clk(clk_core_14318),
+    .reset(osk_reset),
+    .cont1_key(cont1_key),
+    .video_in(m_video),
+    .hblank(m_hbl),
+    .vblank(m_vbl),
+    .video_out(osk_video),
+    .K(m_K),
+    .reads(m_read_key),
+    .akd(m_akd),
+    .open_apple(osk_open_apple),
+    .closed_apple(osk_closed_apple),
+    .command_reset(osk_cmd_reset)
+);
 
 apple2 d1 (
     .CLK_14M(clk_core_14318), .CLK_2M(m_clk2m),
@@ -602,7 +625,8 @@ apple2 d1 (
     .TEXT_MODE(m_text_mode), .EARLY_VIDEO(m_early_video), .HGR_MODE(m_hgr_mode),
     .HGR80_MODE(m_hgr80_mode), .GR2(m_gr2), .COL80(m_col80), .DHIRES_MODE(m_dhires),
     .HBL(m_hbl), .VBL(m_vbl),
-    .K(8'h00), .READ_KEY(m_read_key), .AKD(1'b1), .AN(m_an), .GAMEPORT(8'h00),
+    .K(m_K), .READ_KEY(m_read_key), .AKD(m_akd), .AN(m_an),
+     .GAMEPORT({2'b00,1'b0,1'b0,1'b0,osk_closed_apple,osk_open_apple,1'b0}),
     .PDL_STROBE(m_pdl), .STB(m_stb),
     .IO_SELECT(m_io_sel), .DEVICE_SELECT(m_dev_sel), .IO_STROBE(m_io_str),
     .ioctl_addr(25'b0), .ioctl_data(8'b0), .ioctl_index(8'b0),
@@ -619,7 +643,7 @@ wire [23:0] apf_rgb;
 wire        apf_de, apf_vs, apf_hs, apf_skip;
 apf_video apfv (
     .clk_14m(clk_core_14318), .reset(machine_reset),
-    .video_in(m_video), .hbl(m_hbl), .vbl(m_vbl),
+    .video_in(osk_video), .hbl(m_hbl), .vbl(m_vbl),
     .clk_12288(clk_core_12288),
     .video_rgb(apf_rgb), .video_de(apf_de), .video_vs(apf_vs),
     .video_hs(apf_hs), .video_skip(apf_skip)

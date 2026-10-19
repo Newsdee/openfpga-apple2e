@@ -25,10 +25,28 @@ check timing_generator.v
 check video_generator.v
 check rom.v
 check ramcard.v
+check apple2_font_rom.v
+check keyboard.v
+check osk/virtual_keyboard_controller.sv
+check osk/virtual_keyboard_overlay.sv
 check cpu/nmos6502/cpu_65c02.sv
 check cpu/nmos6502/cpu_alu.sv
 check cpu/wdc65c02/cpu_65c02.sv
 check cpu/wdc65c02/cpu_alu.sv
+
+# q17 variant: the QSF compiles machine/osk/virtual_keyboard_overlay_q17.sv
+# (generated: drops the 60 SystemVerilog N'(expr) casts Quartus 17 rejects).
+# Regenerate it if the canonical overlay ever changes.
+if [ -f machine/osk/virtual_keyboard_overlay_q17.sv ]; then
+    if /c/msys64/ucrt64/bin/python.exe tools/gen_osk_q17.py --check; then
+        :
+    else
+        rc=1
+    fi
+else
+    echo "MISSING  machine/osk/virtual_keyboard_overlay_q17.sv (run: python tools/gen_osk_q17.py)"
+    rc=1
+fi
 
 if [ $rc -eq 0 ]; then
     echo "machine/ in sync with $SRC"

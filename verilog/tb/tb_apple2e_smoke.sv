@@ -190,7 +190,13 @@ module tb_apple2e_smoke;
         // de_edges scales with the video clock rate: ~43k over 3 s at the
         // correct 12.288 MHz (the template build ran ~6x faster at 74.25 MHz).
         if (de_edges < 10000) begin $display("FAIL: de_edges %0d < 10000 (no DE activity)", de_edges); fail = 1; end
-        if (colors_n < 2)     begin $display("FAIL: only %0d distinct video colors (pixels stuck?)", colors_n); fail = 1; end
+        // The apple2e video is 1-bit (black/white): the DDR bus carries
+        // 0x000 (2 black pixels) and 0xFFF (2 white pixels) plus mixed
+        // values at pixel-pair boundaries. "Not stuck" = both levels seen
+        // on DE samples (the old test-pattern check required >=2 non-black/
+        // white colors, which a 1-bit core can never produce).
+        if (de_nonzero_samples < 1000 || (de_high_samples - de_nonzero_samples) < 1000)
+            begin $display("FAIL: video stuck: de_nonzero=%0d de_zero=%0d (need both levels)", de_nonzero_samples, de_high_samples - de_nonzero_samples); fail = 1; end
         if (mclk_edges < 100000) begin $display("FAIL: mclk_edges %0d < 100000 (audio MCLK dead)", mclk_edges); fail = 1; end
         if (lrck_edges < 100000) begin $display("FAIL: lrck_edges %0d < 100000 (audio LRCK dead)", lrck_edges); fail = 1; end
         // video bus clock must be in the 12.288 MHz family. The DDR video bus

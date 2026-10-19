@@ -35,17 +35,22 @@ verilog/             Verilator harnesses (tb/, stubs/, build+run bats)
 sd_root/             SD-card staging (Cores/Newsdee.Apple2e, Platforms)
 output/              generated bitstream.rbf_r (gitignored)
 tools/rbf2rbf_r.py   .rbf -> .rbf_r (bit-reversal) converter
-p0_build.bat         compile -> convert -> stage (full flow)
+apple2e_build.bat    Apple IIe build: compile apple2e_core -> reverse -> stage
+p0_build.bat         template regression build (NOT the Apple IIe core)
 ```
 
 ## Build (Windows, Quartus 17.0.2 on PATH)
 
 ```bat
-:: full flow: Quartus compile + .rbf_r conversion + SD staging
-p0_build.bat
+:: Apple IIe core (the real core): compile apple2e_core + reverse + stage
+::    into sd_root\Cores\Newsdee.Apple2e (the authoritative package).
+apple2e_build.bat
 
-:: or, open in the Quartus UI:
+:: or compile in the Quartus UI:
 src/fpga/apple2e_core.qsf
+
+:: p0_build.bat is the unmodified core-TEMPLATE regression path only -
+:: it builds ap_core and stages Cores\Developer.Core Template, NOT the core.
 ```
 
 ## Sim (MSYS2 UCRT64)

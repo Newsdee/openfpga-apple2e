@@ -69,8 +69,12 @@ module apf_video (
 
     // ------------------------------------------------------------------
     // Frame store: 2 buffers x 256 line slots (192 visible used per buffer)
-    // x 70 words x 8 pixels = 35,840 words (addr space 2^16 words; Quartus
-    // pads the inferred depth -> 65,536 x 8 bits = 524,288 bits ~= 52 M10K).
+    // x 128 word slots x 8 pixels = 65,536 words. The address is 16 bits
+    // ({buf, line[7:0], word[6:0]}), so the array MUST cover the full 2^16
+    // space or buffer 1's upper addresses fall out of range. (Quartus
+    // infers exactly this 65,536 x 8-bit = 524,288-bit ~= 52 M10K store.
+    // An earlier 2*256*70 = 35,840 declaration made the sim silently drop
+    // buffer 1's lines 24..191 - a sim/hardware divergence.)
     // Words are 8 pixels wide: a 1-bit data port on the dual-clock store is
     // NOT inferred as block RAM by Quartus 17 (276007 "asynchronous read
     // logic" -> 276003), while the word-wide 10-bit cap_ram infers fine as a
@@ -78,8 +82,8 @@ module apf_video (
     // Address = {buf, line[7:0], word[6:0]} (16 bits).
     // ------------------------------------------------------------------
     localparam PIX_SAMPLES = 560;
-    localparam PIX_WORDS   = (PIX_SAMPLES + 7) / 8;   // 70
-    reg [7:0] pix_ram [0:2*256*PIX_WORDS-1];
+    localparam PIX_WORDS   = (PIX_SAMPLES + 7) / 8;   // 70 words used per line
+    reg [7:0] pix_ram [0:65535];                      // full 16-bit address space (2^16)
     reg [9:0]   cap_ram [0:511];
 
     // ------------------------------------------------------------------
@@ -115,12 +119,11 @@ module apf_video (
                 px_word <= 7'd0;
                 px_bit  <= 3'd0;
                 px_acc  <= 8'd0;
-            end else if (!hbl) begin
+            end else if (!hbl && !vbl) begin
                 // active: sample the pixel stream into 8-pixel words.
-                // Word w is written when its 8th pixel arrives: the word
-                // being written is {new pixel, acc[7:1]} (acc holds the
-                // previous 7). All 70 words are written in-line because
-                // MAX_CAP = 560 = 70 * 8 is exact (no line_end flush needed).
+                // VBL lines are not sampled: vline is frozen at its last
+                // visible value during VBL, so vline[7:0] would alias the
+                // top lines (0..63) and VBL video would corrupt them.
                 if (xcap < MAX_CAP) begin
                     if (px_bit == 3'd7) begin
                         pix_ram[pix_wr_addr] <= {video_in, px_acc[7:1]};
@@ -249,7 +252,7 @@ module apf_video (
             fs_d1  <= 1'b0;
         end else begin
             wb_syn <= {wb_syn[1:0], wbuf[0]};
-            fs_d1  <= wb_syn[0] ^ wb_syn[1];
+            fs_d1  <= wb_change;
         end
     end
     assign wb_change = wb_syn[0] ^ wb_syn[1];

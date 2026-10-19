@@ -1,17 +1,6 @@
 {
     "data": {
         "magic": "APF_VER_1",
-        "data_slots": [
-            {
-                "name": "disk",
-                "id": 1,
-                "required": false,
-                "parameters": 8,
-                "filename": "disk0.nib",
-                "extensions": ["nib"],
-                "size_exact": 143360,
-                "address": "0x02000000"
-            }
-        ]
+        "data_slots": []
     }
 }

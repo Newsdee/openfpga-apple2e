@@ -19,6 +19,8 @@ export SHELL=/c/msys64/usr/bin/sh
 
 cd "$(dirname "$0")"
 ROOT=..
+MISTER=../../Apple-II_MiSTer
+MACHINE=../machine
 
 # make.exe shim (AGENTS.md: verilated.mk's link step calls bare `make`)
 if [ ! -f /c/msys64/tmp/makeshim/make.exe ]; then
@@ -47,6 +49,21 @@ verilator_bin --binary --timing -j 4 \
     -Wno-fatal -Wno-undriven -Wno-unused -Wno-width -Wno-style -Wno-latch \
     -CFLAGS "-O2" \
     --Mdir obj_dir_apple2e \
+    $MACHINE/apple2.v \
+    $MISTER/rtl/timing_generator.v \
+    $MISTER/rtl/video_generator.v \
+    $MISTER/rtl/rom.v \
+    $MISTER/rtl/ramcard.v \
+    $MISTER/rtl/apple2_font_rom.v \
+    $MISTER/rtl/keyboard.v \
+    $MISTER/rtl/osk/virtual_keyboard_controller.sv \
+    $MISTER/rtl/osk/virtual_keyboard_overlay.sv \
+    $MISTER/rtl/cpu/nmos6502/cpu_65c02.sv \
+    $MISTER/rtl/cpu/nmos6502/cpu_alu.sv \
+    $MISTER/rtl/cpu/wdc65c02/cpu_65c02.sv \
+    $MISTER/rtl/cpu/wdc65c02/cpu_alu.sv \
+    $ROOT/src/fpga/core/apple2e/apf_video.v \
+    $ROOT/src/fpga/core/apple2e/apple2e_osk.v \
     apf_top_apple2e_sim.v \
     $ROOT/src/fpga/apf/common.v \
     $ROOT/src/fpga/apf/io_bridge_peripheral.v \

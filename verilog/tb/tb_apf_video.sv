@@ -47,6 +47,9 @@ module tb_apf_video;
   wire        w_text_mode, w_hgr_mode, w_early_video, w_run_fill_ok;
   wire        w_col_line, w_hgr80_mode, w_gr2, w_col80, w_dhires;
   wire        read_key, w_spk;
+  wire [7:0]  k_K;
+  wire        k_akd, k_cmd_rst, osk_video;
+  reg  [31:0] tb_cont1_key = 32'd0;
   wire [7:0]  w_io_sel, w_dev_sel;
   wire        w_io_str, w_pdl, w_stb;
   wire [3:0]  w_an;
@@ -89,7 +92,7 @@ module tb_apf_video;
     .TEXT_MODE(w_text_mode), .EARLY_VIDEO(w_early_video), .HGR_MODE(w_hgr_mode),
     .HGR80_MODE(w_hgr80_mode), .GR2(w_gr2), .COL80(w_col80), .DHIRES_MODE(w_dhires),
     .HBL(w_hbl), .VBL(w_vbl),
-    .K(8'h00), .READ_KEY(read_key), .AKD(1'b1), .AN(w_an), .GAMEPORT(8'h00),
+    .K(k_K), .READ_KEY(read_key), .AKD(k_akd), .AN(w_an), .GAMEPORT(8'h00),
     .PDL_STROBE(w_pdl), .STB(w_stb),
     .IO_SELECT(w_io_sel), .DEVICE_SELECT(w_dev_sel), .IO_STROBE(w_io_str),
     .ioctl_addr(25'b0), .ioctl_data(8'b0), .ioctl_index(8'b0),
@@ -102,13 +105,26 @@ module tb_apf_video;
   );
 
   // ------------------------------------------------------------------
+  // OSK (P2b): buttons -> keystrokes + overlay over the native video.
+  // Same module as core_top uses; here driven by tb_cont1_key.
+  // ------------------------------------------------------------------
+  apple2e_osk osk (
+    .clk(clk_14m), .reset(reset),
+    .cont1_key(tb_cont1_key),
+    .video_in(w_video), .hblank(w_hbl), .vblank(w_vbl),
+    .video_out(osk_video),
+    .K(k_K), .reads(read_key), .akd(k_akd),
+    .command_reset(k_cmd_rst)
+  );
+
+  // ------------------------------------------------------------------
   // DUT: the adapter
   // ------------------------------------------------------------------
   reg  [23:0] o_rgb;
   wire        o_de, o_vs, o_hs, o_skip;
   apf_video dut (
     .clk_14m(clk_14m), .reset(reset),
-    .video_in(w_video), .hbl(w_hbl), .vbl(w_vbl),
+    .video_in(osk_video), .hbl(w_hbl), .vbl(w_vbl),
     .clk_12288(clk_12288),
     .video_rgb(o_rgb), .video_de(o_de), .video_vs(o_vs),
     .video_hs(o_hs), .video_skip(o_skip)
@@ -131,6 +147,170 @@ module tb_apf_video;
   integer racy_cycles = 0;    // cycles where dbuf == machine write buffer
   integer fsd1_cnt = 0;
   reg     booted = 1'b0;      // machine has produced its first wbuf change
+  integer disp_y = 0;         // display line index (for the OSK panel check)
+  integer panel_white = 0;    // white pixels in display lines 202..299 (panel)
+  integer hi_y_min = 0, hi_y_max = 0;   // frame's lines with >100 white (panel range)
+  integer m_panel_tot = 0;     // white in machine lines with hbl-lo & vbl-lo, native 94..191
+  integer m_frame_cnt = 0;
+  integer m_frame_panel = 0;
+  // per-machine-frame white (14m domain): boundary = VBL rising edge
+  integer mv_white = 0, mv_frames = 0;
+  reg     mv_vbl_d = 1'b0;
+  always @(posedge clk_14m) begin
+    mv_vbl_d <= w_vbl;
+    if (!w_vbl) mv_white = mv_white + (w_video && !w_hbl);
+    if (w_vbl && !mv_vbl_d) begin
+      mv_frames = mv_frames + 1;
+      mv_white = 0;
+    end
+  end
+  integer rk_cnt = 0;   // machine READ_KEY pulses
+  always @(posedge clk_14m) if (read_key) rk_cnt = rk_cnt + 1;
+  // Probe: which keyboard register does the BIOS poll?
+  //   In this core, a $C000 (KEYBOARD_SELECT) read does NOT set READ_KEY
+  //   (no ack), but a $C010 (C01X_SELECT, A[3:0]=0) read DOES. If the BIOS
+  //   polls $C000, the key is never acked -> the CPU re-reads it forever
+  //   (the on-hardware "keeps typing as long as the OSK is open" bug).
+  integer c000_reads = 0, c010_reads = 0;
+  always @(posedge clk_14m) begin
+    if (d1.KEYBOARD_SELECT && !d1.we) c000_reads = c000_reads + 1;
+    if (d1.C01X_SELECT && !d1.we && w_addr[3:0] == 4'h0) c010_reads = c010_reads + 1;
+  end
+  // KEY LIFECYCLE PROBE (temporary): after a fire press, log the machine's
+  // data bus (D_IN) on the first ~30 keyboard reads, plus the key state
+  // (key_pressed = k_K[7], read_key, akd). This shows WHEN the key is
+  // readable and WHEN it is cleared - the diagnosis for the hardware
+  // "one tap = one key" regression.
+  reg [3:0] fire_d = 4'b0;
+  integer kb_win = 0, kb_n = 0;
+  always @(posedge clk_14m) begin
+    fire_d <= {fire_d[2:0], tb_cont1_key[4]};
+    if (tb_cont1_key[4] && !fire_d[3]) begin kb_win = 1; kb_n = 0; end
+  end
+  // fine: log every cycle the key state or a keyboard access changes, for a
+  // window that spans the OSK debounce (~1.4 ms) after the fire press.
+  reg [3:0] kpd = 4'b0;
+  integer kfp_win = 0;
+  always @(posedge clk_14m) begin
+    kpd <= {kpd[2:0], k_K[7]};
+    if (tb_cont1_key[4] && !fire_d[3]) kfp_win = 55000;   // ~3.8 ms window
+    else if (kfp_win > 0) kfp_win = kfp_win - 1;
+    if (kfp_win > 0 && ((k_K[7] !== kpd[3]) || (d1.KEYBOARD_SELECT && !d1.we && k_K[7]==1'b1) || (d1.C01X_SELECT && !d1.we && w_addr[3:0]==4'h0))) begin
+      if (k_K[7] !== kpd[3] || d1.KEYBOARD_SELECT || d1.C01X_SELECT)
+        $display("KFP t=%0t kp=%b dKp=%b rk=%b D_IN=%h sel=%b c01x=%b vd=%b vc=%h", $time, k_K[7], (k_K[7]!==kpd[3]), read_key, d1.D_IN, d1.KEYBOARD_SELECT, d1.C01X_SELECT, k_K[7], k_K[6:0]);
+    end
+  end
+  // virtual_event / key_ready transition trace (pin down the re-assertion)
+  // CPU-BOUNDARY probe (Phase B): at each actual 6502 advance edge (CPU_EN), if
+  // the CPU is at the keyboard register, log it at the CPU advance edge. DATA
+// LABELING (expert correction): `d_in_pre` is the value captured one master
+// edge EARLIER and is NOT automatically the input the CPU sampled at this edge;
+// `D_now` (d1.D_IN) is the current pre-update input and is the relevant value
+// when the monitor samples before nonblocking updates and the TB does not drive
+// inputs on this edge. Capture BOTH read classes ($C000 read, $C010 read/write)
+// and the advance condition, not just $C000.
+  reg      c_en_d = 1'b0;
+  reg [7:0] d_in_pre;
+  integer   cpu_c000_read = 0, cpu_c010_read = 0, cpu_c01x_write = 0;
+  always @(posedge clk_14m) begin
+    d_in_pre <= d1.D_IN;
+    if (d1.CPU_EN && !c_en_d) begin
+      if (d1.KEYBOARD_SELECT && !d1.we) begin
+        cpu_c000_read = cpu_c000_read + 1;
+        if (kfp_win > 0)
+          $display("CPUK t=%0t kind=C000R D_now=%h (pre=%h) kp=%b rk=%b we=%b pc=%04x op=%h", $time, d1.D_IN, d_in_pre, k_K[7], read_key, d1.we, d1.cpu65c02.reg_pc, d1.cpu65c02.ir);
+      end
+      if (d1.C01X_SELECT && !d1.we && w_addr[3:0] == 4'h0) begin
+        cpu_c010_read = cpu_c010_read + 1;
+        if (kfp_win > 0)
+          $display("CPUK t=%0t kind=C010R D_now=%h (pre=%h) kp=%b rk=%b we=%b pc=%04x op=%h", $time, d1.D_IN, d_in_pre, k_K[7], read_key, d1.we, d1.cpu65c02.reg_pc, d1.cpu65c02.ir);
+      end
+      if (d1.C01X_SELECT && d1.we) begin
+        cpu_c01x_write = cpu_c01x_write + 1;
+        if (kfp_win > 0)
+          $display("CPUK t=%0t kind=C01XW D_now=%h (pre=%h) kp=%b rk=%b we=%b pc=%04x op=%h", $time, d1.D_IN, d_in_pre, k_K[7], read_key, d1.we, d1.cpu65c02.reg_pc, d1.cpu65c02.ir);
+      end
+    end
+    c_en_d <= d1.CPU_EN;
+  end
+  reg [1:0] vev_d = 2'b0, kp2_d = 2'b0;
+  always @(posedge clk_14m) begin
+    vev_d <= {vev_d[0], osk.kb_v_event};
+    kp2_d <= {kp2_d[0], k_K[7]};
+    if (kfp_win > 0 && vev_d[0] !== vev_d[1])
+      $display("VEV t=%0t ev=%b dV=%b pressed=%b code=%h", $time, osk.kb_v_event, (osk.kb_v_event!==vev_d[1]), osk.kb_v_pressed, osk.kb_v_code);
+    if (kfp_win > 0 && kp2_d[0] !== kp2_d[1])
+      $display("KPR t=%0t kp=%b (d) vc=%h vd=%b akd=%b", $time, k_K[7], k_K[6:0], osk.kbd.virtual_data, k_akd);
+  end
+  // Virtual key-press event counting: the true "one press = one key"
+  // invariant. A fire press must produce exactly ONE virtual key press
+  // (kb_v_event rising edge with kb_v_pressed). Counting RAM Q-bytes is
+  // wrong - the boot logo also contains 'Q' glyphs and is redrawn.
+  integer q_press_cnt = 0;    // virtual presses with code == 0x51 (Q)
+  integer all_press_cnt = 0;  // all virtual key presses (press, not release)
+  reg v_ev_d = 1'b0;
+  always @(posedge clk_14m) begin
+    if (osk.kb_v_event !== v_ev_d) begin
+      if (osk.kb_v_pressed) begin
+        all_press_cnt = all_press_cnt + 1;
+        if (osk.kb_v_code === 7'h51) q_press_cnt = q_press_cnt + 1;
+      end
+      $display("DBG vev t=%0t press=%b code=%h row=%d col=%d",
+               $time, osk.kb_v_pressed, osk.kb_v_code, osk.kb_row, osk.kb_col);
+    end
+    v_ev_d <= osk.kb_v_event;
+    if (read_key && k_K[7])
+      $display("DBG kread t=%0t K=%h vev=%b", $time, k_K, osk.kb_v_event);
+  end
+  integer vbl_fall = 0, vbl_rise = 0;
+  reg vbl_p = 1'b0;
+  always @(posedge clk_14m) begin
+    if (w_vbl != vbl_p) begin
+      if (w_vbl) vbl_rise = vbl_rise + 1; else vbl_fall = vbl_fall + 1;
+    end
+    vbl_p <= w_vbl;
+  end
+  // wbuf flip tracking (machine domain)
+  reg [1:0] wbuf_p = 2'd0;
+  integer wbuf_flips = 0;
+  always @(posedge clk_14m) begin
+    if (dut.wbuf[0] != wbuf_p) wbuf_flips = wbuf_flips + 1;
+    wbuf_p <= dut.wbuf[0];
+  end
+  // per APF display frame (12.288M domain): panel white
+  integer dp_white = 0, dp_frames = 0;
+  integer disp_panel_frames = 0, disp_obs_frames = 0;   // monitored frames with panel / observed
+  reg dp_vs_p = 1'b0;
+  always @(posedge clk_12288) begin
+    if (o_vs && !dp_vs_p) begin
+      if (dp_frames >= 120 && dp_frames < 190) begin
+        disp_obs_frames = disp_obs_frames + 1;
+        if (dp_white > 1000) disp_panel_frames = disp_panel_frames + 1;
+      end
+      dp_frames = dp_frames + 1;
+      dp_white = 0;
+    end
+    if (o_de) dp_white = dp_white + (o_rgb == 24'hFFFFFF ? 1 : 0);
+    dp_vs_p <= o_vs;
+  end
+  integer ov_white = 0, ov_frames = 0;
+  integer ov_line = 0;
+  reg     ov_vbl_d = 1'b0, ov_hbl_d = 1'b0;
+  always @(posedge clk_14m) begin
+    ov_vbl_d <= w_vbl;
+    ov_hbl_d <= w_hbl;
+    if (!w_vbl) begin
+      if (!w_hbl) ov_white = ov_white + (osk_video ? 1 : 0);
+      else if (w_hbl && !ov_hbl_d && ov_vbl_d == 1'b0) begin
+        ov_line = ov_line + 1;
+        if (ov_line > 191) ov_line = 0;
+      end
+    end
+    if (w_vbl && !ov_vbl_d) begin
+      ov_frames = ov_frames + 1;
+      ov_white = 0; ov_line = 0;
+    end
+  end
   integer frame_white_hist [0:3];   // last 4 frames (stability check)
   integer max_white = 0;            // logo evidence: peak white over the run
   reg     de_seen = 1'b0;
@@ -143,9 +323,10 @@ module tb_apf_video;
         frame_white_hist[1] = frame_white_hist[2];
         frame_white_hist[2] = frame_white_hist[3];
         frame_white_hist[3] = white_total;
+        panel_white = 0;
         if (white_total > max_white) max_white = white_total;
         if (frames % 30 == 0 || frames >= 110)
-          $display("F%0d white=%0d lines=%0d", frames, white_total, white_lines);
+          $display("F%0d white=%0d lines=%0d panel=%0d hiy=[%0d..%0d]", frames, white_total, white_lines, panel_white, hi_y_min, hi_y_max);
       end
       vs_cnt      = vs_cnt + 1;
       frames      = frames + 1;
@@ -153,6 +334,9 @@ module tb_apf_video;
       white_lines = 0;
       line_white  = 0;
       de_seen     = 1'b0;
+      disp_y      = 0;
+      hi_y_min    = 1000;
+      hi_y_max    = -1;
     end
     if (o_hs) hs_cnt = hs_cnt + 1;
     if (dut.capl_r > max_capl_r) max_capl_r = dut.capl_r;
@@ -166,10 +350,6 @@ module tb_apf_video;
     if (dut.wb_change) booted = 1'b1;
     if (booted && dut.dbuf == dut.wbuf[0]) racy_cycles = racy_cycles + 1;
     if (dut.fs_d1) fsd1_cnt = fsd1_cnt + 1;
-    if (racy_cycles == 1000000 || racy_cycles == 10000000)
-      $display("DBG racy=%0d t=%0t dbuf=%b wbuf0=%b s1=%b s2=%b fsd1_cnt=%0d",
-               racy_cycles, $time, dut.dbuf, dut.wbuf[0], dut.wbuf_s1,
-               dut.wbuf_s2, fsd1_cnt);
     if (o_de) begin
       de_cnt = de_cnt + 1;
       if (dut.px_r) px_cnt = px_cnt + 1;
@@ -183,64 +363,77 @@ module tb_apf_video;
     end
     if (o_hs) begin             // line end: commit per-line accounting
       if (line_white > 0) white_lines = white_lines + 1;
+      if (line_white > 100) begin
+        if (disp_y < hi_y_min) hi_y_min = disp_y;
+        if (disp_y > hi_y_max) hi_y_max = disp_y;
+      end
+      if (disp_y >= 150 && disp_y <= 250) panel_white = panel_white + line_white;
+      disp_y = disp_y + 1;
       line_white = 0;
     end
   end
 
   // ------------------------------------------------------------------
-  // Debug: machine-side activity (14m domain, every ~0.25 s)
+  // P2b OSK button sequence (absolute sim time, ns):
+  //   t = 1.72 s: press start (bit 15) 30 ms  -> OSK enable toggle
+  //               (overlay opens ~500 ms later: controller INITIAL_DELAY_MS)
+  //   t = 2.30 s: CLEAN fire (bit 4) 30 ms    -> one Q press (cursor row1 col1)
+  //   t = 2.60 s: WOBBLE fire (bit 4) 15 on/off cycles @ 5 ms -> with the
+  //               press-latch this must yield exactly ONE Q press; without
+  //               it the edge-triggered controller fires on every 0->1 (15)
+  //   t = 2.90 s: press face-Y (enter/CR, 0x0D) 30 ms
+  //   t = 3.05/3.20 s: tap APF dpad UP then LEFT -> cursor (1,1)->(0,0)
+  //   judge at t = 3.6 s
   // ------------------------------------------------------------------
-  integer dbg_hbl = 0, dbg_vbl = 1'b0, dbg_vblr = 1'b0, dbg_vidw = 0, dbg_vblr2 = 1'b0;
-  integer dbg_whi = 0, dbg_wlo = 0;
-  integer dbg_run = 0, dbg_last = 1'b0, dbg_lo_run = 0, dbg_hi_run = 0, dbg_lo_max = 0, dbg_hi_max = 0;
-  integer dbg_line_len = 0, dbg_line_cnt = 0;
-  integer dbg_vrun = 0, dbg_vlast = 1'b0, dbg_vlo = 0, dbg_vhi = 0;
-  always @(posedge clk_14m) begin: dbg
-    dbg_vblr <= w_vbl;
-    if (w_vbl && !dbg_vblr) dbg_vbl = dbg_vbl + 1;
-    if (w_hbl) dbg_hbl = dbg_hbl + 1;      // HBL-high cycle count (coarse)
-    if (w_video) dbg_vidw = dbg_vidw + 1;
-    if (w_video && w_hbl) dbg_whi = dbg_whi + 1;
-    if (w_video && !w_hbl) dbg_wlo = dbg_wlo + 1;
-    // VBL run-length measurement (masters per VBL state)
-    if (w_vbl != dbg_vlast) begin
-        if (dbg_vlast == 1'b0) dbg_vlo = dbg_vrun; else dbg_vhi = dbg_vrun;
-        dbg_vrun = 0;
-        dbg_vlast = w_vbl;
-    end else dbg_vrun = dbg_vrun + 1;
-    // HBL run-length + line length measurement
-    if (w_hbl != dbg_last) begin
-        if (dbg_last == 1'b0) begin        // was low, now high: low run ended
-            dbg_lo_max = (dbg_run > dbg_lo_max) ? dbg_run : dbg_lo_max;
-            dbg_lo_run = dbg_run;
-        end else begin                     // was high, now low: line boundary
-            dbg_hi_max = (dbg_run > dbg_hi_max) ? dbg_run : dbg_hi_max;
-            dbg_hi_run = dbg_run;
-            dbg_line_len = dbg_line_len + dbg_run + dbg_lo_run;
-            dbg_line_cnt = dbg_line_cnt + 1;
-            if (dbg_line_cnt == 2000) begin
-                $display("DBG HBL: lo_run=%0d hi_run=%0d line=%0d masters (lo_max=%0d hi_max=%0d)",
-                         dbg_lo_run, dbg_hi_run, dbg_line_len/2000, dbg_lo_max, dbg_hi_max);
-                dbg_line_len = 0; dbg_line_cnt = 0; dbg_lo_max = 0; dbg_hi_max = 0;
-            end
-        end
-        dbg_run = 0;
-        dbg_last = w_hbl;
-    end else dbg_run = dbg_run + 1;
-    if (&flash_div) begin                  // ~1.7 Hz tick
-      $display("DBG t=%0t hbl_hi=%0d vbl_rises=%0d vid_white=%0d (in_hbl_hi=%0d in_hbl_lo=%0d) vbl_lo=%0d vbl_hi=%0d",
-               $time, dbg_hbl, dbg_vbl, dbg_vidw, dbg_whi, dbg_wlo, dbg_vlo, dbg_vhi);
-      dbg_hbl = 0; dbg_vbl = 0; dbg_vidw = 0; dbg_whi = 0; dbg_wlo = 0;
+  initial begin
+    // #delays are in ns ($time prints ps on this toolchain): 1 s = 1e9
+    #1_720_000_000;                     // t = 1.72 s: press start
+    tb_cont1_key = tb_cont1_key | (32'd1 << 15);
+    #30_000_000;                        // 30 ms
+    tb_cont1_key = tb_cont1_key & ~(32'd1 << 15);
+
+    #550_000_000;                       // t = 2.30 s: CLEAN fire 30 ms
+    tb_cont1_key = tb_cont1_key | (32'd1 << 4);
+    #30_000_000;
+    tb_cont1_key = tb_cont1_key & ~(32'd1 << 4);
+
+    #270_000_000;                       // t = 2.60 s: WOBBLE fire (15x 5ms on/off)
+    begin : wobble
+      integer wb;
+      for (wb = 0; wb < 15; wb = wb + 1) begin
+        tb_cont1_key = tb_cont1_key | (32'd1 << 4);   // 5 ms on
+        #5_000_000;
+        tb_cont1_key = tb_cont1_key & ~(32'd1 << 4);  // 5 ms off
+        #5_000_000;
+      end
     end
+
+    #150_000_000;                       // t = 2.90 s: press face-Y (enter/CR, 0x0D)
+    tb_cont1_key = tb_cont1_key | (32'd1 << 7);
+    #30_000_000;
+    tb_cont1_key = tb_cont1_key & ~(32'd1 << 7);
+
+    #120_000_000;                       // t = 3.05 s: tap APF dpad UP (bit 0)
+    tb_cont1_key = tb_cont1_key | (32'd1 << 0);
+    #30_000_000;
+    tb_cont1_key = tb_cont1_key & ~(32'd1 << 0);
+
+    #120_000_000;                       // t = 3.20 s: tap APF dpad LEFT (bit 2)
+    tb_cont1_key = tb_cont1_key | (32'd1 << 2);
+    #30_000_000;
+    tb_cont1_key = tb_cont1_key & ~(32'd1 << 2);
+    // results checked in the judge block below (t = 3.6 s)
   end
 
   // ------------------------------------------------------------------
-  // Run ~2 s of machine time, then judge
+  // Run ~3 s of machine time, then judge
   // ------------------------------------------------------------------
   initial begin
-    // 2 s at 14.286 MHz = 28.57M cycles = 1000 ns * 28_571
-    repeat (28_571_000) @(posedge clk_14m);
+    // 3.6 s at 14.286 MHz = 51,428,400 cycles
+    repeat (51_428_400) @(posedge clk_14m);
     #10_000;
+
+    // (judge below)
 
     // ---- report + judge ----
     // The display domain is in reset until machine_reset drops (~0.3 s in),
@@ -250,9 +443,13 @@ module tb_apf_video;
     // "Ready." prompt screen (sparse white, stable). We check for the logo
     // peak AND a live stable screen at the end (not a fixed threshold on
     // the last frame, which is the prompt, not the logo).
-    $display("DBG final: wbuf=%0d dbuf=%0d capl[b0 l0]=%0d capl[b1 l0]=%0d capl[b1 l100]=%0d maxcapl_r=%0d maxscr_r=%0d pxr_ones=%0d max_white=%0d",
-             dut.wbuf, dut.dbuf, dut.cap_ram[0], dut.cap_ram[256], dut.cap_ram[356],
-             max_capl_r, max_scr_r, pxr_ones, max_white);
+    // G6: P2b OSK - start opened the panel (display screen lines 94..191
+    // with V_OFF centering) and face-A typed "Q" (the key under the initial
+    // cursor, row 1 col 1) at the prompt.
+    $display("summary: wbuf=%0d dbuf=%0d ov_frames=%0d mv_frames=%0d rk=%0d wbuf_flips=%0d vbl_rise=%0d vbl_fall=%0d osk_en=%b osk_act=%b row=%d col=%d q_press=%0d all_press=%0d dut_cnt=%0d c000_reads=%0d c010_reads=%0d cpu_c000_read=%0d cpu_c010_read=%0d cpu_c01x_write=%0d",
+             dut.wbuf, dut.dbuf, ov_frames, mv_frames, rk_cnt, wbuf_flips, vbl_rise, vbl_fall,
+             osk.osk_en, osk.kb_active, osk.kb_row, osk.kb_col, q_press_cnt, all_press_cnt,
+             osk.key_press_cnt, c000_reads, c010_reads, cpu_c000_read, cpu_c010_read, cpu_c01x_write);
     if (frames < 90) begin
       errors = errors + 1;
       $display("FAIL G1: only %0d output frames in ~2 s (expect ~100)", frames);
@@ -290,9 +487,41 @@ module tb_apf_video;
                frame_white_hist[2], frame_white_hist[3]);
     end
 
+    // G6a: exactly TWO virtual Q key-press events total: one from the
+    // clean fire press and exactly one from the 15-cycle wobble press
+    // (the press-latch must swallow the wobble - the old code would
+    // have fired on every 0->1, giving 1+15=16). all_press = 3 (2x Q
+    // + the CR enter press).
+    if (q_press_cnt != 2) begin
+      errors = errors + 1;
+      $display("FAIL G6a: %0d Q key-press events (expect exactly 2: clean fire + 1 from the wobble)", q_press_cnt);
+    end else
+      $display("G6a: clean fire = 1 press AND 15-cycle wobble = 1 press (latch OK; all_press=%0d)", all_press_cnt);
+    // G6d: the on-hardware diagnostic counter (the one rendered in the
+    // panel margin) must agree with the TB-side event count: 2x Q
+    // (clean fire + wobble) + 1x CR (enter) = 3 press events.
+    if (osk.key_press_cnt != 8'd3) begin
+      errors = errors + 1;
+      $display("FAIL G6d: on-hardware key-press counter = %0d (expect 3: Q + wobble-Q + CR)", osk.key_press_cnt);
+    end else
+      $display("G6d: on-hardware key-press counter = 3 (matches the real event count)");
+    if (osk.kb_row != 3'd0 || osk.kb_col != 4'd0) begin
+      errors = errors + 1;
+      $display("FAIL G6c: dpad UP then LEFT taps did not move cursor to (0,0): row=%0d col=%0d",
+               osk.kb_row, osk.kb_col);
+    end else
+      $display("G6c: APF dpad UP then LEFT moved the cursor (1,1)->(0,0) correctly");
+    if (disp_obs_frames < 20 || disp_panel_frames * 5 < disp_obs_frames * 3) begin
+      errors = errors + 1;
+      $display("FAIL G6b: panel in %0d/%0d display frames (last-frame white=%0d, hiy=[%0d..%0d])",
+               disp_panel_frames, disp_obs_frames, panel_white, hi_y_min, hi_y_max);
+    end else
+      $display("G6b: OSK panel displayed in %0d/%0d display frames (last-frame white=%0d)",
+               disp_panel_frames, disp_obs_frames, panel_white);
+
     if (errors == 0)
-      $display("PASS: frames=%0d hs=%0d g4_viol=%0d white=%0d",
-               frames, hs_cnt, g4_viol, frame_white_hist[3]);
+      $display("PASS: frames=%0d hs=%0d g4_viol=%0d white=%0d panel=%0d",
+               frames, hs_cnt, g4_viol, frame_white_hist[3], panel_white);
     else
       $display("FAIL: %0d error(s)", errors);
     if (errors != 0) $fatal(1, "tb_apf_video: %0d error(s)", errors);

@@ -20,6 +20,7 @@ export SHELL=/c/msys64/usr/bin/sh
 
 cd "$(dirname "$0")"
 MISTER=../../Apple-II_MiSTer
+MACHINE=../machine
 CORE=../src/fpga/core/apple2e
 
 # make.exe shim (AGENTS.md: verilated.mk's link step calls bare `make`)
@@ -41,16 +42,21 @@ verilator_bin --binary --timing -j 4 \
     -Wno-fatal -Wno-undriven -Wno-unused -Wno-width -Wno-style -Wno-latch \
     -CFLAGS "-O2" \
     --Mdir obj_dir_p2a \
-    $MISTER/rtl/apple2.v \
-    $MISTER/rtl/timing_generator.v \
-    $MISTER/rtl/video_generator.v \
-    $MISTER/rtl/rom.v \
-    $MISTER/rtl/ramcard.v \
-    $MISTER/rtl/cpu/nmos6502/cpu_65c02.sv \
-    $MISTER/rtl/cpu/nmos6502/cpu_alu.sv \
-    $MISTER/rtl/cpu/wdc65c02/cpu_65c02.sv \
-    $MISTER/rtl/cpu/wdc65c02/cpu_alu.sv \
+    $MACHINE/apple2.v \
+    $MACHINE/timing_generator.v \
+    $MACHINE/video_generator.v \
+    $MACHINE/rom.v \
+    $MACHINE/ramcard.v \
+    $MACHINE/apple2_font_rom.v \
+    $MACHINE/keyboard.v \
+    $MACHINE/osk/virtual_keyboard_controller.sv \
+    $MACHINE/osk/virtual_keyboard_overlay.sv \
+    $MACHINE/cpu/nmos6502/cpu_65c02.sv \
+    $MACHINE/cpu/nmos6502/cpu_alu.sv \
+    $MACHINE/cpu/wdc65c02/cpu_65c02.sv \
+    $MACHINE/cpu/wdc65c02/cpu_alu.sv \
     $CORE/apf_video.v \
+    $CORE/apple2e_osk.v \
     tb/tb_apf_video.sv
 
 echo "build ok: obj_dir_p2a/Vtb_apf_video (run with CWD = Apple-II_MiSTer root)"
