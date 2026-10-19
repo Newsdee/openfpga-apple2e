@@ -1,30 +1,30 @@
-// apf_stream_video.v - Phase 2 streaming video adapter (NO frame buffer).
+// apf_stream_video.v - Phase 2 streaming video adapter.
 //
-// Replaces the apf_video frame-buffer path. Takes the OSK's composited
-// 24-bit RGB (machine video + full-color OSK, with transparency) and the
-// machine's native HBL/VBL, and streams them directly to the APF DDR
-// video pad on the 14.318 MHz machine clock. No M10K, no PSRAM, no
-// clock-domain crossing.
+// Streams the OSK's composited 24-bit RGB (machine video + full-color OSK,
+// with transparency) directly to the APF DDR video pad on the 14.318 MHz
+// machine clock. No full-frame buffer, no PSRAM, no clock-domain crossing.
 //
-// APF video contract (from the Pocket platform docs):
-//   - video_de: 1 during active pixels, 0 during blanking.
-//   - video_hs: 1-cycle pulse at the start of each line (HSYNC).
-//   - video_vs: 1-cycle pulse at the start of each frame (VSYNC).
-//   - video_rgb: 24-bit RGB888, valid during video_de.
-//   - All signals synchronous to video_rgb_clock (the 14.318 MHz clock).
+// DEC2X:
+//   1 (default) - 2:1 horizontal decimation: the machine's 560-sample
+//     raster is downsampled to 280 DE px/line (even samples), so the APF
+//     sees the Apple II's logical 280x192 raster (better aspect on the
+//     portrait Pocket screen; manifest must declare 280x192).
+//     Implemented with a 280x24 ONE-LINE buffer: even samples are written
+//     during the machine's active window and read back as a CONTIGUOUS
+//     280-clock DE window during the following line's HBL. A strobed
+//     (non-contiguous) DE was REJECTED on hardware (pink screen), so the
+//     DE window must be contiguous like the Phase 1 pattern generator's.
+//     Cost: ~1 M10K (line buffer only - no full-frame storage).
+//   0 - native 560 px/line, direct passthrough (the proven Phase 2 path).
 //
-// The machine's native raster is 560 active px x 192 visible lines,
-// 910 clocks/line, 262 lines/frame @ 14.318 MHz (~60 Hz). This is within
-// the APF contract (active <= 800x720, 47-61 Hz, pixel clock <= 50 MHz).
-//
-// DE/HS/VS derivation:
-//   - DE = ~hbl & ~vbl (active pixels, not blanking).
-//   - HS = 1-cycle pulse at the HBL falling edge (start of active line).
-//   - VS = 1-cycle pulse at the VBL falling edge (start of visible frame).
-//   - HS and VS do not overlap (the VBL falling edge is not during HBL).
-//
-// This module is clocked by the 14.318 MHz machine clock (the same clock
-// that drives the machine + OSK). No clock-domain crossing is needed.
+// APF video contract (verified in sim by tb_phase2_shots.sv and on
+// hardware by the Phase 1 prototype):
+//   - video_de: contiguous run of active pixels, 0 during blanking.
+//   - video_hs: 1-cycle pulse, during blanking, never overlapping DE,
+//     with a blank gap before the next DE.
+//   - video_vs: 1-cycle pulse per frame, during blanking.
+//   - video_rgb: 0 outside DE; RGB888 valid during DE.
+//   - 16x16..800x720 active, 47-~61 Hz, pixel clock <= ~50 MHz.
 
 module apf_stream_video (
     input  wire        clk,        // 14.318 MHz machine master clock
@@ -41,7 +41,13 @@ module apf_stream_video (
     output reg         video_skip
 );
 
-    // --- blanking tracking (for HS/VS edge detection) ---
+    // 1: 2:1 horizontal decimation (560 -> 280 DE px/line, even samples)
+    // 0: native 560 px/line passthrough
+    parameter DEC2X = 1;
+
+    // ------------------------------------------------------------------
+    // sync generation (identical for both modes - machine-anchored)
+    // ------------------------------------------------------------------
     reg hbl_r, vbl_r;
 
     always @(posedge clk or posedge reset) begin
@@ -54,13 +60,12 @@ module apf_stream_video (
         end
     end
 
-    // HBL rising edge = line start (always inside the 350-clock HBL).
+    // HBL rising edge = line start (always inside the ~350-clock HBL).
     wire hbl_rise = ~hbl_r & hbl;
 
     // HS fires a fixed delay (5 clocks) AFTER the HBL rising edge - still
     // inside horizontal blanking, so HS never overlaps DE and keeps a
     // >=3-clock gap after VS (VS sits at the frame-start line boundary).
-    // Machine-anchored: no free-running raster, no dropped pixels.
     reg [2:0] hs_dly;
     always @(posedge clk or posedge reset) begin
         if (reset)              hs_dly <= 3'd0;
@@ -75,7 +80,79 @@ module apf_stream_video (
     // (the frame-start line boundary is HBL-high by construction).
     wire vs_pulse = (vbl_r & ~vbl) & hbl;
 
-    // --- APF output (registered) ---
+    wire de_active = !hbl && !vbl;
+
+    // ------------------------------------------------------------------
+    // DEC2X line buffer: write even samples during the machine's active
+    // window; read back a contiguous 280-clock window during the
+    // following line's HBL (20 clocks after HS, inside the ~350-clock HBL,
+    // finishing BEFORE the next line's writes start - no read/write
+    // overlap). One display line of latency (constant, invisible).
+    // ------------------------------------------------------------------
+    reg [9:0]  wcnt;          // active-sample index within the line (0..559)
+    wire [8:0] waddr = wcnt[9:1];   // 0..279 (full range, resets each line)
+    wire       wr_en = de_active && !wcnt[0] && DEC2X;
+
+    always @(posedge clk or posedge reset) begin
+        if (reset)        wcnt <= 10'd0;
+        else if (de_active) wcnt <= wcnt + 10'd1;
+        else             wcnt <= 10'd0;
+    end
+
+    // The window opens 20 clocks after HS (H=25..304): fully inside HBL,
+    // disjoint from the write phase (H=350+). NOTE: a later window (inside
+    // the machine active region) was rejected in expert review - it
+    // overlaps the write phase and breaks the line-ownership guarantee.
+    localparam [8:0] RD_START = 9'd20;   // read window opens 20 clocks after HS
+    localparam [8:0] RD_END   = RD_START + 280;
+    reg [8:0]  rw;                      // read window position
+    reg [8:0]  rptr;                     // buffer read pointer (0..279)
+    wire       rd_win = (rw >= RD_START) && (rw < RD_END);
+
+    // The window on machine line L displays the content written during
+    // line L-1. Exactly 192 windows must appear per period: visible lines
+    // 1..191 (content lines 0..190) plus the FIRST VBL line (content line
+    // 191, the last visible line). The first visible line (the VS line) is
+    // suppressed so no stale line is ever displayed. HS still fires on
+    // every machine line (unchanged from the proven Phase 2 path).
+    reg win_en_line;
+    always @(posedge clk or posedge reset) begin
+        if (reset)            win_en_line <= 1'b0;
+        else if (hbl_rise)    win_en_line <= ~vbl_r | vbl_rise;
+        // else hold for the duration of the line
+    end
+    wire vbl_rise = vbl & ~vbl_r;
+
+    always @(posedge clk or posedge reset) begin
+        if (reset)          rw <= 9'd0;
+        else if (hs_pulse)  rw <= 9'd0;
+        else if (rw < RD_END) rw <= rw + 9'd1;
+        else             rw <= RD_END;   // hold until next HS
+    end
+    always @(posedge clk or posedge reset) begin
+        if (reset)        rptr <= 9'd0;
+        else if (rd_win)  rptr <= (rptr == 279) ? 9'd0 : rptr + 9'd1;
+        else              rptr <= 9'd0;
+    end
+
+    // ------------------------------------------------------------------
+    // APF output (registered)
+    // ------------------------------------------------------------------
+    // 280 x 24-bit one-line buffer: synchronous write, async (combinational)
+    // read - Quartus infers an M10K from this idiom. Write the CURRENT
+    // pixel directly (no wr_data staging register - that off-by-one was a
+    // bug: the RAM would receive the previous even sample).
+    reg  [23:0] line_ram [0:279];
+    always @(posedge clk) begin
+        if (wr_en) line_ram[waddr] <= rgb_in;
+    end
+
+    wire [23:0] buf_out;
+    assign buf_out = DEC2X ? line_ram[rptr] : 24'h0;
+
+    wire       de_out = DEC2X ? (rd_win & win_en_line) : de_active;
+    wire [23:0] rgb_out = DEC2X ? buf_out : rgb_in;
+
     always @(posedge clk or posedge reset) begin
         if (reset) begin
             video_rgb  <= 24'h0;
@@ -101,12 +178,15 @@ module apf_stream_video (
             if (vs_pulse)
                 video_vs <= 1'b1;
 
-            // DE: active pixels (not blanking).
-            if (!hbl && !vbl) begin
+            // DE: contiguous active window (560 native or 280 decimated).
+            if (de_out) begin
                 video_de  <= 1'b1;
-                video_rgb <= rgb_in;
+                video_rgb <= rgb_out;
             end
         end
     end
+
+    // 280 x 24-bit one-line buffer (declared above with the sync-write
+    // always block; inferred M10K).
 
 endmodule

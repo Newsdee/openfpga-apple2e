@@ -649,7 +649,11 @@ apple2 d1 (
 // native HBL/VBL directly to the APF DDR pad on the 14.318 MHz clock.
 wire [23:0] apf_rgb;
 wire        apf_de, apf_vs, apf_hs, apf_skip;
-apf_stream_video apfv (
+// DEC2X=0 (shipping): the proven 560-px native stream. Aspect/stretch
+// options are pure video.json presets (see the core package). DEC2X=1
+// (280-px 2:1 decimation) is the separate experiment - see the expert
+// brief (EXPERT_BRIEF_PHASE2_280_SHIFT) for its fix status.
+apf_stream_video #(.DEC2X(0)) apfv (
     .clk(clk_core_14318), .reset(machine_reset),
     .rgb_in(osk_rgb24), .hbl(m_hbl), .vbl(m_vbl),
     .video_rgb(apf_rgb), .video_de(apf_de), .video_vs(apf_vs),

@@ -72,16 +72,16 @@ module apple2e_osk (
     //   the dpad nibble is therefore bit-reversed.
     //   [4] fire (face-A)
     //   [6] visibility = start [15]       [7] transparency = select [14]
-    //   [8] move (top/bottom) = trig-L1 [8]   [9] enter (face-Y)
-    //   [10] space (face-X)                [5] unused
+    //   [8] move (top/bottom) = trig-L1 [8]   [9] enter (trig-R1)
+    //   [10] space (face-X)                [5] back (face-Y)
     // ------------------------------------------------------------------
     wire [10:0] btn_raw = {
         cont1_key_s3[6],   // [10] space          (face-X)
-        cont1_key_s3[7],   // [9]  enter          (face-Y)
+        cont1_key_s3[9],   // [9]  enter          (trig-R1)
         cont1_key_s3[8],   // [8]  move           (trig-L1)
         cont1_key_s3[14],  // [7]  transparency   (face-select)
         cont1_key_s3[15],  // [6]  visibility     (start) - OSK on/off
-        1'b0,              // [5]  unused
+        cont1_key_s3[7],   // [5]  back arrow     (face-Y)
         cont1_key_s3[4],   // [4]  fire           (face-A)
         cont1_key_s3[0],   // [3]  up (APF bit 0)
         cont1_key_s3[1],   // [2]  down (APF bit 1)

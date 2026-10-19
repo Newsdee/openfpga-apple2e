@@ -119,7 +119,7 @@ module tb_phase2_shots;
   // ------------------------------------------------------------------
   reg  [23:0] o_rgb;
   wire        o_de, o_vs, o_hs, o_skip;
-  apf_stream_video dut (
+  apf_stream_video #(.DEC2X(1)) dut (
     .clk(clk_14m), .reset(reset),
     .rgb_in(osk_rgb24), .hbl(w_hbl), .vbl(w_vbl),
     .video_rgb(o_rgb), .video_de(o_de), .video_vs(o_vs),
@@ -133,7 +133,7 @@ module tb_phase2_shots;
   //   3. HS never overlaps DE            <- the Phase-2 failure mode
   //   4. >= 1 blank clock between HS and the next DE
   //   5. >= 3 clocks between VS and the first HS after it
-  //   6. every line carries exactly 560 active pixels
+  //   6. every line carries exactly 280 active pixels (DEC2X=1)
   //   7. every frame carries exactly 192 active lines
   //   8. a VS is seen within the first 10M clocks (watchdog; the TB holds
   //      reset for ~4.2M clocks, so nothing can sync before that)
@@ -194,25 +194,27 @@ module tb_phase2_shots;
   end
 
   // ------------------------------------------------------------------
-  // Frame capture (24-bit) + one-shot dump of frames 30 and 82
+  // Frame capture (24-bit) + one-shot dump of frames 30 and 82.
+  // The DEC2X=1 line buffer makes DE contiguous again (one 280-clock
+  // window per visible line), so line tracking is DE-based.
   // ------------------------------------------------------------------
   reg [23:0] cur [0:191][0:559];
   reg [9:0]  cx, cy;
   reg [9:0]  fc;
-  reg        de_d, cap_a, cap_b;
+  reg        cap_a, cap_b, de_d;
 
   initial begin
-    cur = '{default: 24'h0}; cx = 0; cy = 0; fc = 0; de_d = 1'b0;
-    cap_a = 1'b0; cap_b = 1'b0;
+    cur = '{default: 24'h0}; cx = 0; cy = 0; fc = 0;
+    cap_a = 1'b0; cap_b = 1'b0; de_d = 1'b0;
   end
 
   task dump_ppm(input string fname);
     integer f, y, x;
     begin
       f = $fopen(fname, "wb");
-      $fwrite(f, "P6\n560 192\n255\n");
+      $fwrite(f, "P6\n280 192\n255\n");
       for (y = 0; y < 192; y = y + 1)
-        for (x = 0; x < 560; x = x + 1) begin
+        for (x = 0; x < 280; x = x + 1) begin
           $fwrite(f, "%c", cur[y][x][23:16]);
           $fwrite(f, "%c", cur[y][x][15:8]);
           $fwrite(f, "%c", cur[y][x][7:0]);
@@ -225,9 +227,10 @@ module tb_phase2_shots;
   always @(posedge clk_14m) begin
     if (o_vs) begin
       // 7. previous frame must have had exactly 192 active lines
+      if (fc >= 1 && fc <= 5) $display("DBG lines in frame %0d = %0d", fc, lines_this_frame);
       if (fc >= 1 && lines_this_frame != 192) frame_lines_err <= frame_lines_err + 1;
       lines_this_frame <= 0;
-      cy <= 0;
+      cy <= 0; cx <= 0;
       // one-shot captures (survive frame-counter wraps)
       if (!cap_a && fc == 30) begin
         cap_a <= 1'b1;
@@ -242,8 +245,8 @@ module tb_phase2_shots;
       cur[cy][cx] = o_rgb;
       cx <= cx + 1;
     end else if (de_d) begin
-      // 6. line end: exactly 560 active pixels
-      if (cx != 560) line_px_err <= line_px_err + 1;
+      // 6. line end: exactly 280 contiguous DE pixels (DEC2X=1)
+      if (cx != 280) line_px_err <= line_px_err + 1;
       lines_this_frame <= lines_this_frame + 1;
       cx <= 0;
       cy <= (cy == 191) ? 10'd191 : cy + 10'd1; // clamp

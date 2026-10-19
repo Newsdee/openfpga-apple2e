@@ -5,6 +5,22 @@
             {
                 "width": 560,
                 "height": 192,
+                "aspect_w": 10,
+                "aspect_h": 9,
+                "rotation": 0,
+                "mirror": 0
+            },
+            {
+                "width": 560,
+                "height": 192,
+                "aspect_w": 4,
+                "aspect_h": 3,
+                "rotation": 0,
+                "mirror": 0
+            },
+            {
+                "width": 560,
+                "height": 192,
                 "aspect_w": 70,
                 "aspect_h": 24,
                 "rotation": 0,
