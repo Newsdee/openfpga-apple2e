@@ -180,3 +180,31 @@ Diskless boot per Unit-4 policy; reset/reload flow.
 
 Stop condition: reproducible read-only DOS boot, M0 preserved, explicit
 failure reporting. No scope additions.
+
+## Progress (updated 2026-10-20)
+
+- **Unit 1 (QSF registration / storage base): done** — carried in M0 gate `44c2144`.
+- **Unit 2 (SDRAM sector-ownership service): done, committed `9c6f852`** —
+  `sdram_word_owner.v` (pure pass-through word-port ownership: arm-time
+  attribution, done levels exact M0 1-FF shape, store writes masked while
+  any read client is armed) + `sdram_sector_fetch.v` (per-word sector
+  fetcher, ST_IDLE/WAIT/GAP/HOLD/FAULT; edge-based acceptance; generation
+  invalidation). `tb_sector_fetch.sv` T0-T8 ALL PASS; M0 regression
+  `tb_top_storage` PASS; strict Verilator lint clean on new files. Tooling
+  notes recorded in the commit (Verilator 5.050 drops transitions for
+  2-bit case items against a wider register; state localparams widened to
+  4 bits; 1-bit `word_q` port truncation fixed).
+- **Unit 3 (machine-domain emitter): done this session** —
+  `sdram_woz_transport.v` (14.318 MHz): latches LBA while ACK low, raises
+  ACK before byte 0, mirrors `sd_buff_addr` into the Unit-2 frozen-window
+  readout (zero-latency byte mirror), holds ACK through byte 511 sampling
+  (`sd_buff_wr` at addr 511) and lowers it on a later edge; one outstanding
+  sector; `sd_wr` from the engine = latched invariant fault (no write,
+  no fake ACK, `fault_clr` restore); OOR LBA (high 16 bits) = latched
+  `oor_fault`, no ACK; `drive_active` low = quiet. `tb_woz_transport.sv`
+  T0-T6 ALL PASS (512-byte verified reads incl. tail sector 464+48 pad,
+  gaps, write-fault + recovery, OOR, inactive drive).
+- Next: Unit 4 (mount/lifecycle controller + `data.json` 0x49 + boot
+  policy), Unit 5 (byte-identical engine import + top wiring + integration
+  TB), Unit 6 (full-machine CATALOG TB), Unit 7 (regression + owner
+  compile + hardware).
