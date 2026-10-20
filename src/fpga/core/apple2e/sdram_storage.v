@@ -42,7 +42,7 @@ module sdram_storage (
     output wire [23:0] words_received,
     output wire [23:0] words_committed,
     output wire        fifo_overflow,       // native 74.25
-    output wire [6:0]  fifo_high_water,     // native 74.25
+    output wire [8:0]  fifo_high_water,     // native 74.25
     input  wire [31:0] diag_addr,           // 0xF9xxxxxx offset (top routes)
     input  wire        diag_rd,
     output reg  [31:0] diag_rd_data,
@@ -85,6 +85,11 @@ module sdram_storage (
     output wire [1:0]  res_fail_m,          // subcode: 0=ST(uck), 1=OV, 2=TO, 3=IN
     output wire [31:0] res_crc_m,
     output wire [31:0] res_nbytes_m,
+    output wire        new_load_m,          // 1-mach-cycle pulse: a new 0082
+                                            // generation started (proactive
+                                            // unmount so the engine stops
+                                            // scanning the old image during
+                                            // the new load, freeing the port)
     output wire [2:0]  stage_m,             // furthest stage 0..6 (overlay marker)
     // ---- SDRAM clocks + pads ----
     input  wire        ctrl_clk,
@@ -114,7 +119,7 @@ module sdram_storage (
     wire [23:0] fifo_rd_addr;
     wire [31:0] fifo_rd_data;
 
-    slot_fifo #(.DEPTH(64)) sf0 (
+    slot_fifo #(.DEPTH(256)) sf0 (
         .wr_clk    ( clk_74a ),
         .rst       ( sdram_path_rst ),
         .wr_en     ( fifo_wr_en ),
@@ -225,6 +230,20 @@ module sdram_storage (
         gen_c1    <= gen_74;
         gen_c2    <= gen_c1;
     end
+
+    // 74.25 -> machine: new-load generation pulse. gen_74 is stable for the
+    // whole load (>> a machine sync), so a torn multi-bit sync can only
+    // manifest as a spurious single change - a safe direction, since the
+    // only consumer (the mount controller) reacts to a change by ejecting
+    // the mounted drive, which is exactly what a reload wants.
+    reg [7:0] gen_m1, gen_m2, gen_m3, gen_m3_d;
+    always @(posedge clk_mach) begin
+        gen_m1   <= gen_74;
+        gen_m2   <= gen_m1;
+        gen_m3   <= gen_m2;
+        gen_m3_d <= gen_m3;
+    end
+    assign new_load_m = (gen_m3 !== gen_m3_d);
 
     sdram_word_owner owner0 (
         .clk        ( ctrl_clk ),
@@ -572,7 +591,7 @@ co_st      <= CO_RES;
             16'h0004: diag_rd_data_r = v_n_bytes_host;
             16'h0008: diag_rd_data_r = {8'd0, words_received_74};
             16'h000C: diag_rd_data_r = {8'd0, words_committed_74};
-            16'h0010: diag_rd_data_r = {24'd0, fifo_high_water};
+            16'h0010: diag_rd_data_r = {23'd0, fifo_high_water};
             16'h0014: diag_rd_data_r = v_crc32_74;
             16'h0018: diag_rd_data_r = v_first_word_74;
             16'h001C: diag_rd_data_r = v_last_word_74;

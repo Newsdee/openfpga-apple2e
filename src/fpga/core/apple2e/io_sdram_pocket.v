@@ -139,6 +139,7 @@ synch_3 s1(reset_n, reset_n_s, controller_clk);
 
     reg word_rd_queue;
     reg word_wr_queue;
+    reg word_rd_arm_d, word_wr_arm_d;   // EDGE-LATCH arm tracking (M1)
     wire word_rd_s, word_rd_r;
     wire word_wr_s, word_wr_r;
 synch_3 s2(word_rd, word_rd_s, controller_clk, word_rd_r);  
@@ -555,13 +556,34 @@ always @(posedge controller_clk) begin
     endcase
     
     
-    // catch incoming events if fsm is busy
-    if(word_rd_r) begin
-        word_rd_queue <= 1;
+    // catch incoming events if fsm is busy - EDGE-LATCH queue
+    // (POCKET-DIFF #5, M1): the queue latches on the RISING edge of the
+    // 3FF-synchronized level and clears on the falling edge. The original
+    // rise-pulse latch (1-cycle synch_3.rise) missed re-arms for clients
+    // that hold their level across op boundaries (dead port: IDLE with
+    // both clients armed, no queue); pure level-follow double-queues
+    // back-to-back ops for a held level (corrupts the store's committed
+    // count and fetches one word past the tail). Edge-latch gives
+    // exactly one queued op per arm: held clients re-arm by dropping
+    // their level between words (store: word_wr falls between records;
+    // fetcher: per-word GAP; verifier: per-word drop - the 1-cycle lows
+    // propagate through the 3FF as clean falls, then re-rises), and an
+    // arm that occurs while the port is busy is caught and held. The
+    // arm timing equals the original rise-pulse cycle (word_rd_r fires
+    // as word_rd_s rises), so M0 op phases are preserved.
+    if (word_rd_s) begin
+        if (!word_rd_arm_d) word_rd_queue <= 1;   // rising edge: arm
+        // else: held high - queue state unchanged (dequeue clear stands)
+    end else begin
+        word_rd_queue <= 0;                        // falling edge: clear
     end
-    if(word_wr_r) begin
-        word_wr_queue <= 1;
+    word_rd_arm_d <= word_rd_s;
+    if (word_wr_s) begin
+        if (!word_wr_arm_d) word_wr_queue <= 1;
+    end else begin
+        word_wr_queue <= 0;
     end
+    word_wr_arm_d <= word_wr_s;
     if(burst_rd) begin
         burst_rd_queue <= 1;
     end

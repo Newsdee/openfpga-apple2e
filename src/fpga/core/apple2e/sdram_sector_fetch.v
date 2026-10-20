@@ -110,6 +110,7 @@ module sdram_sector_fetch (
     reg [7:0]  gen_l;
     reg [7:0]  wcnt;           // words written into sbuf (0..nrd_l)
     reg [1:0]  done_sync;      // sector_done: machine -> ctrl
+    reg [13:0] hold_cnt;       // ST_HOLD self-release timeout
     reg [1:0]  ready_m_s;      // sector_ready: ctrl -> machine
     reg        fault_m_s1;     // fault: ctrl -> machine
 
@@ -132,6 +133,20 @@ module sdram_sector_fetch (
         else if (!ctrl_req)
             pend <= 1'b0;          // released: cancel any unaccepted request
     end
+
+    // Early generation invalidation (M1 Unit-5 fix): a new 0082 bumps the
+    // image generation; an in-flight fetch of the OLD generation must stop
+    // (not run to sector end). The bounded tail otherwise keeps the port
+    // busy while the new generation's load streams, throttling the store
+    // below the host's supply rate and overflowing the load FIFO.
+    // The abort must happen only when no read op is in flight (ST_GAP,
+    // where the per-word level is low by construction): dropping the level
+    // mid-op would violate the port's read protocol (word_rd must be held
+    // as a level through the in-flight read op's data window) and dead
+    // the port. Bounded tail: at most one word completes after the bump.
+    // (The sector-end stale-discard branch is kept as a defensive corner:
+    // gen bumps exactly on the final word.)
+    wire gen_stale = (img_gen !== gen_l);
 
     always @(posedge clk_ctrl or negedge rst_n_ctrl) begin
         if (!rst_n_ctrl) begin
@@ -193,14 +208,27 @@ module sdram_sector_fetch (
                     st <= ST_WAIT;   // explicit hold (no implicit-hold cases)
             end
 
-            // 1 ctrl cycle with the level low, then re-arm with wcnt+1
+            // per-word GAP: abort if the generation moved while in the gap
             ST_GAP: begin
-                st <= ST_WAIT;
+                if (gen_stale)
+                    st <= ST_IDLE;
+                else
+                    st <= ST_WAIT;
             end
 
             ST_HOLD: begin
-                if (done_sync[1]) begin
+                // Self-release timeout: if the requester retired without
+                // consuming the window (generation bump / engine eject
+                // racing the publish), the transport's sector_done never
+                // comes and the fetch service wedges for the next
+                // generation. A legitimate stream takes <= ~36 us
+                // (512 machine cycles); 8192 controller cycles (~61.5 us)
+                // is safely longer, so a timed release can never drop a
+                // window mid-stream.
+                hold_cnt <= hold_cnt + 1'b1;
+                if (done_sync[1] || (hold_cnt == 14'd8191)) begin
                     ready_m_s <= 2'b00;   // release + clear in one step
+                    hold_cnt  <= 14'd0;
                     st        <= ST_IDLE;
                 end else
                     st <= ST_HOLD;

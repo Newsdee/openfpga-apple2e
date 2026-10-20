@@ -127,6 +127,33 @@ Q1 pacing contract, exact:
 - `data.json`: `"parameters": 1` → `0x49` (bit0+bit3+bit6).
 
 ### Unit 5 — Engine import + top wiring + integration TB
+- **STATUS (2026-10-21): COMPLETE — `tb_woz_machine` ALL PASS (nfail=0).**
+  6 engine files byte-identical in `src/fpga/core/woz/`; top wired; QSF
+  registered; integration TB covers T0 (SDRAM init + coordinator OK),
+  T1 (mount + engine SD_RD + transport ACK), T2 (512 B verified through
+  the data path, byte-exact vs golden `DOSMaster.woz` prefix), T2b
+  (malformed image → OOR fault → eject), T3 (remount + machine-reset
+  persistence + engine re-scan), T4 (new-generation 16 KiB reload).
+  Key fixes found during bring-up:
+  * Transport must NOT abort S_DATA/S_HOLD on `!sd_rd` — the engine
+    legitimately drops `sd_rd` ~2 cycles after the ACK rises during its
+    live WOZ scan; aborting truncated every block to ~2 bytes and broke
+    the header scan. Abort only on `!drive_active` (real eject).
+  * Scoreboard compares against the LIVE engine LBA (stable per block),
+    not a 1-cycle-stale latch (which produced one false mismatch/block).
+  * Proactive unmount: `sdram_storage` now emits `new_load_m` (machine-
+    domain pulse on generation change); `woz_mount_ctl` ejects the
+    mounted drive when a new 0082 arrives, so the engine stops scanning
+    the old image before the new load (previously it scanned the whole
+    load, starving the store).
+  * Store record FIFO deepened 64→256 (AW now derives from DEPTH) to
+    absorb the start-of-load burst (SDRAM write op is slower than the
+    host write rate while the store re-arms); `tb_top_storage` T7
+    updated to a 512-word burst for the deeper FIFO.
+  * `sdram_word_owner` attribution (current-edge model), `disk_store`
+    level-held write, `sdram_sector_fetch` early-gen-invalidation +
+    ST_HOLD self-release timeout, `io_sdram_pocket` edge-latch queue
+    (POCKET-DIFF #5) — all verified by the unit TBs + machine TB.
 - Copy 6 files byte-identical `Apple-II_MiSTer/rtl/woz/` →
   `src/fpga/core/woz/`; pin hashes in `src/fpga/core/woz/NOTICE.md` (or
   equivalent) with source revision; register all six in
@@ -216,6 +243,5 @@ failure reporting. No scope additions.
   accurate engine drive-level mount model) T1-T9 ALL PASS. `data.json`
   disk slot `parameters` 1 -> 73 (0x49: reloadable + read-only + Reset
   Enter/Exit around reload, per C12). QSF registered.
-- Next: Unit 5 (byte-identical engine import + top wiring + integration
-  TB), Unit 6 (full-machine CATALOG TB), Unit 7 (regression + owner
-  compile + hardware).
+- Next: Unit 6 (full-machine CATALOG TB), Unit 7 (regression + owner
+  compile + hardware). Unit 5 is complete (see its STATUS note).

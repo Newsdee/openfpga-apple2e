@@ -587,11 +587,11 @@ module tb_top_storage;
         if (res_nbytes_m != 32'd512) fatal_chk("T6: nbytes != 512");
         $display("T6: incomplete transfer rejected FAIL IN");
 
-        // T7: FIFO overflow: unpaced 100-word burst (FIFO depth 64) ->
+        // T7: FIFO overflow: unpaced 512-word burst (FIFO depth 256) ->
         // FAIL OV; the later 008F must not overwrite the result.
-        ds_request(16'd1, 32'd512);
+        ds_request(16'd1, 32'd4096);
         wait_res_fall;
-        for (i = 0; i < 100; i = i + 1)
+        for (i = 0; i < 512; i = i + 1)
             bridge_write_raw(i*4, p32(i));
         w = 0;
         while (!fifo_overflow) begin

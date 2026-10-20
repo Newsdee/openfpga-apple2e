@@ -102,35 +102,79 @@ module sdram_word_owner (
     assign word_addr = read_armed ? (vr_req ? vr_addr : fc_addr) : st_addr;
     assign word_data = st_data;
 
-    // ---- ownership attribution ----
-    // Latch the client at its ARM event (level/pulse high while the port
-    // is idle - the M0 req_kind pattern, generalized to three clients).
-    // The port's queue latches the arm 3 cycles before the op starts, so
-    // the armed-client state at op start is already gone; the latched
-    // arm client is the op's client by the wrapper invariant (at most
-    // one client arms at a time: the fetcher level is masked while the
-    // verifier level is high, and the store pulse fires only while the
-    // port is idle).
-    reg [1:0] inflight;
+    // ---- ownership attribution (op-start edge, current levels) ----
+    // Every op start (word_busy rising) is attributed from the client
+    // levels CURRENT at that edge, read-priority. This is exact because
+    // of the client protocols:
+    //  * clients hold their levels through their own op (verifier level;
+    //    fetcher holds fc_req until its word's done; the store holds
+    //    word_wr until its op starts - still high pre-NBA at the edge);
+    //  * there is always an IDLE cycle (word_busy low) between ops -
+    //    including around refresh ops - so every op start presents a
+    //    fresh word_busy rising edge and no attribution is ever missed;
+    //  * if a write op starts, no read level was armed at the port's
+    //    dequeue (read priority), and a read level rising in the 1-3
+    //    cycles between dequeue and op start re-queues for the NEXT op
+    //    (the port's edge-latch catch while IDLE/busy) - attributing the
+    //    starting op from the current level at the start edge is still
+    //    correct, because a level high at the start edge is either the
+    //    starting op's client (held) or a client re-arming for the next
+    //    op with read priority (read attributed first - correct order).
+    // A refresh op: attribute from the held levels if any (the queued
+    // client's op follows - "stale" attribution is the right client by
+    // the held-level protocol), else hold.
+    // A 3FF-synched queue mirror (the first attempt) was 3 cycles behind
+    // the port's own sync and mis-attributed a store write to a fetcher
+    // whose level had just fallen (measured T9).
+    reg        busy_d;
+    reg [1:0]  inflight;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             rst_n_s1 <= 1'b0;
             inflight <= CL_NONE;
+            busy_d   <= 1'b0;
         end else begin
             rst_n_s1 <= rst_n;
+            busy_d   <= word_busy;
             if (!rst_n_s1) begin
                 inflight <= CL_NONE;
-            end else if (!word_busy) begin
-                // last client to arm while idle owns the next op
-                if (vr_req && !vr_done_lvl)
-                    inflight <= CL_VERIFY;
-                else if (fc_req && !fc_done_lvl)
-                    inflight <= CL_FETCH;
-                else if (st_req_eff)
+            end else if (word_done && (inflight == CL_STORE)) begin
+                // op completion: release (done routing below sees inflight
+                // still set on this cycle - cleared by NBA)
+                inflight <= CL_NONE;
+            end else if (word_rd_valid && (inflight == CL_VERIFY)) begin
+                inflight <= CL_NONE;
+            end else if (word_rd_valid && (inflight == CL_FETCH)) begin
+                inflight <= CL_NONE;
+            end else if (word_busy && !busy_d) begin
+                // op start (or refresh): attribute. The OP KIND is the
+                // truth (the owner drives it: a read op runs with
+                // word_rd held, a write op with word_wr held), so it
+                // outranks the client levels - a read client re-arming
+                // in the 1-3 cycles between a write's dequeue and its
+                // start edge would otherwise steal the write's
+                // attribution (read priority on raw levels) and lose
+                // the store's word_done.
+                if (word_rd) begin
+                    if (vr_req && !vr_done_lvl)
+                        inflight <= CL_VERIFY;
+                    else if (fc_req && !fc_done_lvl)
+                        inflight <= CL_FETCH;
+                    else
+                        inflight <= CL_FETCH;   // anomalous: no read level
+                                                // visible; fetcher is the
+                                                // M1 per-word read client
+                end else if (word_wr)
                     inflight <= CL_STORE;
+                // else: refresh with no client armed - hold
             end
         end
     end
+    // Attribution invariant (by construction): a read op's client must still
+    // be armed at its completion (clients hold their levels through their own
+    // op). The current-edge attribution model (op-kind + levels at word_busy
+    // rising) makes this hold; a violation would mean the op was attributed
+    // to the wrong client.
 
     assign st_busy = word_busy;
 

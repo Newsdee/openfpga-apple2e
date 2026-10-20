@@ -277,7 +277,9 @@ module tb_sector_fetch;
     // ==================================================================
     always @(*) begin
         if (fc_active_w && ov_word_wr) begin
-            $display("FAIL T9: fetch-owned transfer driving word_wr at %0t", $time);
+            $display("FAIL T9: fetch-owned transfer driving word_wr at %0t | inflight=%0d busy=%b vr=%b fc=%b st=%b | fc.st=%0d port.st=%0d wrq=%b rdq=%b", $time,
+                     owner0.inflight, owner0.word_busy, owner0.vr_req, owner0.fc_req, owner0.st_req,
+                     fetch0.st, isr0.state, isr0.word_wr_queue, isr0.word_rd_queue);
             $fatal(1);
         end
     end

@@ -45,6 +45,15 @@ module woz_mount_ctl (
     input  wire [1:0]  res_code_m,   // 0=OK, 1=FAIL, 2=NOFILE
     input  wire [31:0] res_nbytes_m, // exact image bytes (stable w/ result)
 
+    // ---- proactive unmount: a new 0082 generation started (machine-domain
+    //      1-cycle pulse). The old image is about to be overwritten, so the
+    //      mounted drive must be ejected NOW (not when the new result
+    //      arrives ~100 us later) - otherwise the engine keeps scanning and
+    //      fetching the old image for the whole new load, and its port
+    //      reads (which beat the store's writes) starve the store FIFO into
+    //      an overflow / timeout.
+    input  wire        new_load_m,
+
     // ---- Unit-3 transport fault (latched in the transport) ----
     input  wire        transport_fault,
 
@@ -65,6 +74,7 @@ module woz_mount_ctl (
     reg [31:0] size_l;          // mounted generation size
     reg        res_v_d;
     reg        tf_d;
+    reg        newload_d;
     reg [1:0]  pend_code;
     reg [31:0] pend_size;
     reg        pend_valid;      // a result is waiting for the mount decision
@@ -72,6 +82,7 @@ module woz_mount_ctl (
 
     wire res_rise  = res_valid_m && !res_v_d;
     wire fault_rise = transport_fault && !tf_d;
+    wire newload_rise = new_load_m && !newload_d;
 
     // Resolve points (pre-NBA): the pending result/fault is consumed when
     // the mount decision is made. A capture (res_rise / fault_rise) on the
@@ -89,6 +100,7 @@ module woz_mount_ctl (
             size_l     <= 32'd0;
             res_v_d    <= 1'b0;
             tf_d       <= 1'b0;
+            newload_d  <= 1'b0;
             pend_code  <= 2'd0;
             pend_size  <= 32'd0;
             pend_valid <= 1'b0;
@@ -97,6 +109,7 @@ module woz_mount_ctl (
         end else begin
             res_v_d <= res_valid_m;
             tf_d    <= transport_fault;
+            newload_d <= new_load_m;
 
             // Capture the newest result / fault (edge); else consume at the
             // resolve point. Capture wins on a same-cycle collision.
@@ -125,9 +138,12 @@ module woz_mount_ctl (
             ST_MOUNTED: begin
                 img_mounted <= 1'b1;
                 img_size    <= {32'd0, size_l};
-                if (pend_valid || fault_pend) begin
+                if (pend_valid || fault_pend || newload_rise) begin
                     // Any new generation (overwrites the image) or a
                     // transport fault: eject first (re-parse dance).
+                    // newload_rise fires at the start of the new load
+                    // (0082), so the engine stops fetching the old image
+                    // before the store streams the new one.
                     state <= ST_EJ1;
                 end
             end

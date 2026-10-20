@@ -2,15 +2,24 @@
 // tb_woz_transport.sv - M1 Unit 3: machine-domain WOZ block transport
 // against the Unit-2 sector service + real io_sdram_pocket + DRAM model
 //
-// DUT: sdram_woz_transport (14.318 MHz) pacing a WOZ-engine stub against
-//      sdram_sector_fetch (Unit 2) via the owner + io_sdram_pocket.
+// DUT: sdram_woz_transport (14.318 MHz) - the HOST side of the WOZ block
+// protocol (the Pocket replacement for MiSTer's hps_io image reader),
+// serving sdram_sector_fetch (Unit 2) via the owner + io_sdram_pocket.
 //
-// Coverage (M1 plan, Unit 3):
+// Protocol (host-paced, verified against woz_floppy_controller.sv):
+//   engine asserts sd_rd (level) with sd_lba; the transport fetches the
+//   512-byte sector, raises sd_ack, then streams bytes: walks
+//   sd_buff_addr 0..511, presents sd_buff_dout, strobes sd_buff_wr one
+//   cycle per byte, holds ACK a few cycles after byte 511, then lowers
+//   it (the engine's transfer-complete is the ACK falling edge).
+//
+// Coverage:
 //   T0  boot: SDRAM init, store a 2000-byte image via the store client
-//   T1  read sector 0: all 512 bytes verified (ACK before byte 0, byte 511
-//       sampled with ACK high, ACK falls on a later edge)
+//   T1  read sector 0: all 512 bytes verified (sequential addr walk,
+//       byte 511 strobed with ACK high, ACK falls on a later edge)
 //   T2  read tail sector 3: 464 real bytes + 48 deterministic 0x00 pad
-//   T3  read sector 1 with gaps (engine inserts sd_buff_wr-low cycles)
+//   T3  back-to-back sectors (0,1): one outstanding sector at a time,
+//       no byte misattribution between consecutive requests
 //   T4  forced-write fault: engine asserts sd_wr -> wr_fault latches, no
 //       ACK, no SDRAM write, no hang; fault_clr restores service
 //   T5  OOR LBA (high 16 bits set) -> oor_fault, no ACK, no hang
@@ -135,7 +144,7 @@ module tb_woz_transport;
     wire [31:0] fc_data_w;
     wire [7:0]  fc_done_len_w, fc_done_gen_w;
 
-    // sector service (machine domain) - driven by the TRANSPORT now
+    // sector service (machine domain) - driven by the TRANSPORT
     wire        fetch_busy, sector_ready, fetch_fault;
     wire [7:0]  sector_byte_data;
     wire        fetch_req;
@@ -152,7 +161,7 @@ module tb_woz_transport;
         .word_addr  ( ov_word_addr ),
         .word_data  ( ov_word_data ),
         .word_q     ( ov_word_q ),
-        .word_busy  ( ov_word_busy ),
+        .word_busy  ( ov_word_busy),
         .word_done  ( ov_word_done ),
         .word_rd_valid( ov_word_rd_valid ),
         .init_done  ( sdram_init_done ),
@@ -163,7 +172,7 @@ module tb_woz_transport;
         .st_done    ( st_done ),
         .vr_req     ( vr_req ),
         .vr_addr    ( vr_addr ),
-        .vr_done    ( vr_done ),
+        .vr_done    ( vr_done),
         .vr_data    ( vr_data ),
         .fc_req     ( fc_req_w ),
         .fc_addr    ( fc_addr_w ),
@@ -196,8 +205,8 @@ module tb_woz_transport;
         .fc_addr       ( fc_addr_w ),
         .fc_gen        ( fc_gen_w ),
         .fc_active     ( fc_active_w ),
-        .fc_word_valid ( fc_word_valid_w ),
-        .fc_done       ( fc_done_w ),
+        .fc_word_valid ( fc_word_valid_w),
+        .fc_done       ( fc_done_w),
         .fc_data       ( fc_data_w ),
         .fc_done_gen   ( fc_done_gen_w )
     );
@@ -205,13 +214,13 @@ module tb_woz_transport;
     // ==================================================================
     // DUT: machine-domain WOZ transport (Unit 3)
     // ==================================================================
-    // WOZ-engine-stub side
+    // WOZ-engine-stub side (the stub consumes host-paced bytes)
     reg         e_sd_rd;
     reg  [31:0] e_sd_lba;
     wire        e_sd_ack;
     reg         e_sd_wr;
-    reg  [8:0]  e_sd_buff_addr;
-    reg         e_sd_buff_wr;
+    wire [8:0]  e_sd_buff_addr;
+    wire        e_sd_buff_wr;
     wire [7:0]  e_sd_buff_dout;
     reg         e_drive_active;
     reg         e_fault_clr;
@@ -225,6 +234,7 @@ module tb_woz_transport;
         .sd_ack         ( e_sd_ack ),
         .sd_wr          ( e_sd_wr ),
         .sd_buff_addr   ( e_sd_buff_addr ),
+        .sd_buff_din    ( 8'h00 ),
         .sd_buff_wr     ( e_sd_buff_wr ),
         .sd_buff_dout   ( e_sd_buff_dout ),
         .fetch_req      ( fetch_req ),
@@ -281,23 +291,24 @@ module tb_woz_transport;
     // test sequencing (machine domain)
     // ==================================================================
     integer nfail = 0;
-    integer i;
     integer timeouts = 0;
 
-    // engine read: one 512-byte sector. gaps=1 inserts idle cycles between
-    // byte strobes. Verifies every byte and the ACK bracket.
-    task automatic engine_read_sector(input [15:0] lba, input gaps);
-        integer b;
+    // engine read: one 512-byte sector. The engine stub consumes the
+    // host-paced stream: waits for the ACK rise, then collects one byte
+    // per sd_buff_wr strobe, checking the sequential address walk and
+    // every byte value; finally waits for the ACK fall (the engine's
+    // transfer-complete).
+    task automatic engine_read_sector(input [15:0] lba);
+        integer b, t;
         reg [7:0] got;
+        reg [8:0] want_addr;
         begin
-            e_sd_wr      = 1'b0;
-            e_sd_buff_wr = 1'b0;
-            e_sd_buff_addr = 9'd0;
+            e_sd_wr    = 1'b0;
             e_sd_lba   = {16'd0, lba};
             e_sd_rd    = 1'b1;
 
             // wait for ACK (must rise before any byte is delivered)
-            @(posedge clk_mach);
+            t = 0;
             while (!e_sd_ack) begin
                 @(posedge clk_mach);
                 if (e_wr_fault || e_oor_fault) begin
@@ -306,47 +317,62 @@ module tb_woz_transport;
                     e_sd_rd = 1'b0;
                     return;
                 end
-                timeouts = timeouts + 1;
-                if (timeouts > 4000) begin
+                if (t > 4000) begin
                     $display("FAIL T?: ACK timeout (lba=%0d) at %0t", lba, $time);
                     nfail = nfail + 1;
                     e_sd_rd = 1'b0;
                     return;
                 end
+                t = t + 1;
             end
-            timeouts = 0;
 
-            // walk bytes 0..511
+            // consume 512 host-paced bytes. Sampling point: right after
+            // the @(posedge) in the wait loop - that sees exactly the
+            // values stable during the strobe cycle (the same values the
+            // engine's always block samples).
+            want_addr = 9'd0;
             for (b = 0; b < 512; b = b + 1) begin
-                e_sd_buff_addr = b[8:0];
-                @(posedge clk_mach);
-                if (gaps && (b % 97) == 3) begin
-                    repeat (3) @(posedge clk_mach);   // gap: WR low
+                t = 0;
+                while (!(e_sd_ack && e_sd_buff_wr)) begin
+                    @(posedge clk_mach);
+                    if (t > 100) begin
+                        $display("FAIL T?: byte %0d (lba=%0d) strobe timeout", b, lba);
+                        nfail = nfail + 1;
+                        return;
+                    end
+                    t = t + 1;
                 end
-                e_sd_buff_wr = 1'b1;
-                @(posedge clk_mach);
-                got = e_sd_buff_dout;
-                e_sd_buff_wr = 1'b0;
+                got       = e_sd_buff_dout;
+                if (e_sd_buff_addr !== want_addr) begin
+                    $display("FAIL T?: addr not sequential at byte %0d (lba=%0d): got=%0d want=%0d",
+                             b, lba, e_sd_buff_addr, want_addr);
+                    nfail = nfail + 1;
+                end
                 if (got !== exp_abspath(lba*512 + b)) begin
                     $display("FAIL T?: byte %0d (lba=%0d) got=%02x want=%02x",
                              b, lba, got, exp_abspath(lba*512 + b));
                     nfail = nfail + 1;
                 end
+                want_addr = want_addr + 9'd1;
+                // advance past this strobe cycle so the next wait sees the
+                // NEXT byte's strobe (values visible after @(posedge) are
+                // the ones stable during the just-ended cycle).
+                @(posedge clk_mach);
             end
 
-            // byte 511 sampled with ACK high (checked implicitly: ACK was
-            // high throughout the walk). Wait for ACK to fall (later edge).
-            @(posedge clk_mach);
+            // byte 511 was strobed with ACK high (checked above: the
+            // consume loop required sd_ack on every strobe). Wait for
+            // the ACK fall (transfer complete) on a later edge.
+            t = 0;
             while (e_sd_ack) begin
                 @(posedge clk_mach);
-                if (timeouts > 200) begin
+                if (t > 200) begin
                     $display("FAIL T?: ACK did not fall after byte 511 (lba=%0d)", lba);
                     nfail = nfail + 1;
                     break;
                 end
-                timeouts = timeouts + 1;
+                t = t + 1;
             end
-            timeouts = 0;
             e_sd_rd = 1'b0;
         end
     endtask
@@ -354,9 +380,8 @@ module tb_woz_transport;
     initial begin
         // ---- init ----
         e_sd_rd = 1'b0; e_sd_wr = 1'b0; e_sd_lba = 32'd0;
-        e_sd_buff_addr = 9'd0; e_sd_buff_wr = 1'b0;
         e_drive_active = 1'b0; e_fault_clr = 1'b0;
-        st_go = 1'b0; st_wi = 8'd0;
+        st_go = 1'b0; st_wi = 9'd0;
         vr_req = 1'b0; vr_addr = 24'd0;
         img_gen_tb = 8'd0;
 
@@ -378,16 +403,17 @@ module tb_woz_transport;
         repeat (4) @(posedge clk_mach);
 
         // T1: read sector 0 (512 bytes)
-        engine_read_sector(16'd0, 1'b0);
+        engine_read_sector(16'd0);
         $display("OK  T1: sector 0 read (512 bytes) at %0t", $time);
 
         // T2: read tail sector 3 (464 real + 48 pad)
-        engine_read_sector(16'd3, 1'b0);
+        engine_read_sector(16'd3);
         $display("OK  T2: tail sector 3 (464+48 pad) at %0t", $time);
 
-        // T3: read sector 1 with gaps
-        engine_read_sector(16'd1, 1'b1);
-        $display("OK  T3: sector 1 with gaps at %0t", $time);
+        // T3: back-to-back sectors (one outstanding at a time)
+        engine_read_sector(16'd0);
+        engine_read_sector(16'd1);
+        $display("OK  T3: back-to-back sectors 0,1 at %0t", $time);
 
         // T4: forced-write fault
         e_sd_rd = 1'b1; e_sd_lba = 32'd0;
@@ -416,7 +442,7 @@ module tb_woz_transport;
             $display("FAIL T4: wr_fault not cleared by fault_clr");
             nfail = nfail + 1;
         end
-        engine_read_sector(16'd2, 1'b0);
+        engine_read_sector(16'd2);
         $display("OK  T4: service recovered, sector 2 read at %0t", $time);
 
         // T5: OOR LBA (high 16 bits set)
@@ -476,7 +502,7 @@ module tb_woz_transport;
 
     // watchdog
     initial begin
-        #20_000_000;
+        #40_000_000;
         $display("FAIL: watchdog timeout at %0t", $time);
         $fatal(1);
     end

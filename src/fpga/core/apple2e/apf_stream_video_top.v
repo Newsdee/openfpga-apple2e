@@ -622,7 +622,7 @@ apple2 d1 (
     .reset(machine_reset), .cpu(1'b1),
     .STALL(1'b0),
     .ADDR(m_addr), .ram_addr(m_ram_addr), .D(m_ram_di), .ram_do(m_ram_do),
-    .aux(m_ram_aux), .PD(8'h00), .CPU_WE(),
+    .aux(m_ram_aux), .PD(m_pd_mux), .CPU_WE(m_cpu_we),
     .IRQ_n(1'b1), .NMI_n(1'b1), .ram_we(m_ram_we),
     .VIDEO(m_video), .COLOR_LINE(m_col_line), .RUN_FILL_OK(m_run_fill_ok),
     .TEXT_MODE(m_text_mode), .EARLY_VIDEO(m_early_video), .HGR_MODE(m_hgr_mode),
@@ -781,6 +781,7 @@ wire        stor_timeout_m, stor_ovf_m;
 wire        stor_res_valid_m;
 wire [1:0]  stor_res_code_m, stor_res_fail_m;
 wire [31:0] stor_res_crc_m, stor_res_nbytes_m;
+wire        stor_new_load_m;   // proactive unmount pulse (0082 generation)
 // debug counters to the overlay (machine domain)
 wire [47:0] stor_dbg_rc_m;
 synch_3 #(.WIDTH(48)) s_dbg_rc({stor_received, stor_committed},
@@ -788,6 +789,12 @@ synch_3 #(.WIDTH(48)) s_dbg_rc({stor_received, stor_committed},
 // furthest storage stage (0..6) to the overlay marker (machine domain;
 // sdram_storage syncs 74.25 -> machine internally, like res_*_m)
 wire [2:0] stor_stage_m;
+// M1 sector service (machine domain; Unit-3 transport <-> Unit-2 fetcher)
+wire        stor_fetch_req, stor_fetch_busy, stor_sector_ready;
+wire [15:0] stor_fetch_lba;
+wire [8:0]  stor_sector_byte_addr;
+wire [7:0]  stor_sector_byte_data;
+wire        stor_sector_done, stor_fetch_fault;
 
 // 0xF9xxxxxx diagnostics routing (config writes + debug reads)
 wire f9_wr = bridge_wr && (bridge_addr[31:16] == 16'hF900);
@@ -834,7 +841,16 @@ sdram_storage stor (
     .res_fail_m      ( stor_res_fail_m ),
     .res_crc_m       ( stor_res_crc_m ),
     .res_nbytes_m    ( stor_res_nbytes_m ),
+    .new_load_m      ( stor_new_load_m ),
     .stage_m         ( stor_stage_m ),
+    .fetch_req       ( stor_fetch_req ),
+    .fetch_lba       ( stor_fetch_lba ),
+    .fetch_busy      ( stor_fetch_busy ),
+    .sector_ready    ( stor_sector_ready ),
+    .sector_byte_addr( stor_sector_byte_addr ),
+    .sector_byte_data( stor_sector_byte_data ),
+    .sector_done     ( stor_sector_done ),
+    .fetch_fault     ( stor_fetch_fault ),
     .ctrl_clk        ( sdram_ctrl_clk ),
     .chip_clk        ( sdram_chip_clk ),
     .clk_90          ( sdram_chip_clk_90 ),
@@ -847,6 +863,114 @@ sdram_storage stor (
     .dram_ras_n      ( dram_ras_n ),
     .dram_cas_n      ( dram_cas_n ),
     .dram_we_n       ( dram_we_n )
+);
+
+// ---- Floppy M1: WOZ floppy machine (engine + transport + mount ctl) ----
+// The byte-identical MiSTer WOZ engine (src/fpga/core/woz/, 6 files) runs
+// in the 14.318 MHz machine domain. Single drive: drive 0 is served by the
+// M0 SDRAM image through the Unit-3 transport; drive 1 is inactive
+// (IMG_MOUNTED1=0, SD_ACK1=0, D2_WP=1). Write protection is hardwired on
+// (D1_WP=D2_WP=1: the parser ignores IMG_READONLY; WP reaches the flux
+// drive's write gate - expert correction C3).
+//
+//   WOZ engine <--> sdram_woz_transport (Unit 3) <--> sdram_sector_fetch
+//   (14.318 MHz, per-byte 512 B block)      (Unit-2 frozen window)
+//   woz_mount_ctl (Unit 4) turns the M0 coordinator result into
+//   IMG_MOUNTED/IMG_SIZE (mount = rising edge; eject = zero-size event).
+wire        m_cpu_we;    // apple2 CPU_WE (was unconnected)
+wire [7:0]  woz_dout;    // engine D_OUT (ROM on IO_SELECT, data reg elsewhere)
+wire        woz_sd_rd, woz_sd_wr;
+wire [31:0] woz_sd_lba;
+wire        woz_sd_ack;
+wire [8:0]  woz_sd_buff_addr;
+wire [7:0]  woz_sd_buff_dout, woz_sd_buff_din;
+wire        woz_sd_buff_wr;
+wire        woz_wr_fault, woz_oor_fault, woz_transport_fault;
+wire        mc_img_mounted;
+wire [63:0] mc_img_size;
+wire [2:0]  mc_state;
+// transport fault clear: a fresh mount starts clean (engine re-parse)
+reg         mc_mounted_d;
+always @(posedge clk_core_14318)
+    mc_mounted_d <= mc_img_mounted;
+wire        mc_mount_rise = mc_img_mounted && !mc_mounted_d;
+// slot-qualified PD mux (C9): the disk slot is $C0E0-$C0EF (device select)
+// plus the Disk II ROM at $C600-$C6FF (IO select); D_OUT is already gated
+// internally (rom vs data register) - the mux only selects the slot.
+wire [7:0]  m_pd_mux = (m_dev_sel | m_io_sel) ? woz_dout : 8'h00;
+
+disk_ii_woz woz (
+    .CLK_14M         ( clk_core_14318 ),
+    .RESET           ( machine_reset ),
+    .DD_RESET        ( machine_reset ),
+    .PHASE_ZERO      ( m_pz ),
+    .IO_SELECT       ( m_io_sel ),
+    .DEVICE_SELECT   ( m_dev_sel ),
+    .WE              ( m_cpu_we ),
+    .A               ( m_addr ),
+    .D_IN            ( m_ram_di ),
+    .D_OUT           ( woz_dout ),
+    .D1_ACTIVE       ( ), .D2_ACTIVE ( ),
+    .D1_MOTOR_ON     ( ), .D2_MOTOR_ON ( ),
+    .D1_STEP         ( ), .D2_STEP ( ),
+    .D1_TRACK0       ( ), .D2_TRACK0 ( ),
+    .D1_IO           ( ), .D2_IO ( ),
+    .D1_WP           ( 1'b1 ), .D2_WP ( 1'b1 ),
+    .SD_LBA0         ( woz_sd_lba ),
+    .SD_RD0          ( woz_sd_rd ),
+    .SD_WR0          ( woz_sd_wr ),
+    .SD_ACK0         ( woz_sd_ack ),
+    .SD_BUFF_DIN0    ( woz_sd_buff_din ),
+    .SD_LBA1         ( ), .SD_RD1 ( ), .SD_WR1 ( ),
+    .SD_ACK1         ( 1'b0 ),
+    .SD_BUFF_DIN1    ( ),
+    .SD_BUFF_ADDR    ( woz_sd_buff_addr ),
+    .SD_BUFF_DOUT    ( woz_sd_buff_dout ),
+    .SD_BUFF_WR      ( woz_sd_buff_wr ),
+    .IMG_MOUNTED0    ( mc_img_mounted ),
+    .IMG_MOUNTED1    ( 1'b0 ),
+    .IMG_READONLY    ( 1'b1 ),
+    .IMG_SIZE        ( mc_img_size )
+);
+
+sdram_woz_transport woz_tr (
+    .clk            ( clk_core_14318 ),
+    .rst_n          ( ~sdram_path_rst ),
+    .sd_rd          ( woz_sd_rd ),
+    .sd_lba         ( woz_sd_lba ),
+    .sd_ack         ( woz_sd_ack ),
+    .sd_wr          ( woz_sd_wr ),
+    .sd_buff_addr   ( woz_sd_buff_addr ),
+    .sd_buff_din    ( woz_sd_buff_din ),
+    .sd_buff_wr     ( woz_sd_buff_wr ),
+    .sd_buff_dout   ( woz_sd_buff_dout ),
+    .fetch_req      ( stor_fetch_req ),
+    .fetch_lba      ( stor_fetch_lba ),
+    .fetch_busy     ( stor_fetch_busy ),
+    .sector_ready   ( stor_sector_ready ),
+    .sector_byte_data( stor_sector_byte_data ),
+    .fetch_fault    ( stor_fetch_fault ),
+    .sector_byte_addr( stor_sector_byte_addr ),
+    .sector_done    ( stor_sector_done ),
+    .drive_active   ( mc_img_mounted ),
+    .fault_clr      ( mc_mount_rise ),
+    .wr_fault       ( woz_wr_fault ),
+    .oor_fault      ( woz_oor_fault ),
+    .transport_fault( woz_transport_fault )
+);
+
+woz_mount_ctl woz_mc (
+    .clk             ( clk_core_14318 ),
+    .por_n           ( ~sdram_path_rst ),
+    .res_valid_m     ( stor_res_valid_m ),
+    .res_code_m      ( stor_res_code_m ),
+    .res_nbytes_m    ( stor_res_nbytes_m ),
+    .new_load_m      ( stor_new_load_m ),
+    .transport_fault ( woz_transport_fault ),
+    .img_mounted     ( mc_img_mounted ),
+    .img_size        ( mc_img_size ),
+    .img_readonly    ( ),
+    .mount_state_m   ( mc_state )
 );
 
 // ---- on-screen diagnostic (temporary, M0 only) ----

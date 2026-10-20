@@ -30,7 +30,7 @@
 //   empty = rd_gray == wr_gray_s
 //
 `timescale 1ns/10ps
-module slot_fifo #(parameter DEPTH = 64) (
+module slot_fifo #(parameter DEPTH = 256) (
     // ---- write side (clk_74a) ----
     input  wire             wr_clk,
     input  wire             rst,          // async reset, write domain
@@ -40,7 +40,7 @@ module slot_fifo #(parameter DEPTH = 64) (
     input  wire             overflow_clr,   // level: clear sticky flag (new load generation)
     output wire             full,
     output reg              overflow,     // sticky: wr_en asserted while full
-    output reg  [6:0]       high_water,   // max occupancy seen (0..64)
+    output reg  [8:0]       high_water,   // max occupancy seen (0..256)
 
     // ---- read side (sdram_ctrl_clk) ----
     input  wire             rd_clk,
@@ -51,7 +51,9 @@ module slot_fifo #(parameter DEPTH = 64) (
     output reg  [31:0]      rd_data
 );
 
-    localparam AW = 6;                    // log2(DEPTH)
+    localparam AW = (DEPTH==256) ? 8 : (DEPTH==128) ? 7 : (DEPTH==512) ? 9 :
+                    (DEPTH==32)  ? 5 : (DEPTH==16)  ? 4 : 6;
+    // log2(DEPTH); DEPTH must be a power of two (64 is the default)
     localparam PW = AW + 1;               // pointer width (wrap bit)
 
     // ---- storage: one write / one read port (inferred dual-port M10K) ----
@@ -86,7 +88,7 @@ module slot_fifo #(parameter DEPTH = 64) (
     always @(posedge wr_clk or posedge rst) begin
         if (rst) begin
             wr_ptr <= {PW{1'b0}};
-            high_water <= 7'd0;
+            high_water <= 9'd0;
         end else if (wr_en && !full) begin
             wr_ptr <= wr_ptr_next;
             // high-water: occupancy as seen at write acceptance

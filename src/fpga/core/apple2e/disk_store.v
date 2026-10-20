@@ -110,24 +110,29 @@ module disk_store #(parameter TIMEOUT_CYCLES = 4096) (
                         word_addr      <= fifo_rd_addr;
                         word_data      <= fifo_rd_data;
                         words_received <= words_received + 24'd1;
-                        if (!word_busy) begin
-                            word_wr <= 1'b1;   // 1-cycle request pulse
-                            st      <= ST_WAIT_DONE;
-                        end else begin
-                            st <= ST_READY;    // record latched; wait for port
-                        end
+                        word_wr <= 1'b1;   // hold the request (M1: level)
+                        st      <= (word_busy) ? ST_READY : ST_WAIT_DONE;
                     end
                 end
 
                 ST_READY: begin
+                    word_wr <= 1'b1;       // hold until the op starts
                     if (!word_busy) begin
-                        word_wr <= 1'b1;
                         timeout_cnt <= 16'd0;
                         st      <= ST_WAIT_DONE;
                     end
                 end
 
                 ST_WAIT_DONE: begin
+                    // M1: the owner masks this write while a read client is
+                    // armed (port read-priority), so the request is HELD as
+                    // a level until the port actually starts it (word_busy
+                    // rising), then dropped. A one-shot pulse could be
+                    // masked without the port ever running the op, and the
+                    // store would wait forever for a done that never comes
+                    // (measured deadlock: reload while the old generation's
+                    // fetch tail is still arming reads).
+                    word_wr <= word_busy ? 1'b0 : 1'b1;
                     if (word_done) begin
                         words_committed <= words_committed + 24'd1;
                         timeout_cnt     <= 16'd0;

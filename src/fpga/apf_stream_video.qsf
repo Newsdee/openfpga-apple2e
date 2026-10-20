@@ -734,6 +734,12 @@ set_global_assignment -name VERILOG_FILE core/apple2e/sdram_word_owner.v
 set_global_assignment -name VERILOG_FILE core/apple2e/sdram_sector_fetch.v
 set_global_assignment -name VERILOG_FILE core/apple2e/sdram_woz_transport.v
 set_global_assignment -name VERILOG_FILE core/apple2e/woz_mount_ctl.v
+set_global_assignment -name VERILOG_FILE core/woz/disk_ii_rom.v
+set_global_assignment -name VERILOG_FILE core/woz/disk_ii_woz.sv
+set_global_assignment -name VERILOG_FILE core/woz/flux_drive.v
+set_global_assignment -name VERILOG_FILE core/woz/woz_bram.sv
+set_global_assignment -name VERILOG_FILE core/woz/woz_cell525.sv
+set_global_assignment -name VERILOG_FILE core/woz/woz_floppy_controller.sv
 set_global_assignment -name VERILOG_FILE core/apple2e/sdram_storage.v
 set_global_assignment -name VERILOG_FILE core/apple2e/apple2e_sdram_pll.v
 set_global_assignment -name VERILOG_FILE ../../machine/apple2.v
