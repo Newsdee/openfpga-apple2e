@@ -10,7 +10,7 @@
                 "extensions": [ "woz" ],
                 "address": "0x00000000",
                 "size_maximum": 4194304,
-                "parameters": 1
+                "parameters": 73
             }
         ]
     }

@@ -194,7 +194,7 @@ failure reporting. No scope additions.
   notes recorded in the commit (Verilator 5.050 drops transitions for
   2-bit case items against a wider register; state localparams widened to
   4 bits; 1-bit `word_q` port truncation fixed).
-- **Unit 3 (machine-domain emitter): done this session** —
+- **Unit 3 (machine-domain emitter): done** (commit `2bc283c`) —
   `sdram_woz_transport.v` (14.318 MHz): latches LBA while ACK low, raises
   ACK before byte 0, mirrors `sd_buff_addr` into the Unit-2 frozen-window
   readout (zero-latency byte mirror), holds ACK through byte 511 sampling
@@ -204,7 +204,18 @@ failure reporting. No scope additions.
   `oor_fault`, no ACK; `drive_active` low = quiet. `tb_woz_transport.sv`
   T0-T6 ALL PASS (512-byte verified reads incl. tail sector 464+48 pad,
   gaps, write-fault + recovery, OOR, inactive drive).
-- Next: Unit 4 (mount/lifecycle controller + `data.json` 0x49 + boot
-  policy), Unit 5 (byte-identical engine import + top wiring + integration
+- **Unit 4 (mount/lifecycle controller): done this session** —
+  `woz_mount_ctl.v` (14.318 MHz, power-on-reset only via `~sdram_path_rst`):
+  OK result -> mount (IMG_MOUNTED rise with IMG_SIZE); new generation or
+  transport fault -> explicit zero-size eject (fall -> rise(0) -> fall),
+  which is what clears the engine's HELD mount level (verified against
+  disk_ii_woz.sv:205-232 + woz_floppy_controller.sv:325-331); remount with
+  the new size forces a re-parse; FAIL/NOFILE stay unmounted; levels held
+  across machine reset (engine self re-pulses via its own
+  media_present/DD_RESET dance). `tb_woz_mount_ctl.sv` (DUT + cycle-
+  accurate engine drive-level mount model) T1-T9 ALL PASS. `data.json`
+  disk slot `parameters` 1 -> 73 (0x49: reloadable + read-only + Reset
+  Enter/Exit around reload, per C12). QSF registered.
+- Next: Unit 5 (byte-identical engine import + top wiring + integration
   TB), Unit 6 (full-machine CATALOG TB), Unit 7 (regression + owner
   compile + hardware).
