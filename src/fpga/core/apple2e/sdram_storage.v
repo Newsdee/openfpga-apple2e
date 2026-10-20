@@ -67,6 +67,18 @@ module sdram_storage (
     output wire [31:0] n_bytes_m,           // config in machine domain
     output wire        store_timeout_m,     // for the on-screen overlay
     output wire        fifo_overflow_m,     // for the on-screen overlay
+
+    // ---- M1 sector service (WOZ engine transport) ----
+    // Machine-domain ports for the Unit-3 emitter; the top wires them
+    // to the WOZ engine's block transport (Unit 5).
+    input  wire        fetch_req,
+    input  wire [15:0] fetch_lba,           // 512-byte sector number
+    output wire        fetch_busy,
+    output wire        sector_ready,
+    input  wire [8:0]  sector_byte_addr,
+    output wire [7:0]  sector_byte_data,
+    input  wire        sector_done,
+    output wire        fetch_fault,
     // ---- load/verify coordinator result (machine domain, for overlay) ----
     output wire        res_valid_m,         // result latched (rising edge -> show)
     output wire [1:0]  res_code_m,          // 0=OK, 1=FAIL, 2=NOFILE
@@ -124,7 +136,7 @@ module sdram_storage (
     // store owner (ctrl domain)
     // ==================================================================
     wire        sdram_init_done;   // io_sdram_pocket.boot_done
-    wire        sw_word_wr, sw_word_busy, sw_word_done, sw_word_rd_valid;
+    wire        sw_word_wr, sw_word_done;
     wire [23:0] sw_word_addr;
     wire [31:0] sw_word_data;
     wire        store_busy_i, load_drained_i, store_timeout_i;
@@ -141,8 +153,8 @@ module sdram_storage (
         .word_wr          ( sw_word_wr ),
         .word_addr        ( sw_word_addr ),
         .word_data        ( sw_word_data ),
-        .word_busy        ( sw_word_busy ),
-        .word_done        ( sw_word_done ),
+        .word_busy        ( ov_st_busy ),
+        .word_done        ( ov_st_done ),
         .init_done        ( sdram_init_done ),
         .store_busy       ( store_busy_i ),
         .load_drained     ( load_drained_i ),
@@ -166,38 +178,118 @@ module sdram_storage (
     assign to_clr_c = toclr_s[1];
 
     // ==================================================================
-    // word-port read shim (verifier <-> ctrl domain, levels only)
+    // word-port read shim (verifier <-> owner, levels only)
     // ==================================================================
     wire        v_req;
     wire [23:0] v_req_addr;
 
     reg  [1:0] vreq_s;
     reg  [23:0] var_s;
-    reg         req_kind;   // 1 = read request (verifier) armed, 0 = write (store)
     always @(posedge ctrl_clk) begin
         vreq_s <= {vreq_s[0], v_req};
         var_s  <= v_req_addr;     // stable while v_req is high
-        if (sw_word_wr)
-            req_kind <= 1'b0;                       // write request armed
-        else if (!vreq_s[1] && vreq_s[0])           // rising edge: s0 leads s1
-            req_kind <= 1'b1;                       // read request armed
     end
-    // The io_sdram word port has ONE address input shared by read and
-    // write requests (M0 serializes the two: load phase, then verify
-    // phase - M1's fetcher keeps the same serialization under
-    // arbitration). Route the armed request's address:
-    wire [23:0] wp_addr_sel = req_kind ? var_s : sw_word_addr;
 
-    reg rd_done_lvl;   // set on read complete, held until req deassert seen
-    always @(posedge ctrl_clk)
-        rd_done_lvl <= sw_word_rd_valid ? 1'b1 : (rd_done_lvl & vreq_s[1]);
+    // The M0 req_kind address mux is replaced by the explicit word-port
+    // OWNER: it latches each accepted request's {client, address, length,
+    // generation} and routes read data only to the latched owner (expert
+    // M1 review: the convention serializer was not a general arbiter).
+    // M1 serialization: load (store) -> verify -> mounted fetch.
+    wire        ov_st_busy, ov_st_done, ov_vr_done, ov_fc_active, ov_fc_done;
+    wire        ov_word_rd, ov_word_wr, ov_word_busy, ov_word_done, ov_word_rd_valid;
+    wire [23:0] ov_word_addr, ov_fc_addr;
+    wire [31:0] ov_word_data, ov_word_q, ov_vr_data, ov_fc_data;
+    wire [7:0]  ov_fc_gen, ov_fc_done_len, ov_fc_done_gen;
+    wire        ov_fc_word_valid;
+    wire        fc_req_w;
+    wire [23:0] fc_addr_w;
+    wire [7:0]  fc_gen_w;
+    // one read client at a time: the fetcher level is masked while the
+    // verifier level is high (the M0 invariant that kept the port's
+    // single queue unambiguous, now explicit)
+    wire fc_req_eff = fc_req_w && !vreq_s[1];
 
-    // ctrl -> machine: done level (3FF) + data (2FF, stable during done-high)
+    // image generation + live size: 74.25 -> ctrl (133.12) crossings.
+    // A torn multi-bit sync only ever looks like a different generation
+    // (worst case: one in-flight sector is discarded a cycle early - the
+    // safe direction).
+    reg [7:0]  gen_74;
+    always @(posedge clk_74a)
+        if (ds0082)
+            gen_74 <= gen_74 + 8'd1;   // new slot load accepted
+    reg [31:0] ldsize_c1, ldsize_c2;
+    reg [7:0]  gen_c1, gen_c2;
+    always @(posedge ctrl_clk) begin
+        ldsize_c1 <= ld_size;
+        ldsize_c2 <= ldsize_c1;
+        gen_c1    <= gen_74;
+        gen_c2    <= gen_c1;
+    end
+
+    sdram_word_owner owner0 (
+        .clk        ( ctrl_clk ),
+        .rst_n      ( ~sdram_path_rst ),
+        .word_rd    ( ov_word_rd ),
+        .word_wr    ( ov_word_wr ),
+        .word_addr  ( ov_word_addr ),
+        .word_data  ( ov_word_data ),
+        .word_q     ( ov_word_q ),
+        .word_busy  ( ov_word_busy ),
+        .word_done  ( ov_word_done ),
+        .word_rd_valid( ov_word_rd_valid ),
+        .init_done  ( sdram_init_done ),
+        .st_req     ( sw_word_wr ),
+        .st_addr    ( sw_word_addr ),
+        .st_data    ( sw_word_data ),
+        .st_busy    ( ov_st_busy ),
+        .st_done    ( ov_st_done ),
+        .vr_req     ( vreq_s[1] ),
+        .vr_addr    ( var_s ),
+        .vr_done    ( ov_vr_done ),
+        .vr_data    ( ov_vr_data ),
+        .fc_req     ( fc_req_eff ),
+        .fc_addr    ( fc_addr_w ),
+        .fc_gen     ( fc_gen_w ),
+        .fc_active  ( ov_fc_active ),
+        .fc_word_valid( ov_fc_word_valid ),
+        .fc_done    ( ov_fc_done ),
+        .fc_data    ( ov_fc_data ),
+        .fc_done_len( ov_fc_done_len ),
+        .fc_done_gen( ov_fc_done_gen )
+    );
+
+    sdram_sector_fetch fetch0 (
+        .clk_mach      ( clk_mach ),
+        .rst_n_mach    ( rst_n_mach ),
+        .clk_ctrl      ( ctrl_clk ),
+        .rst_n_ctrl    ( ~sdram_path_rst ),
+        .fetch_req     ( fetch_req ),
+        .fetch_lba     ( fetch_lba ),
+        .fetch_busy    ( fetch_busy ),
+        .sector_ready  ( sector_ready ),
+        .sector_byte_addr ( sector_byte_addr ),
+        .sector_byte_data ( sector_byte_data ),
+        .sector_done   ( sector_done ),
+        .fetch_fault   ( fetch_fault ),
+        .init_done     ( sdram_init_done ),
+        .img_nbytes    ( ldsize_c2 ),
+        .img_gen       ( gen_c2 ),
+        .fc_req        ( fc_req_w ),
+        .fc_addr       ( fc_addr_w ),
+        .fc_gen        ( fc_gen_w ),
+        .fc_active     ( ov_fc_active ),
+        .fc_word_valid ( ov_fc_word_valid ),
+        .fc_done       ( ov_fc_done ),
+        .fc_data       ( ov_fc_data ),
+        .fc_done_gen   ( ov_fc_done_gen )
+    );
+
+    // owner-level read completion + data -> machine (3FF + 2FF, as M0)
     reg  [2:0]  vdone_sync;
     reg  [31:0] vdata_s1, vdata_s2;
     always @(posedge clk_mach) begin
-        vdone_sync <= {vdone_sync[1:0], rd_done_lvl};
-        vdata_s1   <= sw_word_q;
+        vdone_sync <= {vdone_sync[1:0], ov_vr_done};
+        vdata_s1   <= ov_vr_data;
         vdata_s2   <= vdata_s1;
     end
     wire v_rd_done    = vdone_sync[1];
@@ -513,7 +605,7 @@ co_st      <= CO_RES;
 
     // ==================================================================
     // SDRAM controller (Pocket-local: +word_done/word_rd_valid/boot_done)
-    // word port: write side = disk_store; read side = verifier (shim above)
+    // Word port owned by sdram_word_owner (store/verifier/fetch clients).
     // ==================================================================
     wire [31:0] sw_word_q;
 
@@ -533,7 +625,7 @@ co_st      <= CO_RES;
         .phy_dq           ( dram_dq ),
         .phy_dqm          ( dram_dqm ),
 
-        // burst ports unused in M0 (word port serves host load + verifier)
+        // burst ports unused (word port serves host load + verifier + M1 fetch)
         .burst_rd         ( 1'b0 ),
         .burst_addr       ( 25'd0 ),
         .burst_len        ( 11'd0 ),
@@ -549,14 +641,14 @@ co_st      <= CO_RES;
         .burstwr_data     ( 16'd0 ),
         .burstwr_done     ( 1'b0 ),
 
-        .word_rd          ( vreq_s[1] ),
-        .word_wr          ( sw_word_wr ),
-        .word_addr        ( wp_addr_sel ),
-        .word_data        ( sw_word_data ),
-        .word_q           ( sw_word_q ),
-        .word_busy        ( sw_word_busy ),
-        .word_done        ( sw_word_done ),
-        .word_rd_valid    ( sw_word_rd_valid ),
+        .word_rd          ( ov_word_rd ),
+        .word_wr          ( ov_word_wr ),
+        .word_addr        ( ov_word_addr ),
+        .word_data        ( ov_word_data ),
+        .word_q           ( ov_word_q ),
+        .word_busy        ( ov_word_busy ),
+        .word_done        ( ov_word_done ),
+        .word_rd_valid    ( ov_word_rd_valid ),
         .boot_done        ( sdram_init_done )
     );
 
