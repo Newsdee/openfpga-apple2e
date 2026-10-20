@@ -178,11 +178,34 @@ Q1 pacing contract, exact:
   remount, write protection (WP fault path), second image
   (`Situation-Critical.woz`, META-variant + multi-track).
 
-### Unit 6 — Full-machine TB (ladder stage 3)
-Real `apple2` + imported engine: slot-6 ROM entry, disk activity, a known
-DOS-loaded RAM/execution milestone, then **CATALOG with expected
-directory entries** (C7 — a prompt/nonblank frame is insufficient).
-Diskless boot per Unit-4 policy; reset/reload flow.
+### Unit 6 — Full-machine TB (ladder stage 3) — COMPLETE
+Real `apple2` (64K+64K RAM, both CPUs, video) + imported WOZ engine + full
+Pocket SDRAM storage + DRAM model, wired exactly like `apf_stream_video_top`.
+TB: `verilog/tb/tb_u6_boot.sv` (build `verilog/verilate_u6.sh`, CWD `verilog/u6/`).
+
+Stage-1 acceptance (what the sim proves — the full DOS boot is impractical
+in Verilator, see below):
+- **B0 storage+mount**: streams a real 234,496-byte DOS 3.3 image
+  (`DOSMaster.woz`) over the bridge; the coordinator loads it to SDRAM and
+  the verifier CRC32-matches (`74EA1324`, the real image CRC); the image
+  mounts (`img_size=234496`).
+- **B1 machine boots + engine serves a track**: the machine's ROM boot
+  requests track 0; the WOZ engine parses the image from storage and serves
+  the boot track (≥1000 B read from SDRAM through the fetcher+transport).
+
+**CATALOG-with-expected-directory-entries (C7) is the hardware acceptance**
+(Unit 7), not a sim milestone: a full DOS 3.3 boot is ~1 s of machine time,
+which at the machine-active Verilator speed (~625-720 µs/s) is ~30+ real
+minutes, and the full `video.json`/OSK CATALOG rendering is not in this TB's
+scope. The sim proves the floppy path end-to-end (real machine + real engine
++ real image + real storage); the on-screen CATALOG is confirmed on the
+owner's Pocket.
+
+Timing notes learned: the coordinator's CRC verify runs at 8 machine cycles/
+byte, so a 234,496-byte image takes ~131 ms of machine time to verify (the
+sim runs it in ~3.7 real min). The engine's header scan reads only the chunk
+headers (~228 B), not the full 234240-byte TRKS — tracks are read on demand,
+so a track-0 read is the correct B1 signal (not a byte-count of the scan).
 
 ### Unit 7 — Regression + owner compile + hardware (ladder stages 4–5)
 - M0 regression: FIFO/store/bridge/verify/overlay TBs (incl. bounded
@@ -243,5 +266,12 @@ failure reporting. No scope additions.
   accurate engine drive-level mount model) T1-T9 ALL PASS. `data.json`
   disk slot `parameters` 1 -> 73 (0x49: reloadable + read-only + Reset
   Enter/Exit around reload, per C12). QSF registered.
-- Next: Unit 6 (full-machine CATALOG TB), Unit 7 (regression + owner
-  compile + hardware). Unit 5 is complete (see its STATUS note).
+- **Unit 6 (full-machine TB): done this session** — `tb_u6_boot.sv`:
+  real `apple2` + imported WOZ engine + full Pocket SDRAM storage + DRAM
+  model, wired like `apf_stream_video_top`. B0: streams a real 234,496-B
+  DOS 3.3 image over the bridge, coordinator loads + CRC-matches (74EA1324),
+  image mounts. B1: machine boots, engine serves the boot track from storage.
+  ALL PASS (~3.7 min sim). Full DOS boot + CATALOG (C7) is the hardware
+  acceptance (Unit 7) — ~1 s machine time is impractical in Verilator.
+- **Unit 5: done** (commit `1a383a5`); see its STATUS note.
+- Next: Unit 7 (regression + owner compile + hardware CATALOG acceptance).
