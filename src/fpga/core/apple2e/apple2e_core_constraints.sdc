@@ -21,4 +21,25 @@ set_clock_groups -asynchronous \
  -group { ic|mp1|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk } \
  -group { ic|mp1|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk } \
  -group { ic|mp1|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER|divclk } \
- -group { ic|mp1|altera_pll_i|general[3].gpll~PLL_OUTPUT_COUNTER|divclk }
+ -group { ic|mp1|altera_pll_i|general[3].gpll~PLL_OUTPUT_COUNTER|divclk } \
+ -group { ic|mp2|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk } \
+ -group { ic|mp2|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk }
+
+#
+# M0 SDRAM image-storage memory bus (mirrors refs/basicassets core_constraints.sdc):
+#   chip clock     = mp2 general[1] (133.12 MHz, 180 deg vs controller)
+#   controller clk = mp2 general[0] (133.12 MHz)
+# Input delay (chip -> core, DQ) and output delay (core -> chip, command
+# pins) use the reference's measured windows; the controller's read capture
+# is a 2-cycle (multicycle) path from the chip clock domain.
+#
+set dram_chip_clk "ic|mp2|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk"
+set dram_cont_clk "ic|mp2|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk"
+
+set_input_delay -clock $dram_chip_clk -reference_pin [get_ports {dram_clk}] -max 5.9 [get_ports dram_dq[*]]
+set_input_delay -clock $dram_chip_clk -reference_pin [get_ports {dram_clk}] -min 0.9 [get_ports dram_dq[*]]
+
+set_output_delay -clock $dram_chip_clk -reference_pin [get_ports {dram_clk}] -max 2.0 [get_ports {dram_cke dram_a* dram_ba* dram_cas_n dram_ras_n dram_we_n}]
+set_output_delay -clock $dram_chip_clk -reference_pin [get_ports {dram_clk}] -min -1.0 [get_ports {dram_cke dram_a* dram_ba* dram_cas_n dram_ras_n dram_we_n}]
+
+set_multicycle_path -from $dram_chip_clk -to $dram_cont_clk -setup -end 2

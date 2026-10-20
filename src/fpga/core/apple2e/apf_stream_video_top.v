@@ -292,15 +292,7 @@ assign cram1_we_n = 1;
 assign cram1_ub_n = 1;
 assign cram1_lb_n = 1;
 
-assign dram_a = 'h0;
-assign dram_ba = 'h0;
-assign dram_dq = {16{1'bZ}};
-assign dram_dqm = 'h0;
-assign dram_clk = 'h0;
-assign dram_cke = 'h0;
-assign dram_ras_n = 'h1;
-assign dram_cas_n = 'h1;
-assign dram_we_n = 'h1;
+// dram_* pads: driven by the io_sdram instance (M0 image storage; see below).
 
 assign sram_a = 'h0;
 assign sram_dq = {16{1'bZ}};
@@ -331,6 +323,10 @@ always @(*) begin
     32'hF8xxxxxx: begin
         bridge_rd_data <= cmd_bridge_rd_data;
     end
+    32'hF9xxxxxx: begin
+        // M0 SDRAM storage diagnostics (see sdram_storage.v)
+        bridge_rd_data <= stor_diag_rd;
+    end
     endcase
 end
 
@@ -344,7 +340,9 @@ end
 // bridge host commands
 // synchronous to clk_74a
     wire            status_boot_done = pll_core_locked_s; 
-    wire            status_setup_done = pll_core_locked_s; // rising edge triggers a target command
+    // Host loads data slots only after SDRAM init (expert review: bounded,
+    // no-deadlock gate): machine PLL lock AND io_sdram boot complete.
+    wire            status_setup_done = pll_core_locked_s & stor_init_done;
     wire            status_running = reset_n; // we are running as soon as reset_n goes high
 
     wire            dataslot_requestread;
@@ -655,7 +653,7 @@ wire        apf_de, apf_vs, apf_hs, apf_skip;
 // brief (EXPERT_BRIEF_PHASE2_280_SHIFT) for its fix status.
 apf_stream_video #(.DEC2X(0)) apfv (
     .clk(clk_core_14318), .reset(machine_reset),
-    .rgb_in(osk_rgb24), .hbl(m_hbl), .vbl(m_vbl),
+    .rgb_in(ovl_rgb), .hbl(m_hbl), .vbl(m_vbl),
     .video_rgb(apf_rgb), .video_de(apf_de), .video_vs(apf_vs),
     .video_hs(apf_hs), .video_skip(apf_skip)
 );
@@ -742,6 +740,129 @@ apf_stream_proto_pll mp1 (
     .outclk_2       ( clk_core_3072 ),
 
     .locked         ( pll_core_locked )
+);
+
+// ---- Floppy M0: external image storage (SDRAM) ---------------------------
+// SDRAM image-storage path (M0 rework, Units 1-4) - see sdram_storage.v:
+//   host (74.25) --bridge word write--> slot_fifo --(CDC)--> disk_store
+//     --word port (133.12)--> io_sdram_pocket --> 64MiB DRAM
+//   disk_verifier (machine domain) reads the image back through the same
+//   word port (level handshakes; M0 protocol: load and verify phases never
+//   overlap - M1 adds the machine fetcher under arbitration).
+//   Machine reset does NOT reset this path: the resident image survives
+//   host resets (only core power, sdram_path_rst, resets it).
+wire        sdram_ctrl_clk;    // 133.12 MHz (io_sdram controller)
+wire        sdram_chip_clk;    // 133.12 MHz (SDRAM chip, 180 deg phase)
+wire        sdram_chip_clk_90; // 133.12 MHz (DDR capture, unused)
+wire        sdram_pll_locked;
+
+apple2e_sdram_pll mp2 (
+    .refclk   ( clk_74a ),
+    .rst      ( pll_rst_pulse ),
+    .outclk_0 ( sdram_ctrl_clk ),
+    .outclk_1 ( sdram_chip_clk ),
+    .outclk_2 ( sdram_chip_clk_90 ),
+    .locked   ( sdram_pll_locked )
+);
+
+// core-power reset for the storage path (74.25 domain; ~441 us at POR)
+wire sdram_path_rst = pll_rst_pulse;
+
+wire        stor_init_done, stor_load_drained, stor_busy, stor_timeout;
+wire [23:0] stor_received, stor_committed;
+wire        stor_ovf;
+wire [6:0]  stor_hw;
+wire [31:0] stor_diag_rd;
+wire        stor_vdone, stor_vok, stor_vstuck;
+wire [31:0] stor_crc, stor_first, stor_last, stor_nbytes_m;
+wire [15:0] stor_vread;
+wire        stor_timeout_m, stor_ovf_m;
+// load/verify coordinator result (machine domain, for the overlay)
+wire        stor_res_valid_m;
+wire [1:0]  stor_res_code_m, stor_res_fail_m;
+wire [31:0] stor_res_crc_m, stor_res_nbytes_m;
+// debug counters to the overlay (machine domain)
+wire [47:0] stor_dbg_rc_m;
+synch_3 #(.WIDTH(48)) s_dbg_rc({stor_received, stor_committed},
+                              stor_dbg_rc_m, clk_core_14318, , );
+// furthest storage stage (0..6) to the overlay marker (machine domain;
+// sdram_storage syncs 74.25 -> machine internally, like res_*_m)
+wire [2:0] stor_stage_m;
+
+// 0xF9xxxxxx diagnostics routing (config writes + debug reads)
+wire f9_wr = bridge_wr && (bridge_addr[31:16] == 16'hF900);
+wire f9_rd = bridge_rd && (bridge_addr[31:16] == 16'hF900);
+
+sdram_storage stor (
+    .clk_74a         ( clk_74a ),
+    .sdram_path_rst  ( sdram_path_rst ),
+    .bridge_wr       ( bridge_wr ),
+    .bridge_addr     ( bridge_addr ),
+    .bridge_wr_data  ( bridge_wr_data ),
+    .init_done       ( stor_init_done ),
+    .load_drained    ( stor_load_drained ),
+    .store_busy      ( stor_busy ),
+    .store_timeout   ( stor_timeout ),
+    .words_received  ( stor_received ),
+    .words_committed ( stor_committed ),
+    .fifo_overflow   ( stor_ovf ),
+    .fifo_high_water ( stor_hw ),
+    .diag_addr       ( bridge_addr[15:0] ),
+    .diag_rd         ( f9_rd ),
+    .diag_rd_data    ( stor_diag_rd ),
+    .diag_wr         ( f9_wr ),
+    .diag_wr_sel     ( bridge_addr[7:4] ),
+    .ds_requestwrite   ( dataslot_requestwrite ),
+    .ds_requestwrite_id( dataslot_requestwrite_id ),
+    .ds_requestwrite_size(dataslot_requestwrite_size),
+    .ds_allcomplete    ( dataslot_allcomplete ),
+    .timeout_override  ( 32'd0 ),          // fault-injection hook: disabled
+    .clk_mach        ( clk_core_14318 ),
+    .rst_n_mach      ( ~sdram_path_rst ),
+    .ver_done        ( stor_vdone ),
+    .ver_ok          ( stor_vok ),
+    .ver_stuck       ( stor_vstuck ),
+    .ver_crc32       ( stor_crc ),
+    .ver_first_word  ( stor_first ),
+    .ver_last_word   ( stor_last ),
+    .ver_words_readout( stor_vread ),
+    .n_bytes_m       ( stor_nbytes_m ),
+    .store_timeout_m ( stor_timeout_m ),
+    .fifo_overflow_m ( stor_ovf_m ),
+    .res_valid_m     ( stor_res_valid_m ),
+    .res_code_m      ( stor_res_code_m ),
+    .res_fail_m      ( stor_res_fail_m ),
+    .res_crc_m       ( stor_res_crc_m ),
+    .res_nbytes_m    ( stor_res_nbytes_m ),
+    .stage_m         ( stor_stage_m ),
+    .ctrl_clk        ( sdram_ctrl_clk ),
+    .chip_clk        ( sdram_chip_clk ),
+    .clk_90          ( sdram_chip_clk_90 ),
+    .dram_a          ( dram_a ),
+    .dram_ba         ( dram_ba ),
+    .dram_dq         ( dram_dq ),
+    .dram_dqm        ( dram_dqm ),
+    .dram_clk        ( dram_clk ),
+    .dram_cke        ( dram_cke ),
+    .dram_ras_n      ( dram_ras_n ),
+    .dram_cas_n      ( dram_cas_n ),
+    .dram_we_n       ( dram_we_n )
+);
+
+// ---- on-screen diagnostic (temporary, M0 only) ----
+wire [23:0] ovl_rgb;
+sdram_status_overlay ovl (
+    .clk(clk_core_14318), .reset(machine_reset),
+    .rgb_in(osk_rgb24), .hbl(m_hbl), .vbl(m_vbl),
+    .rgb_out(ovl_rgb),
+    .res_valid_m(stor_res_valid_m), .res_code_m(stor_res_code_m),
+    .res_fail_m(stor_res_fail_m), .res_crc_m(stor_res_crc_m),
+    .res_nbytes_m(stor_res_nbytes_m),
+    .dbg_rc_m(stor_dbg_rc_m),
+    // bit2=S(verifier stuck), bit1=T(store timeout), bit0=O(FIFO overflow) -
+    // the overlay's interpretation; an earlier revision had O and S swapped
+    .dbg_fl_m({stor_vstuck, stor_timeout_m, stor_ovf_m}),
+    .stage_m(stor_stage_m)
 );
 
 

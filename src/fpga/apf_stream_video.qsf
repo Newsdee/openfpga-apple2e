@@ -724,6 +724,14 @@ set_global_assignment -name QIP_FILE apf/apf_stream.qip
 set_global_assignment -name VERILOG_FILE core/apple2e/apf_stream_video_top.v
 set_global_assignment -name VERILOG_FILE core/apple2e/apf_stream_proto_pll.v
 set_global_assignment -name VERILOG_FILE core/apple2e/apf_stream_video.v
+set_global_assignment -name VERILOG_FILE core/apple2e/io_sdram.v
+set_global_assignment -name VERILOG_FILE core/apple2e/io_sdram_pocket.v
+set_global_assignment -name VERILOG_FILE core/apple2e/slot_fifo.v
+set_global_assignment -name VERILOG_FILE core/apple2e/disk_store.v
+set_global_assignment -name VERILOG_FILE core/apple2e/disk_verifier.v
+set_global_assignment -name VERILOG_FILE core/apple2e/sdram_status_overlay.v
+set_global_assignment -name VERILOG_FILE core/apple2e/sdram_storage.v
+set_global_assignment -name VERILOG_FILE core/apple2e/apple2e_sdram_pll.v
 set_global_assignment -name VERILOG_FILE ../../machine/apple2.v
 set_global_assignment -name VERILOG_FILE ../../machine/timing_generator.v
 set_global_assignment -name VERILOG_FILE ../../machine/video_generator.v

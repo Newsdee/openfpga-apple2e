@@ -20,3 +20,18 @@ sd_root/Cores/Newsdee.Apple2e/bitstream.rbf_r
 sd_root/Cores/Developer.Core Template/bitstream.rbf_r
 sd_root/Cores/Newsdee.Apple2eStreamProto/bitstream.rbf_r
 sd_root/Cores/Newsdee.Apple2eStreamVideo/bitstream.rbf_r
+
+# --- Per-card staging, not repo content ---
+# Disk images (several are commercial software - never commit these).
+sd_root/Assets/
+
+# --- Bitstream binaries: generated artifacts everywhere they live ---
+**/bitstream.rbf_r
+
+# --- Third-party reference bulk (basicassets clone, 12 MB) ---
+# The load-bearing byte-identical reference lives in-tree at
+# src/fpga/core/apple2e/io_sdram.v (+ tools/_build_io_sdram_pocket.py).
+refs/
+
+# --- Python bytecode ---
+__pycache__/

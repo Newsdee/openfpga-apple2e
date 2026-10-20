@@ -1,6 +1,17 @@
 {
     "data": {
         "magic": "APF_VER_1",
-        "data_slots": []
+        "data_slots": [
+            {
+                "name": "disk",
+                "id": 1,
+                "required": false,
+                "filename": "disk",
+                "extensions": [ "woz" ],
+                "address": "0x00000000",
+                "size_maximum": 4194304,
+                "parameters": 1
+            }
+        ]
     }
 }

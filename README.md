@@ -76,38 +76,47 @@ keys and Apple-logo key behave as on MiSTer.
 ## Layout
 
 ```
-src/fpga/            Quartus projects
-  apple2e_core.qsf   stable machine core (Cores/Newsdee.Apple2e)
-  apf_stream_video.qsf   Phase 2 streaming core (Cores/Newsdee.Apple2eStreamVideo)
-  apf_stream_proto.qsf   Phase 1 prototype (Cores/Newsdee.Apple2eStreamProto)
-  apf/               APF shell (template, unmodified)
-  core/apple2e/      core tops: apple2e_core_top.v (frame-buffer),
-                     apf_stream_video_top.v + apf_stream_video.v (streaming),
-                     apf_video.v, apple2e_osk.v, apple2e_pll.v (+ SDC)
-  rtl/roms/          ROM hexes (apple2e.hex, video2.hex) for Quartus CWD
+src/fpga/            ONE active Quartus project:
+  apf_stream_video.qsf   streaming core (top apf_top_st), OSK, M0 SDRAM
+                         storage, status overlay - the only build (2026-10-20)
+  apf/                 APF shell (template, unmodified)
+  core/apple2e/        streaming top (apf_stream_video_top.v + apf_stream_video.v),
+                       apf_video.v, apple2e_osk.v, apple2e_pll.v, M0 storage RTL
+                       (slot_fifo/disk_store/disk_verifier/sdram_storage/
+                       sdram_status_overlay/io_sdram_pocket), legacy tops kept
+                       for the Verilator harnesses (+ SDC)
+  rtl/roms/            ROM hexes (apple2e.hex, video2.hex) for Quartus CWD
+archive/               retired projects (quartus-legacy: ap_core, apple2e_core,
+                       apf_stream_proto QSFs + old build bats; sd-legacy: stale
+                       P2a / Phase-1 SD core packages) - see its README
 machine/             byte-identical machine RTL (Apple-II_MiSTer/rtl)
 verilog/             Verilator harnesses (tb/, stubs/, build+run bats)
-sd_root/             SD-card staging (Cores/..., Platforms)
+sd_root/             SD-card staging: Cores/Newsdee.Apple2eStreamVideo (live),
+                     Cores/Developer.Core Template (development), Platforms
 output/              generated bitstream.rbf_r (gitignored)
 tools/rbf2rbf_r.py   .rbf -> .rbf_r (bit-reversal) converter
-apple2e_build.bat    machine-core build: compile apple2e_core -> reverse -> stage
-p0_build.bat         template regression build (NOT the Apple IIe core)
+apf_stream_video_build.bat   THE build: compile apf_stream_video -> reverse ->
+                            stage into sd_root/Cores/Newsdee.Apple2eStreamVideo
 ```
 
 ## Build (Windows, Quartus 17.0.2 on PATH)
 
 ```bat
-:: stable machine core: compile apple2e_core + reverse + stage
-::    into sd_root\Cores\Newsdee.Apple2e (the authoritative package).
-apple2e_build.bat
+:: The single active build: compile apf_stream_video + reverse + stage
+:: into sd_root\Cores\Newsdee.Apple2eStreamVideo (the only core package).
+apf_stream_video_build.bat
 
 :: or compile in the Quartus UI:
-src\fpga\apple2e_core.qsf        rem stable machine core
-src\fpga\apf_stream_video.qsf    rem Phase 2 streaming core
-src\fpga\apf_stream_proto.qsf    rem Phase 1 prototype
-:: p0_build.bat is the unmodified core-TEMPLATE regression path only -
-:: it builds ap_core and stages Cores\Developer.Core Template, NOT the core.
+src\fpga\apf_stream_video.qsf
 ```
+
+There is exactly one Quartus project (`apf_stream_video`). The earlier
+projects (basicassets skeleton, P2a frame-buffer core, Phase-1 prototype)
+were retired 2026-10-20 into `archive/quartus-legacy/` - they shared the
+`output_files_apple2e` output directory and their stale RBFs/reports were a
+bitstream-provenance hazard. Build variants are parameters of
+`apf_stream_video` (e.g. `DEC2X`), not new projects. See
+`archive/quartus-legacy/README.md`.
 
 Streaming-core packaging: reverse the fresh
 `src/fpga/output_files_apple2e/apf_stream_video.rbf` with
