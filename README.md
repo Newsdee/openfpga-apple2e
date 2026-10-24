@@ -137,6 +137,31 @@ probe, Phase 2 streaming frame captures, the decimator pixel-coordinate
 check, keyboard-protocol regression, RAM-inference minimal repro in
 `ramtest/`).
 
+## Core JSON files - single source of truth
+
+**All openFPGA manifest JSONs live ONLY in
+`sd_root/Cores/Newsdee.Apple2eStreamVideo/`** (`core.json`, `data.json`,
+`interact.json`, `video.json`, `audio.json`, `input.json`, `variants.json`),
+plus `sd_root/Platforms/apple2e.json`. That directory IS the card layout - copy
+it to the Pocket SD card root.
+
+There are deliberately **no copies at the repository root**. They used to exist
+as leftovers from the `open-fpga/core-template` origin and had silently drifted:
+root `data.json` had an empty `data_slots` (no disk slot at all), root
+`interact.json` had no "Reboot on load" option, and root `video.json`
+still declared a 320x240 scaler mode that contradicts the shipping native
+560x192 streaming path. Nothing ever read them - `apf_stream_video_build.bat`
+only checks that the `sd_root` copies exist, and `repackage.bat` only touches
+the bitstream - so they were removed on 2026-10-24 rather than synced, because
+two copies is how they drifted in the first place.
+
+**Do not add JSONs back at the repo root.** Edit the `sd_root` copy. If you are
+reading a root-level `data.json`/`video.json` in this repo, you are looking at a
+stale artifact from before that cleanup.
+
+(`refs/basicassets/` is third-party reference material and `archive/sd-legacy/`
+is frozen history; both keep their own JSONs and are not part of the package.)
+
 ## Provenance / licensing
 
 - APF shell: `open-fpga/core-template` (Analogue openFPGA program).

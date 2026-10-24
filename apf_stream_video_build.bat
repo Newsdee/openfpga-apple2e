@@ -47,6 +47,10 @@ copy /y "%RBFR_OUT%" "%RBFR_PKG%" >nul
 if errorlevel 1 goto :err
 for %%M in (core.json data.json interact.json video.json input.json variants.json audio.json) do (
     if not exist "%PROTODIR%\%%M" goto :errmanifest
+    rem Guard: the repo root must NOT hold a second copy of any manifest.
+    rem sd_root\Cores\Newsdee.Apple2eStreamVideo is the single source of
+    rem truth; root-level copies drifted silently until removed 2026-10-24.
+    if exist "%REPO%\%%M" goto :errrootjson
 )
 
 echo.
@@ -67,6 +71,14 @@ exit /b 1
 
 :errrbf
 echo FAILED: %RBF_SRC% not found after compile (assembler did not run?)
+endlocal
+pause
+exit /b 1
+
+:errrootjson
+echo FAILED: a manifest JSON exists at the repository root (%REPO%)
+echo         Manifests live ONLY in sd_root\Cores\Newsdee.Apple2eStreamVideo\ -
+echo         delete the root copy, it will drift from the real one. See README.md.
 endlocal
 pause
 exit /b 1
