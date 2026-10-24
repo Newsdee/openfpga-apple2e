@@ -56,7 +56,7 @@ module tb_ovl_dbgrect;
     reg [2:0]  stage_m;
     wire [23:0] rgb_out;
 
-    sdram_status_overlay #(.SHOW_CYCLES(4_000_000), .DBG_RECT(1)) dut (
+    sdram_status_overlay #(.SHOW_CYCLES(4_000_000), .DBG_RECT(1), .OVL_DBG(1)) dut (
         .clk(clk), .reset(reset),
         .rgb_in(24'd0), .hbl(hbl), .vbl(vbl), .rgb_out(rgb_out),
         .res_valid_m(res_valid_m), .res_code_m(res_code_m),

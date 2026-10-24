@@ -113,6 +113,12 @@ module sdram_status_overlay (
     // with the disk_verifier FP_EN accumulator; tools/woz_fingerprint.py
     // stays the PC oracle for any build that enables it.
     parameter SHOW_FP = 1'b0;
+    // Master switch for all overlay drawing: 0 = shipping build (rgb_out is
+    // a pure pass-through of rgb_in - no debug lines, marker, fingerprint,
+    // or debug rectangle); 1 = hardware-debug build (top-level OVL_DEBUG).
+    // Needed because lines 4..6 (MO/ACK/ST-A-F) draw outside the 5 s show
+    // window and are not covered by SHOW_FP.
+    parameter OVL_DBG = 1'b0;
 
     // ---- glyph codes ----
     // 0-9 -> 0-9, A=11 B=12 C=13 D=14 E=15 F=16, O=17 K=18 R=19 I=20
@@ -679,8 +685,9 @@ module sdram_status_overlay (
     assign px11 = SHOW_FP && !hbl && !vbl && in_x11 && in_l11 && cidx11_w < 10'd18 &&
                 cin11_w < 10'd5 && r11bits[3'd4 - cin11_w[2:0]];
 
-    assign rgb_out = (mpx || px1 || px2 || px3 || px4 || px5 || px6 || px7 ||
-                      px8 || px9 || px10 || px11 || dbg_px) ? 24'hFFFFFF : rgb_in;
+    wire ovl_px = mpx || px1 || px2 || px3 || px4 || px5 || px6 || px7 ||
+                  px8 || px9 || px10 || px11 || dbg_px;
+    assign rgb_out = (OVL_DBG && ovl_px) ? 24'hFFFFFF : rgb_in;
 
 
 endmodule

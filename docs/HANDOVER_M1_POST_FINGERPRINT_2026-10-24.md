@@ -177,6 +177,76 @@ Repo state at handover:
 
 ---
 
+## ✅ HARDWARE CLOSEOUT FIXES (2026-10-24, after the 22:30 build): interact `enabled` + `OVL_DEBUG` gate
+
+The 22:30 build (fitter 7,962 / 18,480 ALM = 43%, all STA corners TNS 0.000,
+mp2 slack +1.104 ns) was flashed and **boots on hardware**. Two hardware
+findings, both fixed:
+
+### 1. The reboot checkbox was grayed out — card-side fix (commit `c40a26d`)
+
+Root cause: **`enabled` is a common (non-optional) field in the APF interact
+spec**. The official sample (`core-definition-files__interact-json` docs
+snapshot) carries `"enabled": true` on every element; we omitted it, so the
+framework rendered the element displayed-but-disabled — the exact "checked
+but can't unselect" symptom. The core-side bridge path was traced through
+`io_bridge_peripheral` and found correct (writes immediate, reads return the
+live word at the bus address, symmetric endianness) — no RTL bug.
+
+Fix, card-only, no recompile: `interact.json` gained `"enabled": true`, the
+name was renamed to **"Reboot on load"** (owner request; 14 chars ≤ 23 limit),
+and `id` 1 → 2 (official sample ids start at 2). **Hardware confirmed 2026-10-24:
+toggle interactive, setting changes stick.**
+
+### 2. Debug overlay still visible — `OVL_DEBUG` gate (this section's commit)
+
+`FP_DIAG=0` only gated the fingerprint lines (`px8`–`px11`, rows 65..95).
+**Lines 4..6 (MO=/ACK/ST-A-F, `px4`–`px7`) draw outside the 5 s `show`
+window and were never gated** — that is the debug the owner still saw, plus
+the marker (`mpx`) and the 5 s show-window lines (px1–3) re-triggered on
+every disk load.
+
+Fix:
+- `sdram_status_overlay.v`: new `parameter OVL_DBG = 1'b0`; final output is
+  now `assign rgb_out = (OVL_DBG && ovl_px) ? 24'hFFFFFF : rgb_in;` where
+  `ovl_px` is the OR of every draw source (all 11 line groups, marker, debug
+  rectangle). `OVL_DBG=0` ⇒ pixel-exact pass-through, nothing drawn.
+- `apf_stream_video_top.v`: new `parameter OVL_DEBUG = 1'b0` →
+  `.OVL_DBG(OVL_DEBUG)` on the `ovl` instance. `FP_DIAG` unchanged (verifier
+  accumulator still gated separately; a build can carry fp logic without
+  drawing anything).
+- `tb_ovl_status.sv`: `.OVL_DBG(1)` added to both existing instances (T8
+  semantics preserved: display on, fp off); new **T9** — third instance at
+  shipping defaults asserting `rgb_out == rgb_in` for every cycle of the run.
+- `tb_ovl_dbgrect.sv`: `.OVL_DBG(1)` added.
+
+Verification: `tb_ovl_status` T0–T9 ALL PASS (T9 = full pass-through),
+`tb_ovl_dbgrect` PASS, full-top Verilator lint 0 errors (only pre-existing
+warning classes), `eol_guard` clean, pocket_boot smoke: **PASS (2026-10-24)** —
+`SMOKE BOOT OK: frames=9 reads=0 crc=74EA1324 mt=1 tf=0 res8f=0000
+t=215572.500ms`, byte-identical to the pre-change green baseline
+(`pb_sweep3_smoke.log`), `smokePass=1`, exit 0.
+
+> **Harness gotcha found & fixed during this verification:** the 23:38 smoke
+> attempt was inconclusive — `run_pocket_boot.bat build smoke` silently dropped
+> `--smoke` (the old script only checked `%1` for the smoke keyword, and its
+> for-loop arg passthrough used parse-time `%ARGS%`, so multi-arg pass-through
+> was broken too). It launched the interactive window instead of headless mode
+> and ended early at t≈62 ms (before the first frame at ~68 ms) — not an RTL
+> problem. `run_pocket_boot.bat` now accepts `smoke`/`build` in any position
+> (delayed expansion). Note also: a full smoke pass needs `--budget-ms 300000`:
+> the default 1 s budget cannot reach the milestone because the WOZ
+> verify/mount scan takes ~215.5 s of sim time (the green baseline passed at
+> exactly t=215572.500 ms too).
+
+**Still pending:** one more owner Quartus compile (change surface: one
+parameter + one gated OR in the overlay — expected timing-neutral),
+`rbf2rbf_r.py` regeneration, and the hardware re-check that the screen is
+now clean of every debug line. Debug builds stay one parameter away:
+`OVL_DEBUG=1` (+ `FP_DIAG=1` for the fingerprint rows).
+
+---
+
 ## Context you must know before touching anything
 
 - M1 root cause (done, for reference): the Pocket SDRAM chip runs in its

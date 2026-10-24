@@ -68,7 +68,7 @@ module tb_ovl_status;
     reg [127:0] fp_first_r, fp_last_r, fp_w_r;
     wire [23:0] rgb_out;
 
-    sdram_status_overlay #(.SHOW_CYCLES(4_000_000), .SHOW_FP(1)) dut (
+    sdram_status_overlay #(.SHOW_CYCLES(4_000_000), .SHOW_FP(1), .OVL_DBG(1)) dut (
         .clk(clk), .reset(reset),
         .rgb_in(24'd0), .hbl(hbl), .vbl(vbl), .rgb_out(rgb_out),
         .res_valid_m(res_valid_m), .res_code_m(res_code_m),
@@ -78,11 +78,11 @@ module tb_ovl_status;
         .fp_first(fp_first_r), .fp_last(fp_last_r), .fp_w(fp_w_r)
     );
 
-    // ---- T8 DUT: default parameters (SHOW_FP=0 - the shipping build) ----
+    // ---- T8 DUT: SHOW_FP=0 (OVL_DBG stays 1: display on, fp off) ----
     // Same inputs as the main DUT; the fingerprint lines (rows 65..95) must
     // be blank while every other line stays pixel-identical.
     wire [23:0] rgb_off;
-    sdram_status_overlay dut_off (
+    sdram_status_overlay #(.OVL_DBG(1)) dut_off (
         .clk(clk), .reset(reset),
         .rgb_in(24'd0), .hbl(hbl), .vbl(vbl), .rgb_out(rgb_off),
         .res_valid_m(res_valid_m), .res_code_m(res_code_m),
@@ -91,6 +91,22 @@ module tb_ovl_status;
         .dbg_rc_m(dbg_rc_m), .dbg_fl_m(dbg_fl_m), .stage_m(stage_m),
         .fp_first(fp_first_r), .fp_last(fp_last_r), .fp_w(fp_w_r)
     );
+
+    // ---- T9 DUT: shipping defaults (OVL_DBG=0) - full pass-through ----
+    // rgb_in is 24'd0 here, so rgb_out must be 24'd0 for every cycle.
+    wire [23:0] rgb_nodbg;
+    integer nodbg_bad = 0;
+    sdram_status_overlay dut_nodbg (
+        .clk(clk), .reset(reset),
+        .rgb_in(24'd0), .hbl(hbl), .vbl(vbl), .rgb_out(rgb_nodbg),
+        .res_valid_m(res_valid_m), .res_code_m(res_code_m),
+        .res_fail_m(res_fail_m), .res_crc_m(res_crc_m),
+        .res_nbytes_m(res_nbytes_m),
+        .dbg_rc_m(dbg_rc_m), .dbg_fl_m(dbg_fl_m), .stage_m(stage_m),
+        .fp_first(fp_first_r), .fp_last(fp_last_r), .fp_w(fp_w_r)
+    );
+    always @(posedge clk)
+        if (rgb_nodbg !== 24'd0) nodbg_bad = nodbg_bad + 1;
 
     // ---- TB-side mirror of the DUT's counters (from the hbl/vbl the
     // DUT actually sees) ----
@@ -685,10 +701,10 @@ module tb_ovl_status;
         if (fails == fbase) $display("T7 PASS: fingerprint lines W0/W1/W2/W3/F/L exact");
         else $display("T7 FAIL (%0d new)", fails - fbase);
 
-        // ================= T8: SHOW_FP=0 (default) - shipping build =====
-        // dut_off runs the same inputs with default parameters: fp rows
-        // must be completely blank; a non-fp line (L1) must be
-        // pixel-identical to the SHOW_FP=1 DUT.
+        // ================= T8: SHOW_FP=0, OVL_DBG=1 - fp rows blank =====
+        // dut_off runs the same inputs with SHOW_FP=0: fp rows must be
+        // completely blank; a non-fp line (L1) must be pixel-identical
+        // to the SHOW_FP=1 DUT.
         set_result(1'b1, 2'd0, 2'd0, 32'h12345678, 32'h00030000,
                    {16'd0, 24'd128, 24'd128}, 3'd0, 3'd6);
         repeat (40) @(negedge clk);   // both DUTs latch the fresh result
@@ -723,6 +739,15 @@ module tb_ovl_status;
         if (fails == fbase) $display("T8 PASS: SHOW_FP=0 -> fp rows blank, other lines identical");
         else $display("T8 FAIL (%0d new)", fails - fbase);
 
+        // ================= T9: OVL_DBG=0 (shipping) - full pass-through =====
+        // dut_nodbg uses shipping defaults; with rgb_in=0 its output must
+        // never deviate from rgb_in for any cycle of the whole run.
+        if (nodbg_bad == 0) $display("T9 PASS: OVL_DBG=0 -> rgb_out == rgb_in every cycle");
+        else begin
+            $display("T9 FAIL (%0d deviating cycles)", nodbg_bad);
+            fails = fails + 1;
+        end
+
         // ---- DUMP phase: OK result, stage 6 - file dump for offline decode ----
         set_result(1'b1, 2'd0, 2'd0, 32'hC9260F5E, 32'd512, 48'h000080_000080, 3'd0, 3'd6);
         repeat(8) @(negedge clk);
@@ -731,7 +756,7 @@ module tb_ovl_status;
         res_crc_m <= 32'd0; res_nbytes_m <= 32'd0; stage_m <= 3'd0;
         repeat(8) @(negedge clk);
 
-        if (fails == 0) $display("OVL STATUS PASS: real raster, exact glyphs, all hex digits, per-flag, marker, expiry, re-arm, SHOW_FP gate");
+        if (fails == 0) $display("OVL STATUS PASS: real raster, exact glyphs, all hex digits, per-flag, marker, expiry, re-arm, SHOW_FP gate, OVL_DBG pass-through");
         else $fatal(1, "OVL STATUS FAIL: %0d pixel mismatches", fails);
         $finish;
     end

@@ -878,6 +878,12 @@ wire f9_rd = bridge_rd && (bridge_addr[31:16] == 16'hF900);
 // CRCs (PC oracle: tools/woz_fingerprint.py).
 parameter FP_DIAG = 1'b0;
 
+// Full debug-overlay gate: 0 = shipping build (the status overlay is a
+// pixel pass-through - no MO/ACK/ST lines, show window, marker, or
+// fingerprint rows). 1 = hardware-debug build. Separate from FP_DIAG so a
+// build can carry the verifier fp logic without drawing anything.
+parameter OVL_DEBUG = 1'b0;
+
 sdram_storage #(.FP_EN(FP_DIAG)) stor (
     .clk_74a         ( clk_74a ),
     .sdram_path_rst  ( sdram_path_rst ),
@@ -1087,7 +1093,7 @@ end
 
 // ---- on-screen diagnostic (temporary, M0 only) ----
 wire [23:0] ovl_rgb;
-sdram_status_overlay #(.SHOW_FP(FP_DIAG)) ovl (
+sdram_status_overlay #(.SHOW_FP(FP_DIAG), .OVL_DBG(OVL_DEBUG)) ovl (
     .clk(clk_core_14318), .reset(machine_reset),
     .rgb_in(osk_rgb24), .hbl(m_hbl), .vbl(m_vbl),
     .rgb_out(ovl_rgb),
