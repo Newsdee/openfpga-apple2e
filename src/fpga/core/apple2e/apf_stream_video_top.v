@@ -585,7 +585,8 @@ end
 // full clear of both arrays = the power-on RAM state. The 6502 is held
 // in reset (cold_reset) for the whole clear window plus a HOLD margin,
 // so no m_ram_we can race it and the CPU releases onto clean RAM.
-integer ram_clr_i;
+integer ram_clr_a;
+integer ram_clr_b;
 reg  [7:0]  ram_main [0:65535];
 reg  [7:0]  ram_aux  [0:65535];
 reg  [15:0] m_ram_do;
@@ -597,9 +598,14 @@ wire        m_ram_we;
 wire        ram_clear_m;
 always @(posedge clk_core_14318) begin
     if (ram_clear_m) begin
-        for (ram_clr_i = 0; ram_clr_i < 65536; ram_clr_i = ram_clr_i + 1) begin
-            ram_main[ram_clr_i] <= 8'd0;
-            ram_aux[ram_clr_i]  <= 8'd0;
+        // 256x256 nesting: Quartus 17 rejects flat loops > 5000 iterations
+        // (Error 10106); Verilator has no such limit, so the TBs keep a flat
+        // loop. Same clear: both arrays to their power-on state.
+        for (ram_clr_a = 0; ram_clr_a < 256; ram_clr_a = ram_clr_a + 1) begin
+            for (ram_clr_b = 0; ram_clr_b < 256; ram_clr_b = ram_clr_b + 1) begin
+                ram_main[{ram_clr_a[7:0], ram_clr_b[7:0]}] <= 8'd0;
+                ram_aux[{ram_clr_a[7:0], ram_clr_b[7:0]}]  <= 8'd0;
+            end
         end
     end else begin
         if (m_ram_we & ~m_ram_aux) begin
