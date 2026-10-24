@@ -83,7 +83,21 @@ single `W` window localizes corruption to that 64 KB region; a wrong `F=`
 proves the host is not even loading the file's head (e.g., LBA offset /
 neighbor-cluster data).
 
-## Root cause identified (2026-10-24) and fix
+## Root cause identified (2026-10-24) and fix — CONFIRMED ON HARDWARE
+
+**Verdict (2026-10-24): it was mechanism (B) — the read path.** With the
+`CAP_PIPE=3` bitstream, the overlay fingerprint matched the PC oracle
+byte-exact (`N=00039400`, `CRC=74EA1324`, `W0=C59C65F2 W1=63610555`,
+`W2=3E949994 W3=E24FAE89`, `F=574F5A32FF0A0D0A`, `L=0000000000000000`),
+and the machine booted **DOS 3.3 SYSTEM MASTER** from `disk.woz`. A
+second image (Jungle Hunt) booted as well, confirming the fix
+generalizes. The chip was in power-up-default CAS2 mode (the "LMR" boot
+writes are `3'b000`, an undefined command real chips ignore); the old
+stage-4 capture landed one cycle late at the 180° chip phase and grabbed
+the low half for both halves of every word. `CAP_PIPE=3` lands mid-window
+of the chip's actual data. The fingerprint overlay can now be removed
+(optional cleanup; it is always-on and costs a little of the right side of
+the screen).
 
 The fingerprint made the corruption decodable. The on-screen values from the
 2026-10-23 hardware run (`OK CRC=5A5CB7B2`, `N=00039400`, `W0=9230B05B
