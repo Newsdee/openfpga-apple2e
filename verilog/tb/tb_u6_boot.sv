@@ -85,7 +85,6 @@ module tb_u6_boot;
             ram_aux[m_ram_addr[15:0]] <= m_ram_di;
             m_ram_do[15:8]            <= m_ram_di;
         end else m_ram_do[15:8] <= ram_aux[m_ram_addr[15:0]];
-    end
         end
     end
     // ==================================================================
@@ -540,8 +539,9 @@ module tb_u6_boot;
         // composite, so the engine re-parses - B1 below still has to pass.
         begin : u6_reboot
             integer u6r_cycles;
+            integer u6r_wait;
+            integer u6r_bytes_before;
             reg [15:0] u6r_addr;
-            reg [15:0] pc_a, pc_b;
             u6r_addr = 16'h1234;
             ram_main[u6r_addr] = 8'hA5;      // pre-set (machine in ROM boot)
             repeat (2) @(posedge clk_mach);
@@ -571,15 +571,23 @@ module tb_u6_boot;
                 $display("FAIL U6-R: cold_reset still high after the window");
                 nfail = nfail + 1;
             end
-            pc_a = m_pc;
-            repeat (2000) @(posedge clk_mach);
-            pc_b = m_pc;
-            if (pc_a === pc_b) begin
-                $display("FAIL U6-R: CPU not alive after the cold reboot (pc=%h)", pc_a);
+            // Liveness: the rebooted machine's ROM boot loop re-requests
+            // track 0 and the (reset, re-parsing) engine serves it - a rise
+            // in bytes_checked after the window proves the machine came
+            // back alive and is booting from the disk again.
+            u6r_bytes_before = bytes_checked;
+            u6r_wait = 0;
+            while (bytes_checked < u6r_bytes_before + 2000 && u6r_wait < 3_000_000) begin
+                u6r_wait = u6r_wait + 1;
+                @(posedge clk_mach);
+            end
+            if (bytes_checked < u6r_bytes_before + 2000) begin
+                $display("FAIL U6-R: machine did not resume booting after the cold reboot (bytes=%0d)",
+                         bytes_checked);
                 nfail = nfail + 1;
             end
             if (nfail == 0)
-                $display("OK  U6-R: cold reboot through the full machine (window=%0d, RAM cleared, cpu alive)",
+                $display("OK  U6-R: cold reboot through the full machine (window=%0d, RAM cleared, machine re-booting from disk)",
                          u6r_cycles);
         end
 
