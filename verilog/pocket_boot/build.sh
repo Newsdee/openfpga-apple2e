@@ -83,6 +83,7 @@ verilator_bin --cc --timing -j 4 \
     "$ROOT/src/fpga/core/apple2e/disk_store.v" \
     "$ROOT/src/fpga/core/apple2e/disk_verifier.v" \
     "$ROOT/src/fpga/core/apple2e/reboot_ctl.v" \
+    "$ROOT/src/fpga/core/apple2e/ram_sweep_ctl.v" \
     "$ROOT/src/fpga/core/apple2e/io_sdram_pocket.v" \
     "$ROOT/src/fpga/core/apple2e/sdram_status_overlay.v" \
     "$ROOT/src/fpga/core/woz/disk_ii_rom.v" \

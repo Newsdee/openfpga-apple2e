@@ -1,0 +1,4 @@
+QUARTUS_VERSION = "17.0"
+DATE = "single-variant bisect init (2026-10-24)"
+
+PROJECT_REVISION = "ram_repro_init"

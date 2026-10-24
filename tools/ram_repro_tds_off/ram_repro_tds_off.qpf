@@ -1,0 +1,5 @@
+QUARTUS_VERSION = "17.0"
+DATE = "RAM clear idiom reproducer (2026-10-24)"
+
+# Revisions
+PROJECT_REVISION = "ram_repro_tds_off"

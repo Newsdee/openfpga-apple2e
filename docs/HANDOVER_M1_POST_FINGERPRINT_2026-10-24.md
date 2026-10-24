@@ -47,6 +47,53 @@ investigated for them, the decided direction, and what remains to be done.
 
 ---
 
+## ✅ FINAL RESOLUTION (2026-10-24 evening): the RAM clear now infers M10Ks — the "slow Quartus" mystery is closed
+
+**If you are resuming work, this is the current state; everything below is
+historical context.**
+
+The multi-hour Quartus A&S grind (this doc's §slow-A&S saga + the external
+brief `EXTERNAL_REVIEW_BRIEF_QUARTUS_SLOW_ASYN_2026-10-24.md` §12) was NOT a
+host/tool issue: the shipping write-sweep RAM clear **failed Quartus 17.0.2
+M10K inference** (Error 276003 + 276007), leaving ~500K logic registers per
+64K×8 bank — the exact netlist that makes TDS grind silently for hours
+(the earlier 170011 fitter failure was the same disease).
+
+The inference matrix (`tools/ram_repro_matrix`) isolated the poison
+to one rule: **Quartus 17.0.2 does not infer a single-port M10K when the
+write ADDRESS is conditional** (if/else two-write OR muxed address), while
+muxed write DATA or write ENABLE are fine.
+
+Shipping fix (all simulation-verified, awaiting the owner's clean compile):
+
+- The top's `ram_main`/`ram_aux` block is **byte-identical to the proven M1
+  shape** (plain single-port per bank, per-bank enable, write-first bypass).
+- New module **`ram_sweep_ctl.v`** (machine clock): a 4-state FSM that
+  walks the *bus* — we/addr/aux through a 4-wire combinational overlay
+  (`m_ram_*_f` nets) — zeroing both banks in two 65,536-address passes
+  (131,072 cycles ≈ 0.92 ms; data hardwired 0). The machine is in cold
+  reset for the whole window, so the bus hijack is safe.
+- `reboot_ctl`: `CLR_TIMEOUT` default 131,072 → **262,144** (2× the sweep);
+  `clr_done` now comes from the FSM.
+- `tb_u6_boot` models the exact shipping structure (plain banks + overlay +
+  the real `ram_sweep_ctl` instance); U6-R expects window ≈ 131,136 cycles.
+- Probe: `tools/ram_repro_sweep` v5 (the exact shipping structure) A&S in
+  12 s — **29 registers, 1,048,576 block-memory bits, no 276003/276007**.
+
+**Safety net:** the 09:24 known-good pre-closeout RBF (hardware-verified:
+DOS 3.3 + Jungle Hunt boot) is backed up at
+`known_good/2026-10-24_0924_pre_closeout/` (sha256
+`e46034c9…f3cbf`, restore NOTE included); the staged card's
+`bitstream.rbf_r` still matches it — so a working card exists regardless of
+the new compile's outcome.
+
+**Next actions:** (1) `tb_u6_boot` result (re-running at push time);
+(2) owner clean full-core compile — should now be a normal clean A&S
+(~190 M10Ks, ~15K registers, TNS 0.000); (3) regenerate `bitstream.rbf_r`
++ hardware acceptance (screen clean, reboot option ON/OFF, persistence).
+
+---
+
 **Status update (2026-10-24, later that day):** both tasks are IMPLEMENTED:
 Task 1 (FP_DIAG/FP_EN/SHOW_FP gate, default off) and Task 2 ("Reboot on
 disk change" interact.json option -> reboot_ctl.v cold reboot, data.json

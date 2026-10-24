@@ -264,3 +264,104 @@ design no longer depends on it.
 PASS (7/7 incl. handshake + timeout); `tb_u6_boot` re-running (sweep semantics); the
 reproducer is ready for `quartus_map`. The in-flight clean full-core A&S (pre-sweep RTL)
 remains the calibration data point for §9.1 either way.
+
+## 12. Resolution (2026-10-24 evening): the slow A&S was the sweep's lost RAM inference
+
+### 12.1 The bisect ladder
+
+Ran a series of tiny single-purpose projects (all `quartus_map` only, device
+5CEBA4F23C8) while the full core stayed uncompiled:
+
+| Project | Contents | A&S result |
+|---|---|---|
+| `tools/ram_repro_plain` | 1× 64K×8 plain M1-shape RAM (no clear, no initial) | **OK, 10 s** — 3 registers, 524,288 block-memory bits (inferred) |
+| `tools/ram_repro_init` | plain + `initial` zero-fill | **OK, 19 min** (contended run) — inferred, 524,288 bits |
+| `tools/ram_repro_async` | whole-array async-clear idiom (the disputed RAMARST form) | A&S "successful" (see §12.2 caveat) |
+| `tools/ram_repro_sweep` v1–v4 | the sweep written four different ways | **FAIL: Error 276003 + Info 276007** "RAM logic ... is uninferred due to asynchronous read logic" |
+| `tools/ram_repro` (4-variant control) | all four in one project | silent TDS grind, killed at ~28 min (no output) |
+
+The sweep variants v1–v4 covered: if/else two-writes-in-exclusive-branches,
+one muxed write port with a separate read block, one muxed write port with an
+unconditional bypass read, and the plain if/else shape with a muxed write
+address. **All four failed identically** with the same 276007 on the array
+declaration. An uninferred 64K×8 bank is ~500K logic registers — i.e. the
+1,053,672-register map of the 17:05 failing full-core run, and the
+multi-hour single-core TDS grind on a 4-RAM design. The host, the AV agent,
+the TDS phase, and the "clean vs incremental" question were all red herrings
+for the grind itself: **a design whose big RAMs fail inference is exactly
+the kind of design Q17's TDS grinds on for an unbounded time.**
+
+### 12.2 Inference matrix (the decisive experiment)
+
+`tools/ram_repro_matrix` — one project, six independent 64K×8 RAMs, each the
+known-good plain shape with exactly one modification; the per-instance
+276007 warnings name the culprits:
+
+| Instance | Modification | Inferred? |
+|---|---|---|
+| u_a | none (baseline) | **yes** |
+| u_b | + separate counter always-block (no array access) | **yes** |
+| u_c | write ADDRESS through a 2:1 mux | **NO** |
+| u_d | write DATA through a 2:1 mux | **yes** |
+| u_e | write ENABLE OR'd with a second signal | **yes** |
+| u_f | c+d+e+b combined | **NO** |
+
+**Quartus 17.0.2 will not infer a single-port M10K when the write ADDRESS
+is conditional** — mux or if/else — while muxed write data or write enable
+are fine. The 276007 "asynchronous read logic" text is a misleading label;
+the poison is the conditional write address, full stop. (Caveat on the
+async idiom: its standalone A&S "succeeded" but reported N/A totals — we
+did not verify its final inference; it remains hardware-semantically
+unsupported per the installed atom model, so it stays out of the shipping
+design either way.)
+
+### 12.3 The shipping fix: sweep the bus, keep the RAMs plain
+
+The RAM block in `apf_stream_video_top.v` is now **byte-identical to the
+proven M1 shape** (plain single-port per bank, per-bank enable, write-first
+bypass) and never sees a conditional write address. The sweep is a small
+FSM (`ram_sweep_ctl.v`, machine clock) that drives the *bus* — we/addr/aux
+through a four-wire combinational overlay on `m_ram_addr_f/_di_f/_aux_f/
+_we_f` — writing zeros through both banks one 65,536-address pass each
+(131,072 cycles ≈ 0.92 ms; data hardwired to 0). The machine (CPU + Disk II)
+is in cold reset for the whole window (reboot_ctl holds `cold_reset` until
+the FSM's `done` handshake + 1024-cycle HOLD; CLR_TIMEOUT raised to 262,144
+= 2× the sweep), so hijacking the RAM write port is safe: `apple2` and
+`disk_ii_woz` are reset-gated and see only the raw machine nets.
+
+Probe result (`tools/ram_repro_sweep` v5 = the exact shipping structure,
+real `ram_sweep_ctl` included): **A&S Successful in 12 s — 29 registers,
+1,048,576 block-memory bits (both banks M10K), no 276003/276007.**
+
+### 12.4 Verification state at push
+
+- Full-top Verilator lint (`--top stream_video_core_top`): clean.
+- `tb_reboot_ctl`: unchanged contract, PASS (7/7).
+- `tb_u6_boot`: RAM model now mirrors the shipping structure (plain banks +
+  overlay + real `ram_sweep_ctl` instance); U6-R expects the two-pass
+  window ~131,136 cycles (131,072 sweep + 64 HOLD) — re-running.
+- Quartus: the owner's next clean full-core compile should now be a normal
+  clean A&S (the design no longer contains any uninferred-RAM netlist).
+  Expect ~190 M10Ks, ~15K registers, Fitter Successful, TNS 0.000.
+- Safety net: the 09:24 known-good pre-closeout RBF is backed up at
+  `known_good/2026-10-24_0924_pre_closeout/` (sha256
+  e46034c94fdbb6ae2d12d360c5040a97230562a4745308cff312de1842ef3cbf) with a
+  restore NOTE; the staged card's `bitstream.rbf_r` still matches it.
+
+### 12.5 What we got wrong (for the record)
+
+1. We treated the TDS grind as a host/tool mystery for ~24 hours. The
+   reproducer that finally cracked it was the *inference* reproducer — the
+   error text (276003/276007) was present in every failing run's log, and
+   the "silent 100% CPU" symptom is exactly what a 1M-register netlist
+   does to TDS. Lesson: on any A&S stall, first check the last completed
+   phase's messages for uninferred-RAM warnings before blaming the host.
+2. The interim `RAMARST` idiom (commit 9085041) was never proven to infer
+   either — it was chosen to dodge 170011 on evidence that was actually the
+   *previous* (synchronous-clear) failure. The expert review's hardware
+   objection was right on both counts.
+3. "Lint-clean" (Verilator elaboration) was taken as A&S prevalidation.
+   It proves the RTL parses and elaborates; it says nothing about Quartus's
+   RAM inference. The repro-first rule (probe the structure alone, require
+   the block-memory bits count, then touch the core) caught this in 12
+   seconds per iteration.

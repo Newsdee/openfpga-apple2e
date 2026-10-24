@@ -66,30 +66,31 @@ module tb_u6_boot;
     wire [17:0] m_ram_addr;
     wire [7:0]  m_ram_di;
     wire        m_ram_aux, m_ram_we;
-    // ram_clear_m ("Reboot on disk change") = the top's sequential write-sweep:
-    // one address per cycle, zero to both banks (identical to the
-    // streaming top, so the TB models the shipping semantics).
+    // ram_clear_m ("Reboot on disk change") = the top's sequential
+    // write-sweep, modeled EXACTLY like the shipping top (2026-10-24
+    // bus-overlay fix): the RAM block is the plain M1 shape consuming
+    // overlayed _f nets; the real ram_sweep_ctl drives the bus overlay
+    // (two 65,536-address passes = 131,072 cycles).
     wire        ram_clear_m;
-    reg         u6_ram_clr_done;
-    reg  [15:0] u6_ram_clr_addr;
+    wire        swp_we, swp_aux, swp_done;
+    wire [15:0] swp_addr;
+    wire [17:0] m_ram_addr_f = swp_we ? {2'b00, swp_addr} : m_ram_addr;
+    wire [7:0]  m_ram_di_f   = swp_we ? 8'd0 : m_ram_di;
+    wire        m_ram_aux_f  = swp_we ? swp_aux : m_ram_aux;
+    wire        m_ram_we_f   = swp_we | m_ram_we;
+    ram_sweep_ctl u_sweep (
+        .clk(clk_mach), .start(ram_clear_m),
+        .we(swp_we), .addr(swp_addr), .aux(swp_aux), .done(swp_done)
+    );
     always @(posedge clk_mach) begin
-        if (ram_clear_m) begin
-            u6_ram_clr_addr <= u6_ram_clr_addr + 16'd1;
-            ram_main[u6_ram_clr_addr] <= 8'd0;
-            ram_aux[u6_ram_clr_addr]  <= 8'd0;
-            u6_ram_clr_done <= (u6_ram_clr_addr == 16'hFFFF);
-        end else begin
-            u6_ram_clr_addr <= 16'd0;
-            u6_ram_clr_done <= 1'b0;
-        if (m_ram_we & ~m_ram_aux) begin
-            ram_main[m_ram_addr[15:0]] <= m_ram_di;
-            m_ram_do[7:0]              <= m_ram_di;
-        end else m_ram_do[7:0]  <= ram_main[m_ram_addr[15:0]];
-        if (m_ram_we & m_ram_aux) begin
-            ram_aux[m_ram_addr[15:0]] <= m_ram_di;
-            m_ram_do[15:8]            <= m_ram_di;
-        end else m_ram_do[15:8] <= ram_aux[m_ram_addr[15:0]];
-        end
+        if (m_ram_we_f & ~m_ram_aux_f) begin
+            ram_main[m_ram_addr_f[15:0]] <= m_ram_di_f;
+            m_ram_do[7:0]              <= m_ram_di_f;
+        end else m_ram_do[7:0]  <= ram_main[m_ram_addr_f[15:0]];
+        if (m_ram_we_f & m_ram_aux_f) begin
+            ram_aux[m_ram_addr_f[15:0]] <= m_ram_di_f;
+            m_ram_do[15:8]            <= m_ram_di_f;
+        end else m_ram_do[15:8] <= ram_aux[m_ram_addr_f[15:0]];
     end
     // ==================================================================
     // machine signals
@@ -108,7 +109,7 @@ module tb_u6_boot;
     reboot_ctl #(.HOLD_CYCLES(64)) u_reboot (
         .clk(clk_mach), .rst(machine_reset_base),
         .reboot_opt(reboot_opt), .mount_rise(mc_mount_rise | tb_reboot_force),
-        .clr_done(u6_ram_clr_done),
+        .clr_done(swp_done),
         .cold_reset(cold_reset_m), .ram_clear(ram_clear_m)
     );
     wire        m_clk2m;
@@ -558,12 +559,12 @@ module tb_u6_boot;
             repeat (2) @(posedge clk_mach);
             tb_reboot_force = 1'b0;
             u6r_cycles = 0;
-            while (cold_reset_m && u6r_cycles < 70000) begin
+            while (cold_reset_m && u6r_cycles < 150000) begin
                 u6r_cycles = u6r_cycles + 1;
                 @(posedge clk_mach);
             end
-            if (u6r_cycles < 65500 || u6r_cycles > 65700) begin
-                $display("FAIL U6-R: cold window %0d cycles (want ~%0d: 65536 sweep + HOLD)", u6r_cycles, 65536+64);
+            if (u6r_cycles < 131000 || u6r_cycles > 131300) begin
+                $display("FAIL U6-R: cold window %0d cycles (want ~%0d: 131072 two-pass sweep + HOLD)", u6r_cycles, 131072+64);
                 nfail = nfail + 1;
             end
             repeat (16) @(posedge clk_mach);

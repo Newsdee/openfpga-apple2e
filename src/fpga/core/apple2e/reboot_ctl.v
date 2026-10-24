@@ -34,14 +34,14 @@
 //
 `timescale 1ns/10ps
 module reboot_ctl #(
-    parameter CLR_TIMEOUT = 131072, // safety bound on the sweep (2x 65536)
+    parameter CLR_TIMEOUT = 262144, // safety bound (2x the 131,072-cycle two-pass sweep)
     parameter HOLD_CYCLES = 1024    // reset hold after the clear (~7.2 us)
 ) (
     input  wire clk,          // machine clock, 143.18 MHz
     input  wire rst,          // BASE machine reset (without cold_reset itself)
     input  wire reboot_opt,   // synchronized option bit: 1 = reboot on change
     input  wire mount_rise,   // rising edge of the mount controller's img_mounted
-    input  wire clr_done,     // RAM sweep finished (all 65,536 addresses written)
+    input  wire clr_done,     // RAM sweep finished (both 65,536-address passes written)
     output wire cold_reset,   // 1 = must be ORed into machine_reset
     output wire ram_clear     // 1 = RAM sweep in progress
 );

@@ -77,6 +77,7 @@ verilator_bin --binary --timing -j 4 \
     $S/disk_store.v \
     $S/disk_verifier.v \
     $S/reboot_ctl.v \
+    $S/ram_sweep_ctl.v \
     $S/io_sdram_pocket.v \
     $W/disk_ii_rom.v \
     $W/disk_ii_woz.sv \

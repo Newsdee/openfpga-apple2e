@@ -582,22 +582,28 @@ end
 
 // ---- 64K main + 64K aux RAM (inferred M10K) ----
 // ram_clear (reboot_ctl, "Reboot on disk change" option): sequential
-// WRITE-SWEEP clear - while ram_clear_m is high, a 16-bit counter walks
-// 0..65535 writing zero to BOTH banks, one address per machine cycle
-// (65,536 cycles = ~458 us at 143.18 MHz). Cyclone V M10Ks have no runtime
-// content-clear pin (only output/address clear - expert review 2026-10-24,
-// verified against the installed cyclonev_ram_block model), so a parallel
-// "clear all 1,048,576 bits" construct is neither a supported hardware
-// operation nor a TDS-friendly netlist (it previously broke block-RAM
-// inference -> ~1M logic registers -> Fitter 170011). The sweep is a
-// plain clocked write: normal single-port M10K inference, and it is what
-// the TBs model. reboot_ctl holds the machine in cold reset until
-// ram_clear_done plus a HOLD margin, so no m_ram_we can race the sweep.
-// The initial block is the power-on state only (MIF zero-fill).
+// WRITE-SWEEP clear. Cyclone V M10Ks have no runtime content-clear pin
+// (only output/address clear - expert review 2026-10-24, verified against
+// the installed cyclonev_ram_block model), and Quartus 17.0.2 will not
+// infer a single-port M10K whose write ADDRESS is conditional (if/else
+// two-write form OR muxed address: Error 276003 + 276007 "uninferred due
+// to asynchronous read logic" -> ~500K logic registers per bank -> Fitter
+// 170011 / multi-hour TDS grind). The inference matrix
+// (tools/ram_repro_matrix, 2026-10-24) isolated the poison precisely:
+// muxed write DATA or write ENABLE is fine; only the conditional write
+// ADDRESS breaks inference.
+//
+// So the RAM block below stays byte-identical to the proven M1 shape
+// (plain single-port, per-bank enable, write-first bypass) and the sweep
+// walks the BUS instead: ram_sweep_ctl drives we/addr/aux through a
+// combinational overlay on the _f nets (one 65,536-address pass per
+// bank = 131,072 cycles, ~0.92 ms at 143.18 MHz, data hardwired to 0).
+// The machine (CPU + Disk II) is in cold reset for the whole sweep
+// (reboot_ctl holds cold_reset until done + HOLD), so hijacking the RAM
+// write port is safe: apple2 and disk_ii_woz are reset-gated. The
+// initial block is the power-on state only (MIF zero-fill).
 integer ram_init_i;
 integer ram_init_j;
-reg  [15:0] ram_clr_addr;
-reg         ram_clear_done;
 reg  [7:0]  ram_main [0:65535];
 reg  [7:0]  ram_aux  [0:65535];
 reg  [15:0] m_ram_do;
@@ -607,6 +613,20 @@ wire [7:0]  m_ram_di;
 wire        m_ram_aux;
 wire        m_ram_we;
 wire        ram_clear_m;
+
+// ---- sweep bus overlay (inference-safe; the RAM block never sees a
+//      conditional write address) ----
+wire        swp_we, swp_aux, swp_done;
+wire [15:0] swp_addr;
+wire [17:0] m_ram_addr_f = swp_we ? {2'b00, swp_addr} : m_ram_addr;
+wire [7:0]  m_ram_di_f   = swp_we ? 8'd0 : m_ram_di;
+wire        m_ram_aux_f  = swp_we ? swp_aux : m_ram_aux;
+wire        m_ram_we_f   = swp_we | m_ram_we;
+ram_sweep_ctl woz_sweep (
+    .clk(clk_core_14318),
+    .start(ram_clear_m),
+    .we(swp_we), .addr(swp_addr), .aux(swp_aux), .done(swp_done)
+);
 initial begin
     // power-on RAM state (MIF zero-fill)
     for (ram_init_i = 0; ram_init_i < 256; ram_init_i = ram_init_i + 1) begin
@@ -616,25 +636,17 @@ initial begin
         end
     end
 end
+// ---- the proven M1 RAM shape: plain single-port per bank, write-first
+//      bypass - consumes the overlayed _f nets only ----
 always @(posedge clk_core_14318) begin
-    if (ram_clear_m) begin
-        // sweep: one address per cycle, zero to both banks
-        ram_clr_addr   <= ram_clr_addr + 16'd1;
-        ram_main[ram_clr_addr] <= 8'd0;
-        ram_aux[ram_clr_addr]  <= 8'd0;
-        ram_clear_done <= (ram_clr_addr == 16'hFFFF);
-    end else begin
-        ram_clr_addr   <= 16'd0;
-        ram_clear_done <= 1'b0;
-        if (m_ram_we & ~m_ram_aux) begin
-            ram_main[m_ram_addr[15:0]] <= m_ram_di;
-            m_ram_do[7:0]              <= m_ram_di;
-        end else m_ram_do[7:0]  <= ram_main[m_ram_addr[15:0]];
-        if (m_ram_we & m_ram_aux) begin
-            ram_aux[m_ram_addr[15:0]] <= m_ram_di;
-            m_ram_do[15:8]            <= m_ram_di;
-        end else m_ram_do[15:8]  <= ram_aux[m_ram_addr[15:0]];
-    end
+    if (m_ram_we_f & ~m_ram_aux_f) begin
+        ram_main[m_ram_addr_f[15:0]] <= m_ram_di_f;
+        m_ram_do[7:0]              <= m_ram_di_f;
+    end else m_ram_do[7:0]  <= ram_main[m_ram_addr_f[15:0]];
+    if (m_ram_we_f & m_ram_aux_f) begin
+        ram_aux[m_ram_addr_f[15:0]] <= m_ram_di_f;
+        m_ram_do[15:8]            <= m_ram_di_f;
+    end else m_ram_do[15:8]  <= ram_aux[m_ram_addr_f[15:0]];
 end
 
 // ---- machine core (wiring mirrors the level-1 test harness) ----
@@ -978,7 +990,7 @@ reboot_ctl woz_reboot (
     .rst         ( machine_reset_base ),
     .reboot_opt  ( reboot_opt_m ),
     .mount_rise  ( mc_mount_rise ),
-    .clr_done    ( ram_clear_done ),
+    .clr_done    ( swp_done ),
     .cold_reset  ( cold_reset_m ),
     .ram_clear   ( ram_clear_m )
 );
