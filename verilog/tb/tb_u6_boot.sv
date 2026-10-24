@@ -77,7 +77,6 @@ module tb_u6_boot;
                 ram_aux[u6_ram_clr_i]  <= 8'd0;
             end
         end else begin
-    always @(posedge clk_mach) begin
         if (m_ram_we & ~m_ram_aux) begin
             ram_main[m_ram_addr[15:0]] <= m_ram_di;
             m_ram_do[7:0]              <= m_ram_di;
