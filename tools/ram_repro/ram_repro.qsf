@@ -1,0 +1,13 @@
+# RAM clear idiom reproducer - A&S only (quartus_map ram_repro)
+#
+# Compare per-variant map summaries (registers, block memory bits,
+# uninferred-RAM warnings) between:
+#   u_plain / u_init  - the known-good M1 structure
+#   u_async           - the disputed whole-array async clear
+#   u_sweep           - the new sequential write-sweep
+# and the A&S wall time vs the full core.
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CEBA4F23C8
+set_global_assignment -name TOP_LEVEL_ENTITY ram_repro
+set_global_assignment -name VERILOG_FILE ram_repro.v
+set_global_assignment -name ORIGINAL_QUARTUS_VERSION "17.0.2"

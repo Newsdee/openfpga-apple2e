@@ -2,6 +2,50 @@
 
 Date: 2026-10-24. Written for handover after M1 (WOZ floppy boot) was completed,
 verified on hardware, and pushed. M1 state is **stable and green** — this doc
+covers only the two follow-up tasks the owner asked for, everything already
+investigated for them, the decided direction, and what remains to be done.
+
+---
+
+> ## ⚠️ BOTH TASKS ARE NOW DONE — committed in `add0b1f`
+>
+> **Do not re-implement anything below.** This document is retained as the
+> investigation record and the build/test quick reference (still useful); the
+> task sections describe work that has **landed**.
+>
+> `add0b1f` — *"M1 closeout: fingerprint gate + 'Reboot on disk change' core
+> option"*:
+>
+> - **Task 1 done:** `apf_stream_video_top.v` `parameter FP_DIAG = 1'b0` →
+>   `sdram_storage #(.FP_EN(FP_DIAG))` → `sdram_status_overlay
+>   #(.SHOW_FP(FP_DIAG))`. Fingerprint logic is trimmed at `FP_DIAG=0`; a debug
+>   build sets 1 to restore the M1 diagnostic. `tools/woz_fingerprint.py` kept as
+>   the PC oracle.
+> - **Task 2 done, and differently from the plan below:** implemented as a new
+>   module **`reboot_ctl.v`** plus an **`interact.json` `check` variable**
+>   ("Reboot on disk change", `persist: true`, `defaultval: 1` = ON, bridge
+>   address `0x01F00000`), decoded in the top into `cfg_reboot_word` and synced
+>   74.25 → machine as `reboot_opt_m`. **`apple2e_osk.v` was NOT touched** (the
+>   OSK-command-key route in Task 2 below was not used). `data.json` `parameters`
+>   is now **9** (framework bit6 dropped, so the core owns reset at the mount
+>   edge).
+> - **New side effect that other work must know about:** `machine_reset` gained a
+>   fourth source — `wire machine_reset = machine_reset_base | cold_reset_m;`.
+>   Anything resetting off `machine_reset` now also resets on a disk-change cold
+>   reboot. See `PLAN_NTSC_PORT_2026-10-24.md` §4a.
+> - **Verification recorded in the commit:** `tb_reboot_ctl` ALL PASS;
+>   `tb_ovl_status` T0–T8 PASS (new T8 asserts the `SHOW_FP=0` overlay is
+>   pixel-identical apart from the fp rows); `tb_verifier_fp` + `tb_vfp_probe`
+>   PASS (`FP_EN=1`); `tb_ovl_dbgrect` PASS. `run_ovl_suites.sh` fixed
+>   (`woz_bram.v` → `.sv`).
+> - **Still pending at the time of writing:** owner Quartus compile of
+>   `apf_stream_video` (map report should show the fp registers trimmed at
+>   `FP_DIAG=0` and `reboot_ctl` costing ~tens of ALMs; STA unchanged on the
+>   `mp2` path), the M1 fast regression + long storage suites, and the hardware
+>   pass (screen clean, still boots, disk-change reboot ON/OFF, option persists
+>   across a power cycle).
+
+---
 
 **Status update (2026-10-24, later that day):** both tasks are IMPLEMENTED:
 Task 1 (FP_DIAG/FP_EN/SHOW_FP gate, default off) and Task 2 ("Reboot on
@@ -14,17 +58,58 @@ and the M1 fast regression + long storage suites (re-running). QSF updated
 for `reboot_ctl.v`. A user Quartus compile of `apf_stream_video` validates
 the rest (map report should show the fp registers trimmed at FP_DIAG=0 and
 the reboot_ctl/option logic ~tens of ALMs).
-covers only the two follow-up tasks the owner asked for, everything already
-investigated for them, the decided direction, and what remains to be done.
 
 Repo state at handover:
 
-- `origin/main` = `b9fe195` (two commits: `1a5cc9d` "M1 complete: WOZ floppy
-  boot works on hardware — SDRAM read-capture fix + diagnostics" + `b9fe195`
-  verdict note). Working tree clean.
+- `origin/main` was `b9fe195` when this doc was written (two commits: `1a5cc9d`
+  "M1 complete: WOZ floppy boot works on hardware — SDRAM read-capture fix +
+  diagnostics" + `b9fe195` verdict note).
+  **It is now `add0b1f`**, which contains both tasks described below.
+  Re-check HEAD before relying on any line number or file list in this doc.
+- Donor `Apple-II_MiSTer`: was `168f8f7`; now **`7ed980d`** (comment-only
+  correction to `rtl/video/vga_controller.v`'s misleading "line-doubler" title —
+  see `PLAN_NTSC_PORT_2026-10-24.md` §3). Donor `rtl/` worktree is clean.
 - Hardware (2026-10-24): fingerprint matched the PC oracle byte-exact and
   **DOS 3.3 boots**; Jungle Hunt (second image) boots too. Screenshots:
   `I:\Memories\Screenshots\20261024_084738.png`, `20261024_084810.png`.
+
+---
+
+> ## ⚠️ LATEST STATUS (2026-10-24, evening) — external review changed the RAM clear
+>
+> The external expert review of `EXTERNAL_REVIEW_BRIEF_QUARTUS_SLOW_ASYN_2026-10-24.md`
+> challenged the async-clear ("RAMARST") idiom: the Cyclone V M10K has **no runtime
+> content-clear pin** (verified against the installed Quartus 17.0.2 atom model —
+> `cyclonev_ram_block` exposes only init/data-out-clear/address-clear). We agreed and
+> **changed the shipping design** (this is now HEAD, post-`b9a416a`):
+>
+> - **`apf_stream_video_top.v`**: the machine RAMs are cleared by a **sequential
+>   write-sweep** — a 16-bit counter walks 0..65535 writing zero to `ram_main` and
+>   `ram_aux` one address per machine cycle while `ram_clear_m` is high (65,536
+>   cycles ≈ **458 µs at 143.18 MHz**). The RAM `always` block is clock-only again
+>   (plain M10K inference; the `initial` zero-fill stays as power-on/MIF state).
+>   The sweep emits a one-cycle `ram_clear_done` pulse at the last address.
+> - **`reboot_ctl.v`**: the CLR phase now ends on the `clr_done` handshake
+>   (sweep complete) instead of a fixed 4,096 cycles, bounded by a
+>   `CLR_TIMEOUT = 131072` safety counter so the machine can never be stuck in
+>   reset. HOLD is still 1,024 cycles; total reboot ≈ 465 µs. (Also fixed a
+>   14.318→143.18 MHz typo in the docstring.)
+> - **TBs closed the coverage gap the review flagged:** `tb_u6_boot` now models the
+>   exact sweep (counter + per-cycle writes, `u6_ram_clr_done`) and U6-R expects the
+>   real window (~65,600 cycles); `tb_reboot_ctl` gained a `clr_done` model + a
+>   timeout-path test — 7/7 PASS. Full-top Verilator lint clean.
+> - **`tools/ram_repro/`** (new, for the owner's Quartus): an isolated 4-variant
+>   64K×8 RAM A&S reproducer — plain / plain+init / the disputed async clear / the
+>   new sweep — with `quartus_map ram_repro` as the cheap first experiment
+>   (see the brief §11 and the README in that folder).
+> - The external brief now carries the full response + adopted corrections in §11
+>   (weakened "ruled out"s, `SYNTH_TIMING_DRIVEN_SYNTHESIS` as the correct Q17
+>   assignment name, 190-M10K baseline).
+>
+> **Still pending:** u6 full-machine re-run (sweep semantics), owner `quartus_map`
+> of `ram_repro` (minutes) then the clean full-core `apf_stream_video` compile
+> (expectation: normal clean A&S; map should show ram_main/ram_aux back to M10Ks,
+> ~190 M10Ks, ~15K registers), then the usual hardware pass.
 
 ## Context you must know before touching anything
 
@@ -317,15 +402,24 @@ reload; not user-selectable, longer reboot, restarts the whole core.
 
 ### Open questions for the owner (mostly resolved 2026-10-24)
 
-1. **Resolved:** option is `Reboot on disk change` On/Off; ON = cold reboot
-   (no warm-reset mode), OFF = no reboot (hot swap).
-2. **Default value — recommended ON** (preserves today's "insert disk → it
-   boots" UX, now as a proper cold boot; turn OFF per game for hot-swap).
-   Confirm or flip.
-3. Per-session vs persisted: `persist: true` recommended (free); per-asset
-   (per-disk) overrides to be verified on hardware.
-4. Confirm the OSK fallback is not wanted (interact.json check is the
-   mechanism).
+All four are **resolved by what `add0b1f` shipped**; they are kept here as the
+record of the decisions, not as open asks.
+
+1. **Resolved & shipped:** option is `Reboot on disk change` On/Off; ON = cold
+   reboot (no warm-reset mode), OFF = no reboot (hot swap).
+2. **Resolved & shipped: default ON** (`"defaultval": 1`, and
+   `cfg_reboot_word = 32'd1` in RTL so a fresh user reboots) — preserves the
+   "insert disk → it boots" UX as a proper cold boot; turn OFF per game for
+   hot-swap.
+3. **Resolved & shipped: `persist: true`.** Per-asset (per-disk) overrides are
+   still to be verified on hardware, and whether the framework honours them on
+   our card layout.
+4. **Resolved: the OSK-command-key fallback was not used** — `interact.json`
+   `check` is the mechanism, and `apple2e_osk.v` is untouched.
+
+**Remaining asks are verification, not design:** the owner Quartus compile, the
+fast regression + long storage suites, and the hardware pass listed in the banner
+above.
 
 ## Build / test quick reference (so you don't re-derive)
 
@@ -348,6 +442,11 @@ reload; not user-selectable, longer reboot, restarts the whole core.
   L=0000000000000000`.
 
 ## Suggested order of work
+
+> **HISTORICAL — steps 1–3 are done in `add0b1f`.** Kept as the record of how the
+> work was sequenced. What actually remains is the verification list in the banner
+> at the top of this doc, plus step 4 (decide whether to delete the gated
+> fingerprint mechanism outright or keep it one flag away — currently kept).
 
 1. Task 1 (self-contained, small): parameter-gate the fingerprint → overlay
    TBs in both states → fast regression → lint → owner compile (verify fp

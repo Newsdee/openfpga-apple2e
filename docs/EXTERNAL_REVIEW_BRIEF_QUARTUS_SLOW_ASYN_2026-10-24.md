@@ -22,7 +22,7 @@ Quartus-17 TDS pathologies, (c) what to measure/try next. Everything below is se
 | Host | Windows, MSYS2 UCRT64 tooling; disk E: 3.6 TB free / 36% used |
 | Quartus | Prime **17.0.2 Build 602 (2017) Lite Edition** |
 | Device | Cyclone V **5CEBA4F23C8** (openFPGA / Analogue Pocket SoC) |
-| Design scale | ~8,978 / 18,480 ALM (49%), 2 PLLs, ~150 M10Ks, 0 DSP; top `apf_top_stream` |
+| Design scale | ~8,978 / 18,480 ALM (49%), 2 PLLs, 190 M10Ks, 0 DSP; top `apf_top_stream` |
 | Known host quirk | Endpoint AV agent (`mc-fw-host`) on this host has a documented history of
   interfering with freshly built/launched binaries (kills fresh PEs mid-session). No known
   interference with Quartus itself, but it *does* scan disk writes. |
@@ -47,9 +47,9 @@ is therefore an *incremental* figure. Today we hit the first **clean from-scratc
 (the db had to be wiped after a poisoned run, §5). So:
 
 - We do not know how long a clean A&S of this design *should* take in Q17.0.2 Lite.
-- The design's scale cannot explain the grind: at 14:36 today, A&S of a **pathologically broken
-  1,053,672-register netlist (100× the real one)** finished in a few minutes — as an
-  incremental run, admittedly, but scale is clearly not the limiting factor here.
+- The 1M-register netlist A&S'd in minutes shows scale alone is not the limiting factor —
+  *but* (per the expert review, §11) runtime also depends on structure and optimization
+  difficulty, not just register count, so this is evidence, not a proof.
 
 ## 5. Today's run timeline (all local time, 2026-10-24)
 
@@ -115,15 +115,22 @@ end
 No SDC, constraint, QSF, or device setting changed (one VERILOG_FILE line added for
 `reboot_ctl.v`).
 
-## 7. Ruled out so far
+## 7. Ruled out so far (per the expert review, these are now *weakened*, not proven)
 
 - **Stale/poisoned db state** — wiped; clean run still grinds (though in a different shape:
-  600 MB RAM, single-core, no I/O).
-- **Design scale** — the 100×-larger broken netlist A&S'd in minutes.
-- **Process hang / I/O block** — it's at 99.7% CPU (in-process computation), not waiting.
-- **RTL logic error** — Verilator elaboration clean; 7 sim suites PASS; earlier today the same
-  netlist elaborated in Quartus A&S without issue (16:53 run got through to TDS).
+  600 MB RAM, single-core, no I/O). *Weakening: fragment timestamps show db history, not
+  which phases were actually reused — but the poisoned state is now gone either way."
+- **Design scale** — the 100×-larger broken netlist A&S'd in minutes. *Weakening: runtime
+  depends on structure/optimization difficulty, not just register count."
+- **Process hang / I/O block** — 99.7% CPU rules out simple idle waiting; *an optimizer can
+  still loop or make little progress at full CPU."
+- **RTL logic error** — Verilator elaboration clean; 7 sim suites PASS; Quartus elaborated it
+  at 16:53 (reached TDS). *Weakening: simulation passing selected scenarios does not prove
+  synthesis compatibility — which is exactly what the new isolated RAM reproducer (tools/ram_repro)
+  is for."
 - **Disk full / other builds running** — 3.6 TB free; no other Quartus or sim processes.
+- There is **no reliable "over ten minutes means stuck" threshold**; the missing clean baseline
+  (this design has never had a clean-from-scratch A&S in Q17.0.2) prevents a useful comparison.
 
 ## 8. Snapshot of the current run (17:48)
 
@@ -152,8 +159,17 @@ Last A&S phase message: "Timing-Driven Synthesis is running"
    progressing" from "stuck" — perfmon counters, `quartus_map --verbose` output, the `.qmsg`
    decode, Windows Event Log / AV scan logs? (We can provide any of these.)
 5. **Bisection knobs:** we're prepared to run —
-   - `set_global_assignment -name TIME_DRIVEN_SYNTHESIS OFF` and re-run (isolates the TDS phase)
+   - `set_global_assignment -name SYNTH_TIMING_DRIVEN_SYNTHESIS OFF` and re-run (isolates the
+     TDS phase; the expert review confirmed from the installed assignment defaults that Q17.0.2
+     uses `SYNTH_TIMING_DRIVEN_SYNTHESIS`, not `TIME_DRIVEN_SYNTHESIS` — our earlier draft name
+     was wrong)
    - A&S-only run (`quartus_map`) to separate from fitter
+   - **Isolated 4-variant RAM reproducer first** (`tools/ram_repro/`, added in the review-
+     response commit): plain / plain+init / async-clear / sweep-clear, same 64K×8 dimensions and
+     write-first behavior — `quartus_map ram_repro` in that directory. This is now the
+     recommended first experiment (the expert's step 1).
+   - Clean A&S of the last known-good core (pre-reboot-feature tip) in a separate build location
+     to establish the clean-baseline number.
    - Same project on another machine / another Quartus version (18.1/19.1 Standard?)
    - Disabling the endpoint AV agent for the run (owner-controlled)
    Is there a better order or additional first test?
@@ -175,3 +191,76 @@ reboot feature).
 
 — Prepared by the implementing engineer; functional simulation state: ALL GREEN. This is purely
 a synthesis-infrastructure question.
+
+---
+
+## 11. Response to the external expert review (2026-10-24)
+
+The review's central claim — **M10K reset controls do not clear stored memory contents at
+runtime** — was verified against the installed Quartus 17.0.2 device model (`cyclonev_atoms.v`,
+`cyclonev_ram_block`: ports are `init_file`, per-port `data_out_clear`, `address_clear`,
+`clr0/clr1` — **no content-clear pin**). We agree, and have **changed the shipping design**:
+
+### 11.1 What changed in the RTL (this commit)
+
+- **The async-clear idiom is no longer the shipping design.** The machine RAMs are now
+  cleared by a **sequential write-sweep**: a 16-bit counter walks 0..65535, writing zero to
+  both banks one address per machine cycle (65,536 cycles ≈ **458 µs at 143.18 MHz** — the
+  machine clock is 143.18 MHz, not 14.318; the "14.318" figure in the review came from a typo
+  in our own `reboot_ctl.v` docstring, now fixed). The RAM `always` block is a plain
+  clock-only process with a single write (the sweep or the machine's normal write), exactly
+  the M1 structure plus one address/data mux — normal M10K inference, and identical to what
+  the testbenches model. The `initial` zero-fill is kept as the power-on (MIF) state only.
+- **`reboot_ctl` now handshakes on `clr_done`** (the sweep's completion pulse) instead of a
+  fixed 4,096-cycle window, with a 131,072-cycle safety timeout so the machine can never be
+  stuck in reset. HOLD (1,024 cycles) is unchanged. Total reboot ≈ 465 µs — still
+  imperceptible between disk images.
+- **Testbench coverage gap closed:** `tb_u6_boot` previously modeled the clear as its own
+  synchronous full-array clear (a different RAM model than the shipping one, as the review
+  noted). It now models the exact sweep (counter + per-cycle writes) and re-verifies the
+  full cold-reboot window through the real machine (U6-R). `tb_reboot_ctl` gained a
+  `clr_done` handshake model and a timeout-path test (all 7 cases PASS).
+
+### 11.2 New first experiment: the isolated RAM reproducer
+
+`tools/ram_repro/` (qpf + qsf + `ram_repro.v`, lint-clean): four independent 64K×8 inferred
+RAMs with identical read/write behavior, differing only in the clear idiom —
+
+| Variant | Clear idiom |
+|---|---|
+| `u_plain` | none (the known-good M1 structure) |
+| `u_init` | plain + `initial` zero-fill |
+| `u_async` | the disputed whole-array async clear (exact structure of the 16:53-era code) |
+| `u_sweep` | the new write-sweep (shipping design) |
+
+`ram_clear` is a top input so the clear branches cannot be constant-folded away. Run
+`quartus_map ram_repro` from `tools/ram_repro/`. Read the per-hierarchy map summaries
+(registers, block-memory bits, uninferred-RAM warnings) and the A&S wall time: if `u_async`
+demotes to ~524K logic registers (or grows its own clear engine) while the others infer
+into M10Ks, the disputed idiom is confirmed as the A&S difficulty source; if it infers
+cleanly and A&S is fast, the TDS grind has another cause and we proceed to the
+baseline/bisection steps in §9.5.
+
+### 11.3 Agreed corrections adopted
+
+- "Ruled out" statements weakened to the review's more defensible form (§7).
+- `SYNTH_TIMING_DRIVEN_SYNTHESIS` is the correct Q17.0.2 assignment name (§9.5).
+- Baseline M10K count corrected to 190 (§2).
+- Evidence hygiene: the `output_files_apple2e/` reports are preserved; note the poisoned
+  `db/` was deleted **before** the review landed (it had already been characterized in §5 —
+  6 GB working set, `.smart_action.txt = SOURCE`, silent 30+ min) and cannot be restored.
+- The NTSC port work stays parked until this issue is resolved.
+
+### 11.4 Where we disagree (lightly)
+
+The review's 4.58 ms clear-time figure used 14.318 MHz; the machine clock is 143.18 MHz
+(`clk_core_14318`, per the PLL config and every M1 document), so the sweep is 458 µs —
+10× cheaper than quoted, which strengthens the sweep design, not weakens it. And the
+absent content-clear pin in the installed atom model is strong evidence for the review's
+hardware claim; we no longer need to argue the RAMARST question, because the shipping
+design no longer depends on it.
+
+**Status at push time:** sweep RTL lint-clean (full-top Verilator, 0 errors); `tb_reboot_ctl`
+PASS (7/7 incl. handshake + timeout); `tb_u6_boot` re-running (sweep semantics); the
+reproducer is ready for `quartus_map`. The in-flight clean full-core A&S (pre-sweep RTL)
+remains the calibration data point for §9.1 either way.

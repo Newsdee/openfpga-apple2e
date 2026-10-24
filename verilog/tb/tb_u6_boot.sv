@@ -66,17 +66,21 @@ module tb_u6_boot;
     wire [17:0] m_ram_addr;
     wire [7:0]  m_ram_di;
     wire        m_ram_aux, m_ram_we;
-    // ram_clear_m ("Reboot on disk change") = synchronous full clear of
-    // both arrays (the power-on RAM state); mirrors the streaming top.
+    // ram_clear_m ("Reboot on disk change") = the top's sequential write-sweep:
+    // one address per cycle, zero to both banks (identical to the
+    // streaming top, so the TB models the shipping semantics).
     wire        ram_clear_m;
-    integer     u6_ram_clr_i;
+    reg         u6_ram_clr_done;
+    reg  [15:0] u6_ram_clr_addr;
     always @(posedge clk_mach) begin
         if (ram_clear_m) begin
-            for (u6_ram_clr_i = 0; u6_ram_clr_i < 65536; u6_ram_clr_i = u6_ram_clr_i + 1) begin
-                ram_main[u6_ram_clr_i] <= 8'd0;
-                ram_aux[u6_ram_clr_i]  <= 8'd0;
-            end
+            u6_ram_clr_addr <= u6_ram_clr_addr + 16'd1;
+            ram_main[u6_ram_clr_addr] <= 8'd0;
+            ram_aux[u6_ram_clr_addr]  <= 8'd0;
+            u6_ram_clr_done <= (u6_ram_clr_addr == 16'hFFFF);
         end else begin
+            u6_ram_clr_addr <= 16'd0;
+            u6_ram_clr_done <= 1'b0;
         if (m_ram_we & ~m_ram_aux) begin
             ram_main[m_ram_addr[15:0]] <= m_ram_di;
             m_ram_do[7:0]              <= m_ram_di;
@@ -101,9 +105,10 @@ module tb_u6_boot;
     reg         tb_reboot_force = 1'b0;
     wire        cold_reset_m;
     wire        machine_reset = machine_reset_base | cold_reset_m;
-    reboot_ctl #(.CLR_CYCLES(256), .HOLD_CYCLES(64)) u_reboot (
+    reboot_ctl #(.HOLD_CYCLES(64)) u_reboot (
         .clk(clk_mach), .rst(machine_reset_base),
         .reboot_opt(reboot_opt), .mount_rise(mc_mount_rise | tb_reboot_force),
+        .clr_done(u6_ram_clr_done),
         .cold_reset(cold_reset_m), .ram_clear(ram_clear_m)
     );
     wire        m_clk2m;
@@ -553,12 +558,12 @@ module tb_u6_boot;
             repeat (2) @(posedge clk_mach);
             tb_reboot_force = 1'b0;
             u6r_cycles = 0;
-            while (cold_reset_m && u6r_cycles < 512) begin
+            while (cold_reset_m && u6r_cycles < 70000) begin
                 u6r_cycles = u6r_cycles + 1;
                 @(posedge clk_mach);
             end
-            if (u6r_cycles < 300 || u6r_cycles > 340) begin
-                $display("FAIL U6-R: cold window %0d cycles (want ~%0d)", u6r_cycles, 256+64);
+            if (u6r_cycles < 65500 || u6r_cycles > 65700) begin
+                $display("FAIL U6-R: cold window %0d cycles (want ~%0d: 65536 sweep + HOLD)", u6r_cycles, 65536+64);
                 nfail = nfail + 1;
             end
             repeat (16) @(posedge clk_mach);

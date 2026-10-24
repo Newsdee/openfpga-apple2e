@@ -538,7 +538,7 @@ always @(posedge clk_core_14318 or negedge reset_n) begin
     else          rst_sync <= {rst_sync[0], 1'b1};
 end
 
-// PLL lock, synchronized into the 14.318 domain: the machine must not
+// PLL lock, synchronized into the 143.18 MHz domain: the machine must not
 // leave reset until clk_core_14318 is valid (locked = 1).
 reg [1:0] lock_sync;
 always @(posedge clk_core_14318) begin
@@ -581,15 +581,23 @@ always @(posedge clk_core_14318 or posedge machine_reset) begin
 end
 
 // ---- 64K main + 64K aux RAM (inferred M10K) ----
-// ram_clear (reboot_ctl, "Reboot on disk change" option): ASYNC-reset idiom
-// (ram_clear_m in the sensitivity list + initial zero-fill) so Quartus maps
-// the clear to the M10K RAMARST port - a whole-block hardware clear at zero
-// ALM cost. A synchronous if/for clear instead breaks block-RAM inference
-// (the arrays fall back to ~1M logic registers -> Fitter Error 170011).
-// The 6502 is held in reset (cold_reset) for the whole clear window plus a
-// HOLD margin, so no m_ram_we can race it and the CPU releases onto clean RAM.
-integer ram_clr_a;
-integer ram_clr_b;
+// ram_clear (reboot_ctl, "Reboot on disk change" option): sequential
+// WRITE-SWEEP clear - while ram_clear_m is high, a 16-bit counter walks
+// 0..65535 writing zero to BOTH banks, one address per machine cycle
+// (65,536 cycles = ~458 us at 143.18 MHz). Cyclone V M10Ks have no runtime
+// content-clear pin (only output/address clear - expert review 2026-10-24,
+// verified against the installed cyclonev_ram_block model), so a parallel
+// "clear all 1,048,576 bits" construct is neither a supported hardware
+// operation nor a TDS-friendly netlist (it previously broke block-RAM
+// inference -> ~1M logic registers -> Fitter 170011). The sweep is a
+// plain clocked write: normal single-port M10K inference, and it is what
+// the TBs model. reboot_ctl holds the machine in cold reset until
+// ram_clear_done plus a HOLD margin, so no m_ram_we can race the sweep.
+// The initial block is the power-on state only (MIF zero-fill).
+integer ram_init_i;
+integer ram_init_j;
+reg  [15:0] ram_clr_addr;
+reg         ram_clear_done;
 reg  [7:0]  ram_main [0:65535];
 reg  [7:0]  ram_aux  [0:65535];
 reg  [15:0] m_ram_do;
@@ -600,26 +608,24 @@ wire        m_ram_aux;
 wire        m_ram_we;
 wire        ram_clear_m;
 initial begin
-    // power-on RAM state (also the RAMARST clear value)
-    for (ram_clr_a = 0; ram_clr_a < 256; ram_clr_a = ram_clr_a + 1) begin
-        for (ram_clr_b = 0; ram_clr_b < 256; ram_clr_b = ram_clr_b + 1) begin
-            ram_main[{ram_clr_a[7:0], ram_clr_b[7:0]}] = 8'd0;
-            ram_aux[{ram_clr_a[7:0], ram_clr_b[7:0]}]  = 8'd0;
+    // power-on RAM state (MIF zero-fill)
+    for (ram_init_i = 0; ram_init_i < 256; ram_init_i = ram_init_i + 1) begin
+        for (ram_init_j = 0; ram_init_j < 256; ram_init_j = ram_init_j + 1) begin
+            ram_main[{ram_init_i[7:0], ram_init_j[7:0]}] = 8'd0;
+            ram_aux[{ram_init_i[7:0], ram_init_j[7:0]}]  = 8'd0;
         end
     end
 end
-always @(posedge clk_core_14318 or posedge ram_clear_m) begin
+always @(posedge clk_core_14318) begin
     if (ram_clear_m) begin
-        // 256x256 nesting: Quartus 17 rejects flat loops > 5000 iterations
-        // (Error 10106). Unrolled, this is the standard async-RAM-reset
-        // pattern Quartus maps to the M10K RAMARST input.
-        for (ram_clr_a = 0; ram_clr_a < 256; ram_clr_a = ram_clr_a + 1) begin
-            for (ram_clr_b = 0; ram_clr_b < 256; ram_clr_b = ram_clr_b + 1) begin
-                ram_main[{ram_clr_a[7:0], ram_clr_b[7:0]}] <= 8'd0;
-                ram_aux[{ram_clr_a[7:0], ram_clr_b[7:0]}]  <= 8'd0;
-            end
-        end
+        // sweep: one address per cycle, zero to both banks
+        ram_clr_addr   <= ram_clr_addr + 16'd1;
+        ram_main[ram_clr_addr] <= 8'd0;
+        ram_aux[ram_clr_addr]  <= 8'd0;
+        ram_clear_done <= (ram_clr_addr == 16'hFFFF);
     end else begin
+        ram_clr_addr   <= 16'd0;
+        ram_clear_done <= 1'b0;
         if (m_ram_we & ~m_ram_aux) begin
             ram_main[m_ram_addr[15:0]] <= m_ram_di;
             m_ram_do[7:0]              <= m_ram_di;
@@ -962,7 +968,7 @@ wire        mc_mount_rise = mc_img_mounted && !mc_mounted_d;
 // ---- "Reboot on disk change" (interact.json option, persisted) ----
 // bridge(74.25) -> machine sync of the option bit, then the cold-reboot
 // FSM: every LATER disk mount (the power-on mount is suppressed) resets
-// the machine and clears its RAM for ~357 us when the option is ON.
+// the machine and sweeps its RAM to zero (~465 us when the option is ON).
 wire        reboot_opt_m;
 synch_3 #(.WIDTH(1)) u_reboot_opt_sync (
     .i(cfg_reboot_word[0]), .o(reboot_opt_m), .clk(clk_core_14318)
@@ -972,6 +978,7 @@ reboot_ctl woz_reboot (
     .rst         ( machine_reset_base ),
     .reboot_opt  ( reboot_opt_m ),
     .mount_rise  ( mc_mount_rise ),
+    .clr_done    ( ram_clear_done ),
     .cold_reset  ( cold_reset_m ),
     .ram_clear   ( ram_clear_m )
 );
