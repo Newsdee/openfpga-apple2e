@@ -121,7 +121,14 @@ int main(int argc, char **argv)
     bool wzBoundNF = false;
     bool smokePass = false;
     uint32_t wozaCrc = 0;
-    double budgetPs = 50e9;   // default 50 ms of sim time
+    // Context time is in ps (TB timescale 1ns/1ps: #1 = 1ns, 1ms = 1e9 ps).
+    // The host cycle needs ~80 ms of sim time (2 ms action_go + 20 ms
+    // pre-wait + ~58 ms WOZ load at load_pace=40 + Reset-Exit), and the
+    // smoke milestone (below) requires t > 800 ms - so the budget must
+    // exceed 800 ms. (Was 50e9 = 50 ms: the run always ended mid-load and
+    // the smoke could never pass - found 2026-10-24, post-review sweep run.
+    // Pre-existing: the 2026-10-24 01:41 pre-sweep smoke failed identically.)
+    double budgetPs = 1000e9;   // 1000 ms of sim time
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];

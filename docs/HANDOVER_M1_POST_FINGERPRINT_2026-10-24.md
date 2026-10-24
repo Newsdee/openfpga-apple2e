@@ -110,6 +110,20 @@ Repo state at handover:
 > of `ram_repro` (minutes) then the clean full-core `apf_stream_video` compile
 > (expectation: normal clean A&S; map should show ram_main/ram_aux back to M10Ks,
 > ~190 M10Ks, ~15K registers), then the usual hardware pass.
+>
+> **pocket_boot smoke, investigated 2026-10-24 (not a sweep regression):** the
+> headless smoke failed with the machine held in reset — but the *pre-sweep*
+> smoke run of 01:41 failed identically, and the failure is a harness-budget
+> bug, not RTL: context time is in **ps**, the smoke budget was `50e9` = **50 ms**,
+> while the TB host cycle needs ~80 ms (2 ms trigger + 20 ms pre-wait + ~58 ms
+> WOZ load at `load_pace=40` + Reset-Exit) and the pass milestone requires
+> `t > 800e9` = 800 ms. The smoke could therefore never pass as configured.
+> Fix (C++ only, this commit): `budgetPs` 50e9 → 1000e9 (1 ms = 1e9 ps). The
+> old interactive runs prove the full chain works (run_cpu.log: host cycle
+> done at ~60 ms, machine released, frames arriving) — a full smoke re-run is
+> a ~1-hour background job and is queued after the owner's Quartus runs.
+
+---
 
 ## Context you must know before touching anything
 
