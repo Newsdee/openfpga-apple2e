@@ -68,9 +68,23 @@ module tb_ovl_status;
     reg [127:0] fp_first_r, fp_last_r, fp_w_r;
     wire [23:0] rgb_out;
 
-    sdram_status_overlay #(.SHOW_CYCLES(4_000_000)) dut (
+    sdram_status_overlay #(.SHOW_CYCLES(4_000_000), .SHOW_FP(1)) dut (
         .clk(clk), .reset(reset),
         .rgb_in(24'd0), .hbl(hbl), .vbl(vbl), .rgb_out(rgb_out),
+        .res_valid_m(res_valid_m), .res_code_m(res_code_m),
+        .res_fail_m(res_fail_m), .res_crc_m(res_crc_m),
+        .res_nbytes_m(res_nbytes_m),
+        .dbg_rc_m(dbg_rc_m), .dbg_fl_m(dbg_fl_m), .stage_m(stage_m),
+        .fp_first(fp_first_r), .fp_last(fp_last_r), .fp_w(fp_w_r)
+    );
+
+    // ---- T8 DUT: default parameters (SHOW_FP=0 - the shipping build) ----
+    // Same inputs as the main DUT; the fingerprint lines (rows 65..95) must
+    // be blank while every other line stays pixel-identical.
+    wire [23:0] rgb_off;
+    sdram_status_overlay dut_off (
+        .clk(clk), .reset(reset),
+        .rgb_in(24'd0), .hbl(hbl), .vbl(vbl), .rgb_out(rgb_off),
         .res_valid_m(res_valid_m), .res_code_m(res_code_m),
         .res_fail_m(res_fail_m), .res_crc_m(res_crc_m),
         .res_nbytes_m(res_nbytes_m),
@@ -275,6 +289,33 @@ module tb_ovl_status;
     endtask
 
 
+
+    // pixel sampling of the T8 DUT (same raster, same mirror counters)
+    reg [23:0] pxoff [0:559];
+    task sample_line_off(input [7:0] V);
+        integer c;
+        integer wait_cyc;
+        begin
+            c = 0;
+            wait_cyc = 0;
+            while (c < 559) begin
+                if (m_row == V && !hbl && m_col != 10'd0) begin
+                    pxoff[m_col] = (rgb_off == 24'hFFFFFF) ? 24'hFFFFFF : 24'd0;
+                    c = c + 1;
+                    wait_cyc = 0;
+                end else begin
+                    wait_cyc = wait_cyc + 1;
+                    if (wait_cyc > 150000) begin
+                        $display("SLO-HANG V=%0d m_row=%0d vbl=%b hbl=%b c=%0d",
+                                 V, m_row, vbl, hbl, c);
+                        fails = fails + 1;
+                        $fatal(1, "sample_line_off timeout V=%0d c=%0d", V, c);
+                    end
+                end
+                @(negedge clk);
+            end
+        end
+    endtask
 
     // debug: dump pixel regions to a file for offline decode
     integer pf;
@@ -644,6 +685,44 @@ module tb_ovl_status;
         if (fails == fbase) $display("T7 PASS: fingerprint lines W0/W1/W2/W3/F/L exact");
         else $display("T7 FAIL (%0d new)", fails - fbase);
 
+        // ================= T8: SHOW_FP=0 (default) - shipping build =====
+        // dut_off runs the same inputs with default parameters: fp rows
+        // must be completely blank; a non-fp line (L1) must be
+        // pixel-identical to the SHOW_FP=1 DUT.
+        set_result(1'b1, 2'd0, 2'd0, 32'h12345678, 32'h00030000,
+                   {16'd0, 24'd128, 24'd128}, 3'd0, 3'd6);
+        repeat (40) @(negedge clk);   // both DUTs latch the fresh result
+        fbase = fails;
+        sample_line(8'd8);            // main DUT L1 (row 8)
+        sample_line_off(8'd8);        // off DUT L1 (row 8, next frame)
+        for (i = 0; i < 560; i = i + 1)
+            if (px[i] != pxoff[i]) begin
+                fails = fails + 1;
+                $display("F T8: L1 diff col%0d dut=%b off=%b", i, px[i], pxoff[i]);
+            end
+        // fp row blocks on the off DUT must be blank (one row per block;
+        // all four blocks share the same SHOW_FP gate)
+        sample_line_off(8'd65);
+        for (i = 0; i < 560; i = i + 1)
+            if (pxoff[i] == 24'hFFFFFF) begin
+                fails = fails + 1;
+                $display("F T8: W0 row not blank col%0d", i);
+            end
+        sample_line_off(8'd81);
+        for (i = 0; i < 560; i = i + 1)
+            if (pxoff[i] == 24'hFFFFFF) begin
+                fails = fails + 1;
+                $display("F T8: F row not blank col%0d", i);
+            end
+        sample_line_off(8'd89);
+        for (i = 0; i < 560; i = i + 1)
+            if (pxoff[i] == 24'hFFFFFF) begin
+                fails = fails + 1;
+                $display("F T8: L row not blank col%0d", i);
+            end
+        if (fails == fbase) $display("T8 PASS: SHOW_FP=0 -> fp rows blank, other lines identical");
+        else $display("T8 FAIL (%0d new)", fails - fbase);
+
         // ---- DUMP phase: OK result, stage 6 - file dump for offline decode ----
         set_result(1'b1, 2'd0, 2'd0, 32'hC9260F5E, 32'd512, 48'h000080_000080, 3'd0, 3'd6);
         repeat(8) @(negedge clk);
@@ -652,7 +731,7 @@ module tb_ovl_status;
         res_crc_m <= 32'd0; res_nbytes_m <= 32'd0; stage_m <= 3'd0;
         repeat(8) @(negedge clk);
 
-        if (fails == 0) $display("OVL STATUS PASS: real raster, exact glyphs, all hex digits, per-flag, marker, expiry, re-arm");
+        if (fails == 0) $display("OVL STATUS PASS: real raster, exact glyphs, all hex digits, per-flag, marker, expiry, re-arm, SHOW_FP gate");
         else $fatal(1, "OVL STATUS FAIL: %0d pixel mismatches", fails);
         $finish;
     end

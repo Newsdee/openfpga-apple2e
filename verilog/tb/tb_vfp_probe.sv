@@ -16,7 +16,7 @@ module tb_vfp_probe;
     wire [127:0] fp_first, fp_last;
     wire [31:0] fp_w0, fp_w1, fp_w2, fp_w3;
 
-    disk_verifier #(.TIMEOUT_CYCLES(1000)) dut (
+    disk_verifier #(.TIMEOUT_CYCLES(1000), .FP_EN(1)) dut (
         .clk(clk), .rst_n(rst_n),
         .n_bytes(n_bytes), .start(start), .start_done(start_done),
         .req(req), .req_addr(req_addr),

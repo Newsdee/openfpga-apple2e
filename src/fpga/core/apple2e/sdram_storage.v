@@ -112,6 +112,13 @@ module sdram_storage (
     output wire        dram_we_n
 );
 
+    // Image-fingerprint diagnostics fan-out (M1): the top-level FP_DIAG
+    // parameter enables the disk_verifier window CRCs/head-tail latches
+    // here; the top passes the same value to the status overlay's SHOW_FP
+    // (which draws rows 65..95). Shipping builds keep both 0 - the
+    // diagnostic is one parameter away for the next hardware-load mystery.
+    parameter FP_EN = 1'b0;
+
     // ==================================================================
     // host -> FIFO (74.25 MHz)
     // 64MiB window per the basicassets reference mapping:
@@ -363,7 +370,7 @@ module sdram_storage (
     wire [127:0] v_fp_first, v_fp_last;
     wire [31:0]  v_fp_w0, v_fp_w1, v_fp_w2, v_fp_w3;
 
-    disk_verifier #(.TIMEOUT_CYCLES(20000)) ver0 (
+    disk_verifier #(.TIMEOUT_CYCLES(20000), .FP_EN(FP_EN)) ver0 (
         .clk(clk_mach), .rst_n(rst_n_mach),
         .n_bytes(v_nbytes_m), .start(v_start_pulse), .start_done(v_start_done),
         .req(v_req), .req_addr(v_req_addr),

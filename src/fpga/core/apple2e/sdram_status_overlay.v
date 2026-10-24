@@ -83,8 +83,9 @@ module sdram_status_overlay (
     input  wire         drv_tfault,    // transport fault latch (triggers unmount)
     input  wire         drv_rdreq,    // engine SD read request (woz_sd_rd) level
 
-    // ---- image fingerprint (M1 hardware-load diagnostics, always-on;
-    //      last latched verification pass; zero before the first pass) ----
+    // ---- image fingerprint (M1 hardware-load diagnostics; drawn only
+    //      when SHOW_FP=1 - see below; last latched verification pass;
+    //      zero before the first pass) ----
     // fp_first = file bytes [0:15] (MSB = byte 0); fp_last = bytes [n-16:n-1]
     //   (word-aligned tail frame; see disk_verifier.v header);
     // fp_w = {w0,w1,w2,w3} independent zlib-style CRC32s of byte windows
@@ -106,6 +107,12 @@ module sdram_status_overlay (
     // state, results, and font logic - proves the overlay is in the video
     // path regardless of everything else. Shipping builds keep 0.
     parameter DBG_RECT = 1'b0;
+    // Image-fingerprint lines (rows 65..95): 0 = shipping build (lines
+    // blank, glyph/fp logic trimmed); 1 = build with the M1 hardware-load
+    // diagnostic. The top-level FP_DIAG parameter fans this out together
+    // with the disk_verifier FP_EN accumulator; tools/woz_fingerprint.py
+    // stays the PC oracle for any build that enables it.
+    parameter SHOW_FP = 1'b0;
 
     // ---- glyph codes ----
     // 0-9 -> 0-9, A=11 B=12 C=13 D=14 E=15 F=16, O=17 K=18 R=19 I=20
@@ -538,7 +545,7 @@ module sdram_status_overlay (
     assign px7 = !hbl && !vbl && in_x7 && in_l7 && cidx7_w < 10'd4 &&
                 cin7_w < 10'd5 && r7bits[3'd4 - cin7_w[2:0]];
 
-    // ---- image fingerprint readout (always-on, M1 hardware-load diagnostic) ----
+    // ---- image fingerprint readout (SHOW_FP-gated, M1 hardware-load diagnostic) ----
     // line 8:  24 chars at X0=406, rows 65..71: "W0=XXXXXXXX W1=XXXXXXXX"
     // line 9:  24 chars at X0=406, rows 73..79: "W2=XXXXXXXX W3=XXXXXXXX"
     // line 10: 18 chars at X0=442, rows 81..87: "F=XXXXXXXXXXXXXXXX" (bytes 0..15)
@@ -573,7 +580,7 @@ module sdram_status_overlay (
     assign g8      = (in_l8 && cidx8_w < 10'd24) ? f8[cidx8_w[4:0]] : 5'd0;
     assign g8_bits = gf(g8);
     assign r8bits  = g8_bits[34 - {2'b00, r8_w[2:0]} * 5'd5 -: 5];
-    assign px8 = !hbl && !vbl && in_x8 && in_l8 && cidx8_w < 10'd24 &&
+    assign px8 = SHOW_FP && !hbl && !vbl && in_x8 && in_l8 && cidx8_w < 10'd24 &&
                 cin8_w < 10'd5 && r8bits[3'd4 - cin8_w[2:0]];
     wire [4:0] f9 [0:23];
     assign f9[0]  = GL_W;  assign f9[1]  = 5'd2;  assign f9[2]  = GL_EQ;
@@ -605,7 +612,7 @@ module sdram_status_overlay (
     assign g9      = (in_l9 && cidx9_w < 10'd24) ? f9[cidx9_w[4:0]] : 5'd0;
     assign g9_bits = gf(g9);
     assign r9bits  = g9_bits[34 - {2'b00, r9_w[2:0]} * 5'd5 -: 5];
-    assign px9 = !hbl && !vbl && in_x9 && in_l9 && cidx9_w < 10'd24 &&
+    assign px9 = SHOW_FP && !hbl && !vbl && in_x9 && in_l9 && cidx9_w < 10'd24 &&
                 cin9_w < 10'd5 && r9bits[3'd4 - cin9_w[2:0]];
     wire [4:0] f10 [0:17];
     assign f10[0]  = 5'd16;   // 'F' = first-16-bytes marker
@@ -635,7 +642,7 @@ module sdram_status_overlay (
     assign g10      = (in_l10 && cidx10_w < 10'd18) ? f10[cidx10_w[4:0]] : 5'd0;
     assign g10_bits = gf(g10);
     assign r10bits  = g10_bits[34 - {2'b00, r10_w[2:0]} * 5'd5 -: 5];
-    assign px10 = !hbl && !vbl && in_x10 && in_l10 && cidx10_w < 10'd18 &&
+    assign px10 = SHOW_FP && !hbl && !vbl && in_x10 && in_l10 && cidx10_w < 10'd18 &&
                 cin10_w < 10'd5 && r10bits[3'd4 - cin10_w[2:0]];
     // line 11: 18 chars at X0=442, rows 89..95: "L=XXXXXXXXXXXXXXXX"
     // 16 hex chars = 8 bytes: the LOW 64 bits of fp_last = the file's
@@ -669,7 +676,7 @@ module sdram_status_overlay (
     assign g11      = (in_l11 && cidx11_w < 10'd18) ? f11[cidx11_w[4:0]] : 5'd0;
     assign g11_bits = gf(g11);
     assign r11bits  = g11_bits[34 - {2'b00, r11_w[2:0]} * 5'd5 -: 5];
-    assign px11 = !hbl && !vbl && in_x11 && in_l11 && cidx11_w < 10'd18 &&
+    assign px11 = SHOW_FP && !hbl && !vbl && in_x11 && in_l11 && cidx11_w < 10'd18 &&
                 cin11_w < 10'd5 && r11bits[3'd4 - cin11_w[2:0]];
 
     assign rgb_out = (mpx || px1 || px2 || px3 || px4 || px5 || px6 || px7 ||

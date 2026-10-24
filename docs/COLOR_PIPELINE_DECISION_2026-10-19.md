@@ -1,5 +1,58 @@
 # Decision request — Apple IIe Pocket OSK color pipeline (2026-10-19)
 
+> **CLOSED 2026-10-24 — do not re-open this decision. Option D was implemented
+> and is hardware-verified.** This doc is retained as the record of how the
+> decision was reached, not as live guidance.
+>
+> What happened since it was written:
+>
+> - **Option D (native RGB streaming, no framebuffer) shipped.** The built top
+>   `apf_stream_video_top.v` instantiates `apf_stream_video #(.DEC2X(0))`,
+>   streaming native 560 px/line at `clk_core_14318` straight to the APF DDR
+>   video pad. RGB888 already flows end-to-end:
+>   `machine VIDEO → apple2e_osk (video_rgb24, full color + transparency) →
+>   sdram_status_overlay (ovl_rgb) → apf_stream_video → APF pad`.
+>   Commits `b6efcf2` (Phase 1 prototype), `e1cfd2a` (Phase 2 native streaming +
+>   full-color OSK), `d7be961` (remap + aspect presets) — all marked
+>   hardware-verified.
+> - **`apf_video.v` (the M10K ping-pong adapter this doc reasons about) is still
+>   in the tree but is NOT instantiated by the shipping top.** Every storage
+>   figure below describes a module that is no longer in the build. See
+>   `docs/HANDOVER_M1_POST_FINGERPRINT_2026-10-24.md` for the current state.
+>
+> Disposition of the four "Questions for the experts":
+>
+> 1. **Is 560×192 @ ~14.312 MHz a legal APF input? ANSWERED — yes, on hardware.**
+>    Deployed `video.json` declares 560×192 with three aspect presets
+>    (10:9, 4:3, 70:24). The measured APF contract is recorded in the
+>    `apf_stream_video.v` header: 16×16..800×720 active, 47–~61 Hz,
+>    pixel clock ≤ ~50 MHz, DE contiguous, RGB = 0 outside DE.
+>    One hardware finding worth keeping: a **strobed (non-contiguous) DE was
+>    rejected — pink screen**. DE must be a contiguous run.
+> 2. **Is native streaming the right base for composite color, or does the
+>    decoder's line history argue for a line-buffered path? ANSWERED — native
+>    streaming is correct.** `composite_decoder.sv` needs one previous line
+>    (`linebuf_mem[0:1023]` × 16 b = 16 Kbit) and `vga_controller.v` needs one
+>    previous line (`previous_line_rgb[0:559]` × 24 b = 107 Kbit). Both are
+>    single-line comb histories that live naturally in a stream — exactly the
+>    "local history or line storage" the companion handover doc distinguishes
+>    from "two complete RGB frames". Neither is a framebuffer argument.
+>    **Correction to a claim made during the 2026-10-24 re-review:
+>    `vga_controller.v` is NOT a line-doubler despite its own header comment.**
+>    Its counters free-run on `CLK_14M` at native geometry and
+>    `video_pipeline.sv` derives sync from *native* machine blanking. So
+>    `video_pipeline` is a native-rate 560×192 `CLK_14M` RGB producer — a direct
+>    fit for the shipping stream, with no second PLL and no raster change.
+> 3. **Stream the OSK's transparency blends live rather than pre-blending into a
+>    store? ANSWERED — yes, and it is implemented** (`apple2e_osk.video_rgb24`).
+> 4. **Keep the PSRAM path (C) warm as an escalation? CLOSED — dropped.** Option C
+>    existed only as an escape hatch if Option B had been necessary. It is not.
+>    Carrying it is dead architectural debt; no PSRAM controller is planned for
+>    this core.
+>
+> Live successor work is tracked in
+> [`DESIGN_NTSC_COLOR_PORT_2026-10-24.md`](DESIGN_NTSC_COLOR_PORT_2026-10-24.md).
+
 > **SUPerseded 2026-10-19 16:30 +08:00 (correction + new leading path).**
 > The **Option B** arithmetic in this doc was **wrong**: it counted the
 > `pix_ram` *words* (65,536 × 24 = 1.57 Mbit), not the actual *pixels* it must
@@ -65,7 +118,14 @@ its 24-bit color is generated in software and stored in **PSRAM**. The
 relevant reference: it **streams native RGB with no full-frame buffer**, proving
 the APF accepts a non-400×512 raster.
 
-## Working recommendation (D — native RGB streaming)
+## Working recommendation (D — native RGB streaming) — IMPLEMENTED, hardware-verified
+
+> Historical: the sequence below (Phase 0–3) was carried out. Phases 0–2 are
+> done and shipping; **Phase 3 (composite color via the MiSTer
+> `video_pipeline.sv`) is the remaining work** and is specified in
+> [`DESIGN_NTSC_COLOR_PORT_2026-10-24.md`](DESIGN_NTSC_COLOR_PORT_2026-10-24.md).
+> The `apf_video.v` fallback referenced below is no longer instantiated.
+
 Per the NES reference, **prototype direct RGB streaming first** — no full-frame
 buffer, no PSRAM. The Apple IIe core would stream its **native** 560-sample ×
 192-line video (black/white now, composite RGB later) through a thin APF

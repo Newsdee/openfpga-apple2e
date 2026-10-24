@@ -9,6 +9,24 @@ Companion: [Pocket colour decision request](COLOR_PIPELINE_DECISION_2026-10-19.m
 This summary corrects that document's framebuffer arithmetic and its claim
 that MiSTer has no framebuffer or scaling.
 
+> **STATUS 2026-10-24: §1 is still current and is the right mental model for
+> the NTSC port. §2 and §3 are HISTORICAL** — they cost out
+> `apf_video.v`, the M10K ping-pong adapter, which is **no longer instantiated**
+> by the shipping top. Their arithmetic is retained as a lesson, not as a live
+> budget. §4's first investigation (“can APF accept a streaming raster?”)
+> is **complete and answered yes, on hardware**. See
+> [`DESIGN_NTSC_COLOR_PORT_2026-10-24.md`](DESIGN_NTSC_COLOR_PORT_2026-10-24.md)
+> for live work and [`COLOR_PIPELINE_DECISION_2026-10-19.md`](COLOR_PIPELINE_DECISION_2026-10-19.md)
+> for the closed decision.
+>
+> What shipped since this doc: native RGB streaming, no framebuffer
+> (`apf_stream_video #(.DEC2X(0))`, 560 px/line at `clk_core_14318`), with
+> RGB888 + transparency end-to-end from the OSK. Commits `b6efcf2`, `e1cfd2a`,
+> `d7be961`, all hardware-verified. **The central conclusion below was correct
+> and is now implemented**: MiSTer succeeds by streaming RGB through colour/OSK
+> stages and letting the platform scale externally; the Pocket now does the
+> same, with the Pocket scaler in ascal's role.
+
 ## Executive conclusion
 
 MiSTer does not need a native RGB frame stored in the Apple II core's M10Ks
@@ -105,6 +123,13 @@ drop-in. The platform interfaces and infrastructure differ.
 
 ## 2. Why the current Pocket path costs more M10K
 
+> **HISTORICAL (2026-10-24).** This section analyses `apf_video.v`, which the
+> shipping top no longer instantiates. The streaming path that replaced it has
+> no full-frame store; `apf_stream_video.v` allocates at most a 280×24
+> one-line buffer (~1 M10K) and only in the non-shipping `DEC2X=1` mode.
+> `apf_video.v` should be moved to `archive/` or deleted so nobody plans
+> against it again.
+
 [apf_video.v](../src/fpga/core/apple2e/apf_video.v) captures native samples
 in the machine domain, then reads a completed buffer from the APF video
 clock domain. It maps 560 samples to 320 output columns and centres 192
@@ -119,6 +144,16 @@ bit before this buffer. Colour is lost at that explicit conversion, not
 because the OSK renderer cannot generate colour.
 
 ## 3. Correct memory budget
+
+> **HISTORICAL NUMBERS, LIVE LESSON (2026-10-24).** The `pix_ram` this section
+> budgets no longer exists in the build, so the block counts below
+> (524,288 bits / 64 blocks / 217 of 308) must not be used for planning.
+> Current measured baseline is in
+> `src/fpga/output_files_apple2e/apf_stream_video.fit.summary`.
+> **Keep the reasoning**, which is what actually prevented a bad milestone:
+> a packed eight-pixel word is not one pixel, so widening a word does not
+> widen a framebuffer; and budget in inferred RAM blocks and legal port
+> geometries, not logical bits.
 
 The current `pix_ram[0:65535]` has eight bits per word. Each word contains
 **eight separate monochrome pixels**.
@@ -156,6 +191,16 @@ The currently unused address combinations were not optimized out.
 ## 4. Architecture decision order
 
 ### First investigate: can APF accept a suitable streaming raster?
+
+> **DONE — ANSWERED YES ON HARDWARE (2026-10-24).** 560×192 at
+> 14.318 MHz is a legal APF input and is what the core ships; deployed
+> `video.json` declares it with three aspect presets. The verification list
+> below is retained as the record of what was checked. Measured contract
+> (now documented in `apf_stream_video.v`): 16×16..800×720 active,
+> 47–~61 Hz, pixel clock ≤ ~50 MHz, DE a contiguous run, RGB = 0
+> outside DE, HS a 1-cycle pulse in blanking never overlapping DE.
+> Hardware finding: a **strobed (non-contiguous) DE was rejected — pink
+> screen**.
 
 The 400 x 512 total / 320 x 240 active raster is the current implementation,
 not proof of an immutable APF platform requirement.
@@ -229,7 +274,7 @@ alignment, and coherent transfer of OSK state.
 9. Report measured resources, warnings, timing coverage, and the exact
    image tested. Keep keyboard behaviour and unrelated RTL untouched.
 
-**Bottom line:** MiSTer succeeds by streaming RGB through colour/OSK stages
+**Bottom line (confirmed by the shipped implementation):** MiSTer succeeds by streaming RGB through colour/OSK stages
 and using its platform's external-memory scaler, not by fitting two native
 RGB888 frames into this Pocket-sized M10K budget. Borrow that separation
 of responsibilities, not the incorrect assumption that widening one RAM

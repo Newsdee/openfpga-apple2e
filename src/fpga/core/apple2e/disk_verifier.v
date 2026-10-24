@@ -34,7 +34,13 @@
 //
 `timescale 1ns/10ps
 module disk_verifier #(
-    parameter TIMEOUT_CYCLES = 20000     // ~1.4 ms per word (op is ~4 us)
+    parameter TIMEOUT_CYCLES = 20000,    // ~1.4 ms per word (op is ~4 us)
+    // Image-fingerprint diagnostics (M1 hardware-load): 0 = shipping build
+    // (fp registers/accumulators trimmed, outputs constant 0); 1 = build
+    // with the always-computed 4x64 KB window CRCs + head/tail latches
+    // (tools/woz_fingerprint.py is the PC oracle). No extra SDRAM traffic
+    // either way - the fingerprint rides on the existing verify readback.
+    parameter FP_EN = 1'b0
 ) (
     input  wire        clk,              // machine, 14.318 MHz
     input  wire        rst_n,            // core POR, async crossing (74.25)
@@ -186,10 +192,12 @@ module disk_verifier #(
                     if (start) begin
                         start_done  <= 1'b1;
                         crc_w       <= 32'hFFFFFFFF;
-                        wcrc        <= 32'hFFFFFFFF;
-                        wbase_idx   <= 2'd0;
-                        fp_raw      <= 128'd0;
-                        fp_tail     <= 128'd0;
+                        if (FP_EN) begin
+                            wcrc        <= 32'hFFFFFFFF;
+                            wbase_idx   <= 2'd0;
+                            fp_raw      <= 128'd0;
+                            fp_tail     <= 128'd0;
+                        end
                         widx        <= 32'd0;
                         stuck       <= 1'b0;
                         words_read  <= 16'd0;
@@ -229,32 +237,34 @@ module disk_verifier #(
                         // tail: true 32-bit left shift (word K-1 ends in
                         // [31:0]); note {reg[127:32],x} would discard the
                         // low word on every shift.
-                        if (widx < 32'd4) begin
-                            // slot k fills when widx==k; slots below k are
-                            // still zero (never written). Every RHS must be
-                            // exactly 128 bits or Verilog zero-extends the
-                            // concatenation and the top slot silently dies.
-                            case (widx)
-                                32'd0: fp_raw <= {rd_data, 96'd0};
-                                32'd1: fp_raw <= {fp_raw[127:96], rd_data,
-                                                  64'd0};
-                                32'd2: fp_raw <= {fp_raw[127:96], fp_raw[95:64],
-                                                  rd_data, 32'd0};
-                                default: fp_raw <= {fp_raw[127:96], fp_raw[95:64],
-                                                    fp_raw[63:32], rd_data};
-                            endcase
-                        end
-                        fp_tail     <= {fp_tail[95:0], rd_data};
-                        if (wboundary) begin
-                            case (wbase_idx)
-                                2'd0: fp_w0 <= wcrc ^ 32'hFFFFFFFF;
-                                2'd1: fp_w1 <= wcrc ^ 32'hFFFFFFFF;
-                                2'd2: fp_w2 <= wcrc ^ 32'hFFFFFFFF;
-                                default: fp_w3 <= wcrc ^ 32'hFFFFFFFF;
-                            endcase
-                            wcrc      <= 32'hFFFFFFFF;
-                            // boundary words are 16384/32768/49152 = 2^14*k
-                            wbase_idx <= widx[16:14];
+                        if (FP_EN) begin
+                            if (widx < 32'd4) begin
+                                // slot k fills when widx==k; slots below k are
+                                // still zero (never written). Every RHS must be
+                                // exactly 128 bits or Verilog zero-extends the
+                                // concatenation and the top slot silently dies.
+                                case (widx)
+                                    32'd0: fp_raw <= {rd_data, 96'd0};
+                                    32'd1: fp_raw <= {fp_raw[127:96], rd_data,
+                                                      64'd0};
+                                    32'd2: fp_raw <= {fp_raw[127:96], fp_raw[95:64],
+                                                      rd_data, 32'd0};
+                                    default: fp_raw <= {fp_raw[127:96], fp_raw[95:64],
+                                                        fp_raw[63:32], rd_data};
+                                endcase
+                            end
+                            fp_tail     <= {fp_tail[95:0], rd_data};
+                            if (wboundary) begin
+                                case (wbase_idx)
+                                    2'd0: fp_w0 <= wcrc ^ 32'hFFFFFFFF;
+                                    2'd1: fp_w1 <= wcrc ^ 32'hFFFFFFFF;
+                                    2'd2: fp_w2 <= wcrc ^ 32'hFFFFFFFF;
+                                    default: fp_w3 <= wcrc ^ 32'hFFFFFFFF;
+                                endcase
+                                wcrc      <= 32'hFFFFFFFF;
+                                // boundary words are 16384/32768/49152 = 2^14*k
+                                wbase_idx <= widx[16:14];
+                            end
                         end
                         words_read   <= words_read + 16'd1;
                         nbytes_w     <= (widx + 32'd1 == (n_bytes + 32'd3) >> 2)
@@ -281,7 +291,7 @@ module disk_verifier #(
                 ST_CRC: begin
                     // 8 machine cycles per byte: reflected (IEEE) CRC32 step
                     crc_w <= crc_step;
-                    wcrc  <= wcrc_step;
+                    if (FP_EN) wcrc <= wcrc_step;
                     if (bitc == 4'd7) begin
                         bitc <= 4'd0;
                         if (bidx + 4'd1 == {1'b0, nbytes_w}) begin
@@ -293,27 +303,31 @@ module disk_verifier #(
                                 crc32         <= crc_step ^ 32'hFFFFFFFF;
                                 words_readout <= words_read;
                                 // finalize the last (partial or full) window
-                                case (wbase_idx)
-                                    2'd0: fp_w0 <= wcrc_step ^ 32'hFFFFFFFF;
-                                    2'd1: fp_w1 <= wcrc_step ^ 32'hFFFFFFFF;
-                                    2'd2: fp_w2 <= wcrc_step ^ 32'hFFFFFFFF;
-                                    default: fp_w3 <= wcrc_step ^ 32'hFFFFFFFF;
-                                endcase
+                                if (FP_EN) begin
+                                    case (wbase_idx)
+                                        2'd0: fp_w0 <= wcrc_step ^ 32'hFFFFFFFF;
+                                        2'd1: fp_w1 <= wcrc_step ^ 32'hFFFFFFFF;
+                                        2'd2: fp_w2 <= wcrc_step ^ 32'hFFFFFFFF;
+                                        default: fp_w3 <= wcrc_step ^ 32'hFFFFFFFF;
+                                    endcase
+                                end
                                 // head/tail bytes, zeroing bytes beyond EOF.
                                 // fp_first slot i = file byte i      (valid i < n)
                                 // fp_last  slot i = file byte n'-16+i (valid per
                                 //   the nprime/nrem_p rule in the header)
                                 for (bi = 0; bi < 16; bi = bi + 1) begin
-                                    if (bi < nb5)
-                                        fp_first[127 - bi*8 -: 8] <= fp_raw[127 - bi*8 -: 8];
-                                    else
-                                        fp_first[127 - bi*8 -: 8] <= 8'd0;
-                                    if (((nprime >= 32'd16) ? 1'b1 :
-                                         (bi[4:0] >= (16 - nprime[4:0]))) &&
-                                        ({2'b00, bi[4:0]} + {3'd0, nrem_p}) < 5'd16)
-                                        fp_last[127 - bi*8 -: 8] <= fp_tail[127 - bi*8 -: 8];
-                                    else
-                                        fp_last[127 - bi*8 -: 8] <= 8'd0;
+                                    if (FP_EN) begin
+                                        if (bi < nb5)
+                                            fp_first[127 - bi*8 -: 8] <= fp_raw[127 - bi*8 -: 8];
+                                        else
+                                            fp_first[127 - bi*8 -: 8] <= 8'd0;
+                                        if (((nprime >= 32'd16) ? 1'b1 :
+                                             (bi[4:0] >= (16 - nprime[4:0]))) &&
+                                            ({2'b00, bi[4:0]} + {3'd0, nrem_p}) < 5'd16)
+                                            fp_last[127 - bi*8 -: 8] <= fp_tail[127 - bi*8 -: 8];
+                                        else
+                                            fp_last[127 - bi*8 -: 8] <= 8'd0;
+                                    end
                                 end
                                 st            <= ST_END;
                             end else begin

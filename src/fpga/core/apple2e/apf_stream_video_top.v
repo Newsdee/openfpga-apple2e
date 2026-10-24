@@ -240,6 +240,17 @@ assign port_ir_rx_disable = 1;
 // bridge endianness
 assign bridge_endian_little = 0;
 
+// ---- "Reboot on disk change" option word (interact.json variable) ----
+// The Pocket framework writes the selected value here at boot (before
+// Reset Exit) and reads it back at shutdown (after Reset Enter) - the
+// register must therefore survive machine_reset (it is bridge-domain,
+// clocked only by clk_74a). 0x01F00000 sits outside the data-slot FIFO
+// window (0x00xxxxxx) and the F8/F9 command/diagnostic spaces.
+reg [31:0] cfg_reboot_word = 32'd1;   // default ON (fresh users reboot)
+always @(posedge clk_74a)
+    if (bridge_wr && bridge_addr == 32'h01F00000)
+        cfg_reboot_word <= bridge_wr_data;
+
 // cart is unused, so set all level translators accordingly
 // directions are 0:IN, 1:OUT
 assign cart_tran_bank3 = 8'hzz;
@@ -326,6 +337,10 @@ always @(*) begin
     32'hF9xxxxxx: begin
         // M0 SDRAM storage diagnostics (see sdram_storage.v)
         bridge_rd_data <= stor_diag_rd;
+    end
+    32'h01F0xxxx: begin
+        // "Reboot on disk change" option word (framework read-back)
+        bridge_rd_data <= cfg_reboot_word;
     end
     endcase
 end
@@ -529,7 +544,13 @@ reg [1:0] lock_sync;
 always @(posedge clk_core_14318) begin
     lock_sync <= {lock_sync[0], pll_core_locked};
 end
-wire machine_reset = ~rst_sync[1] | ~lock_sync[1] | osk_cmd_reset;
+wire machine_reset_base = ~rst_sync[1] | ~lock_sync[1] | osk_cmd_reset;
+// "Reboot on disk change" option: the cold-reboot FSM (reboot_ctl, below
+// the mount logic) ORs its reset contribution in; it is async-reset by
+// machine_reset_base ONLY, never by machine_reset, so a cold pulse can
+// not re-trigger itself.
+wire        cold_reset_m;
+wire machine_reset = machine_reset_base | cold_reset_m;
 wire osk_reset    = ~rst_sync[1] | ~lock_sync[1];   // host/POC only - the OSK must survive its own command reset (review #2)
 
 // Power-on PLL release pulse (clk_74a domain): hold the PLL in reset for
@@ -560,6 +581,11 @@ always @(posedge clk_core_14318 or posedge machine_reset) begin
 end
 
 // ---- 64K main + 64K aux RAM (inferred M10K) ----
+// ram_clear (reboot_ctl, "Reboot on disk change" option): synchronous
+// full clear of both arrays = the power-on RAM state. The 6502 is held
+// in reset (cold_reset) for the whole clear window plus a HOLD margin,
+// so no m_ram_we can race it and the CPU releases onto clean RAM.
+integer ram_clr_i;
 reg  [7:0]  ram_main [0:65535];
 reg  [7:0]  ram_aux  [0:65535];
 reg  [15:0] m_ram_do;
@@ -568,15 +594,23 @@ wire [17:0] m_ram_addr;
 wire [7:0]  m_ram_di;
 wire        m_ram_aux;
 wire        m_ram_we;
+wire        ram_clear_m;
 always @(posedge clk_core_14318) begin
-    if (m_ram_we & ~m_ram_aux) begin
-        ram_main[m_ram_addr[15:0]] <= m_ram_di;
-        m_ram_do[7:0]              <= m_ram_di;
-    end else m_ram_do[7:0]  <= ram_main[m_ram_addr[15:0]];
-    if (m_ram_we & m_ram_aux) begin
-        ram_aux[m_ram_addr[15:0]] <= m_ram_di;
-        m_ram_do[15:8]            <= m_ram_di;
-    end else m_ram_do[15:8]  <= ram_aux[m_ram_addr[15:0]];
+    if (ram_clear_m) begin
+        for (ram_clr_i = 0; ram_clr_i < 65536; ram_clr_i = ram_clr_i + 1) begin
+            ram_main[ram_clr_i] <= 8'd0;
+            ram_aux[ram_clr_i]  <= 8'd0;
+        end
+    end else begin
+        if (m_ram_we & ~m_ram_aux) begin
+            ram_main[m_ram_addr[15:0]] <= m_ram_di;
+            m_ram_do[7:0]              <= m_ram_di;
+        end else m_ram_do[7:0]  <= ram_main[m_ram_addr[15:0]];
+        if (m_ram_we & m_ram_aux) begin
+            ram_aux[m_ram_addr[15:0]] <= m_ram_di;
+            m_ram_do[15:8]            <= m_ram_di;
+        end else m_ram_do[15:8]  <= ram_aux[m_ram_addr[15:0]];
+    end
 end
 
 // ---- machine core (wiring mirrors the level-1 test harness) ----
@@ -802,7 +836,13 @@ wire        stor_sector_done, stor_fetch_fault;
 wire f9_wr = bridge_wr && (bridge_addr[31:16] == 16'hF900);
 wire f9_rd = bridge_rd && (bridge_addr[31:16] == 16'hF900);
 
-sdram_storage stor (
+// Image-fingerprint diagnostic (M1 hardware-load): default 0 = shipping
+// build (no overlay lines, verifier fp logic trimmed). A debug build sets
+// 1 to restore the always-on W0..W3/F/L overlay lines + verifier window
+// CRCs (PC oracle: tools/woz_fingerprint.py).
+parameter FP_DIAG = 1'b0;
+
+sdram_storage #(.FP_EN(FP_DIAG)) stor (
     .clk_74a         ( clk_74a ),
     .sdram_path_rst  ( sdram_path_rst ),
     .bridge_wr       ( bridge_wr ),
@@ -900,6 +940,23 @@ reg         mc_mounted_d;
 always @(posedge clk_core_14318)
     mc_mounted_d <= mc_img_mounted;
 wire        mc_mount_rise = mc_img_mounted && !mc_mounted_d;
+
+// ---- "Reboot on disk change" (interact.json option, persisted) ----
+// bridge(74.25) -> machine sync of the option bit, then the cold-reboot
+// FSM: every LATER disk mount (the power-on mount is suppressed) resets
+// the machine and clears its RAM for ~357 us when the option is ON.
+wire        reboot_opt_m;
+synch_3 #(.WIDTH(1)) u_reboot_opt_sync (
+    .i(cfg_reboot_word[0]), .o(reboot_opt_m), .clk(clk_core_14318)
+);
+reboot_ctl woz_reboot (
+    .clk         ( clk_core_14318 ),
+    .rst         ( machine_reset_base ),
+    .reboot_opt  ( reboot_opt_m ),
+    .mount_rise  ( mc_mount_rise ),
+    .cold_reset  ( cold_reset_m ),
+    .ram_clear   ( ram_clear_m )
+);
 // slot-qualified PD mux (C9): the disk slot is $C0E0-$C0EF (device select)
 // plus the Disk II ROM at $C600-$C6FF (IO select); D_OUT is already gated
 // internally (rom vs data register) - the mux only selects the slot.
@@ -993,14 +1050,14 @@ end
 
 // ---- on-screen diagnostic (temporary, M0 only) ----
 wire [23:0] ovl_rgb;
-sdram_status_overlay ovl (
+sdram_status_overlay #(.SHOW_FP(FP_DIAG)) ovl (
     .clk(clk_core_14318), .reset(machine_reset),
     .rgb_in(osk_rgb24), .hbl(m_hbl), .vbl(m_vbl),
     .rgb_out(ovl_rgb),
     .res_valid_m(stor_res_valid_m), .res_code_m(stor_res_code_m),
     .res_fail_m(stor_res_fail_m), .res_crc_m(stor_res_crc_m),
     .res_nbytes_m(stor_res_nbytes_m),
-    // image fingerprint (always-on lines 8-11; last latched verify pass)
+    // image fingerprint (lines 8-11, shown only when FP_DIAG=1; last latched verify pass)
     .fp_first(stor_fp_first_m), .fp_last(stor_fp_last_m),
     .fp_w(stor_fp_w_m),
     .dbg_rc_m(stor_dbg_rc_m),

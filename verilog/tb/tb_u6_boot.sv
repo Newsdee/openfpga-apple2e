@@ -66,6 +66,17 @@ module tb_u6_boot;
     wire [17:0] m_ram_addr;
     wire [7:0]  m_ram_di;
     wire        m_ram_aux, m_ram_we;
+    // ram_clear_m ("Reboot on disk change") = synchronous full clear of
+    // both arrays (the power-on RAM state); mirrors the streaming top.
+    wire        ram_clear_m;
+    integer     u6_ram_clr_i;
+    always @(posedge clk_mach) begin
+        if (ram_clear_m) begin
+            for (u6_ram_clr_i = 0; u6_ram_clr_i < 65536; u6_ram_clr_i = u6_ram_clr_i + 1) begin
+                ram_main[u6_ram_clr_i] <= 8'd0;
+                ram_aux[u6_ram_clr_i]  <= 8'd0;
+            end
+        end else begin
     always @(posedge clk_mach) begin
         if (m_ram_we & ~m_ram_aux) begin
             ram_main[m_ram_addr[15:0]] <= m_ram_di;
@@ -76,11 +87,27 @@ module tb_u6_boot;
             m_ram_do[15:8]            <= m_ram_di;
         end else m_ram_do[15:8] <= ram_aux[m_ram_addr[15:0]];
     end
-
+        end
+    end
     // ==================================================================
     // machine signals
     // ==================================================================
-    reg         machine_reset = 1'b1;
+    // "Reboot on disk change" (interact.json option): the cold-reboot FSM
+    // is wired exactly like the streaming top. Option bit ON here (the
+    // framework default for fresh users); tb_reboot_force injects a
+    // synthetic second-mount edge for the U6-R check. The real first mount
+    // is suppressed by the FSM (power-on load), so the normal boot path
+    // runs with the module idle.
+    reg         machine_reset_base = 1'b1;
+    reg         reboot_opt = 1'b1;
+    reg         tb_reboot_force = 1'b0;
+    wire        cold_reset_m;
+    wire        machine_reset = machine_reset_base | cold_reset_m;
+    reboot_ctl #(.CLR_CYCLES(256), .HOLD_CYCLES(64)) u_reboot (
+        .clk(clk_mach), .rst(machine_reset_base),
+        .reboot_opt(reboot_opt), .mount_rise(mc_mount_rise | tb_reboot_force),
+        .cold_reset(cold_reset_m), .ram_clear(ram_clear_m)
+    );
     wire        m_clk2m;
     wire        m_pz, m_pzr, m_pzf;
     wire        m_video, m_hbl, m_vbl;
@@ -468,7 +495,7 @@ module tb_u6_boot;
         bridge_wr=1'b0; bridge_addr=32'd0; bridge_wr_data=32'd0;
         diag_rd=1'b0; diag_wr=1'b0; diag_wr_sel=4'd0;
         ds_req=1'b0; ds_req_id=16'd0; ds_req_size=32'd0; ds_allc=1'b0;
-        machine_reset = 1'b1;   // hold the machine in reset until B1 (after load)
+        machine_reset_base = 1'b1;   // hold the machine in reset until B1 (after load)
 
         #1000;
         por_done = 1;   // SDRAM power-on settle
@@ -500,9 +527,62 @@ module tb_u6_boot;
         // Release the machine reset (the engine's RESET = machine_reset, so
         // this lets the engine boot + scan; the machine boots in parallel but
         // we do not wait for it - the full DOS boot is the hardware acceptance).
-        machine_reset = 1'b1;
+        machine_reset_base = 1'b1;
         repeat (40) @(posedge clk_mach);
-        machine_reset = 1'b0;
+        machine_reset_base = 1'b0;
+
+        // ---- U6-R: "Reboot on disk change" cold reboot through the machine --
+        // reboot_ctl is wired exactly like the streaming top (option ON, the
+        // framework default; the real first mount above was suppressed as a
+        // power-on load). Fire a synthetic second-mount edge and verify:
+        // the composite machine_reset pulses for the full CLR+HOLD window,
+        // a pre-set RAM word is cleared (the power-on RAM state), and the
+        // machine comes back alive. The engine's RESET/DD_RESET are the same
+        // composite, so the engine re-parses - B1 below still has to pass.
+        begin : u6_reboot
+            integer u6r_cycles;
+            reg [15:0] u6r_addr;
+            reg [15:0] pc_a, pc_b;
+            u6r_addr = 16'h1234;
+            ram_main[u6r_addr] = 8'hA5;      // pre-set (machine in ROM boot)
+            repeat (2) @(posedge clk_mach);
+            if (ram_main[u6r_addr] !== 8'hA5) begin
+                $display("FAIL U6-R: pre-set RAM word not latched (%h)", ram_main[u6r_addr]);
+                nfail = nfail + 1;
+            end
+            tb_reboot_force = 1'b1;          // synthetic "new disk mounted"
+            repeat (2) @(posedge clk_mach);
+            tb_reboot_force = 1'b0;
+            u6r_cycles = 0;
+            while (cold_reset_m && u6r_cycles < 512) begin
+                u6r_cycles = u6r_cycles + 1;
+                @(posedge clk_mach);
+            end
+            if (u6r_cycles < 300 || u6r_cycles > 340) begin
+                $display("FAIL U6-R: cold window %0d cycles (want ~%0d)", u6r_cycles, 256+64);
+                nfail = nfail + 1;
+            end
+            repeat (16) @(posedge clk_mach);
+            if (ram_main[u6r_addr] !== 8'd0) begin
+                $display("FAIL U6-R: RAM word %h after cold clear (want 00)",
+                         ram_main[u6r_addr]);
+                nfail = nfail + 1;
+            end
+            if (cold_reset_m) begin
+                $display("FAIL U6-R: cold_reset still high after the window");
+                nfail = nfail + 1;
+            end
+            pc_a = m_pc;
+            repeat (2000) @(posedge clk_mach);
+            pc_b = m_pc;
+            if (pc_a === pc_b) begin
+                $display("FAIL U6-R: CPU not alive after the cold reboot (pc=%h)", pc_a);
+                nfail = nfail + 1;
+            end
+            if (nfail == 0)
+                $display("OK  U6-R: cold reboot through the full machine (window=%0d, RAM cleared, cpu alive)",
+                         u6r_cycles);
+        end
 
         // ---- B1: the machine boots + the engine serves track 0 from storage ----
         // The machine's ROM boot requests track 0 (the boot track); the engine
