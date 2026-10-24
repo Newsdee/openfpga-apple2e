@@ -581,10 +581,13 @@ always @(posedge clk_core_14318 or posedge machine_reset) begin
 end
 
 // ---- 64K main + 64K aux RAM (inferred M10K) ----
-// ram_clear (reboot_ctl, "Reboot on disk change" option): synchronous
-// full clear of both arrays = the power-on RAM state. The 6502 is held
-// in reset (cold_reset) for the whole clear window plus a HOLD margin,
-// so no m_ram_we can race it and the CPU releases onto clean RAM.
+// ram_clear (reboot_ctl, "Reboot on disk change" option): ASYNC-reset idiom
+// (ram_clear_m in the sensitivity list + initial zero-fill) so Quartus maps
+// the clear to the M10K RAMARST port - a whole-block hardware clear at zero
+// ALM cost. A synchronous if/for clear instead breaks block-RAM inference
+// (the arrays fall back to ~1M logic registers -> Fitter Error 170011).
+// The 6502 is held in reset (cold_reset) for the whole clear window plus a
+// HOLD margin, so no m_ram_we can race it and the CPU releases onto clean RAM.
 integer ram_clr_a;
 integer ram_clr_b;
 reg  [7:0]  ram_main [0:65535];
@@ -596,11 +599,20 @@ wire [7:0]  m_ram_di;
 wire        m_ram_aux;
 wire        m_ram_we;
 wire        ram_clear_m;
-always @(posedge clk_core_14318) begin
+initial begin
+    // power-on RAM state (also the RAMARST clear value)
+    for (ram_clr_a = 0; ram_clr_a < 256; ram_clr_a = ram_clr_a + 1) begin
+        for (ram_clr_b = 0; ram_clr_b < 256; ram_clr_b = ram_clr_b + 1) begin
+            ram_main[{ram_clr_a[7:0], ram_clr_b[7:0]}] = 8'd0;
+            ram_aux[{ram_clr_a[7:0], ram_clr_b[7:0]}]  = 8'd0;
+        end
+    end
+end
+always @(posedge clk_core_14318 or posedge ram_clear_m) begin
     if (ram_clear_m) begin
         // 256x256 nesting: Quartus 17 rejects flat loops > 5000 iterations
-        // (Error 10106); Verilator has no such limit, so the TBs keep a flat
-        // loop. Same clear: both arrays to their power-on state.
+        // (Error 10106). Unrolled, this is the standard async-RAM-reset
+        // pattern Quartus maps to the M10K RAMARST input.
         for (ram_clr_a = 0; ram_clr_a < 256; ram_clr_a = ram_clr_a + 1) begin
             for (ram_clr_b = 0; ram_clr_b < 256; ram_clr_b = ram_clr_b + 1) begin
                 ram_main[{ram_clr_a[7:0], ram_clr_b[7:0]}] <= 8'd0;
