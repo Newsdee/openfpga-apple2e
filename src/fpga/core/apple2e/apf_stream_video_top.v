@@ -731,7 +731,7 @@ assign audio_lrck = audgen_lrck;
 // generate MCLK = 12.288mhz with fractional accumulator
     reg         [21:0]  audgen_accum;
     reg                 audgen_mclk;
-    parameter   [20:0]  CYCLE_48KHZ = 21'd122880 * 2;
+    parameter   [20:0]  CYCLE_48KHZ = 21'd245760;  // 122880*2, written final (no 32->21 truncation warning)
 always @(posedge clk_74a) begin
     audgen_accum <= audgen_accum + CYCLE_48KHZ;
     if(audgen_accum >= 21'd742500) begin
