@@ -224,10 +224,10 @@ module tb_disk_store;  // parameter real PHASE: chip posedge offset vs ctrl pose
       while (store_busy || word_busy) @(posedge clk);
       rd_back_addr = i[23:0];          // mux selects it while !store_busy
       @(negedge clk);
-      word_rd <= 1'b1;
-      @(negedge clk);
-      word_rd <= 1'b0;
-      while (!word_rd_valid) @(negedge clk);
+      word_rd <= 1'b1;                          // rise - HELD level (edge-latch queue needs the
+      while (!word_rd_valid) @(negedge clk);    // level held until the op completes; a 1-cycle pulse
+      word_rd <= 1'b0;                          // races the 3FF sync + auto-refresh and can be lost
+      @(negedge clk);                           // (gap before the next word re-arms the queue)
       chk(word_q == f32(i), $sformatf("readback i=%0d got %h want %h", i, word_q, f32(i)));
     end
   endtask

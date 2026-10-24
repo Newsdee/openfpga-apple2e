@@ -217,7 +217,15 @@ module disk_ii_woz (
                 mount           <= 1'b0;
                 remount_pending <= 1'b0;
             end else if (dd_reset_d) begin
-                remount_pending <= media_present;
+                // M1 no-boot corner-case fix (2026-10-21, verified in Verilator
+                // tb_woz_mount_race): a mount edge that lands on the SAME cycle as
+                // the reset-release edge must still re-pulse. The previous code
+                // sampled the stale media_present latch (the !mounted_d&&mounted_in
+                // branch below is shadowed by this one), so the engine never
+                // scanned (RD=0 on hardware). Use the simultaneous event's size.
+                remount_pending <= (!mounted_d && mounted_in)
+                                    ? (IMG_SIZE != 64'd0)
+                                    : media_present;
             end else if (!mounted_d && mounted_in) begin
                 if (mount) begin
                     mount           <= 1'b0;

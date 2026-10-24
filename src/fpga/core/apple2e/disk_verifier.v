@@ -68,7 +68,27 @@ module disk_verifier #(
     output reg  [31:0]  first_word,
     output reg  [31:0]  last_word,
     output reg  [15:0]  words_read,
-    output reg  [15:0]  words_readout
+    output reg  [15:0]  words_readout,
+
+    // ---- image fingerprint (M1 hardware-load diagnostics, 2026-10-23) ----
+    // Latched at the end of each verification pass (ok or stuck; zeroed on
+    // every start). All in this (machine) domain; the top passes them to the
+    // status overlay as-is (no CDC - the overlay is machine-domain too).
+    //   fp_first: file bytes [0:15]      (MSB = byte 0; bytes >= n_bytes = 0)
+    //   fp_last : file bytes [n-16:n-1]  (MSB = the older byte; same zeroing)
+    //   fp_w0..3: independent zlib-style CRC32s of byte windows
+    //             [0:64K), [64K:128K), [128K:192K), [192K:n) - each window
+    //             is a FRESH crc32 (init 0xFFFFFFFF, final XOR), so on the
+    //             PC: zlib.crc32(data[a:b]) per window; empty window = 0.
+    // A healthy hardware load must match a PC-computed fingerprint of the
+    // same card file (tools/woz_fingerprint.py); a mismatch localizes the
+    // corruption to a 64 KB region (and F/L give exact head/tail bytes).
+    output reg  [127:0] fp_first,
+    output reg  [127:0] fp_last,
+    output reg  [31:0]  fp_w0,
+    output reg  [31:0]  fp_w1,
+    output reg  [31:0]  fp_w2,
+    output reg  [31:0]  fp_w3
 );
 
     localparam ST_IDLE = 3'd0;
@@ -90,6 +110,19 @@ module disk_verifier #(
     reg [3:0]  bitc;               // bit position within byte
     reg [7:0]  byte_val;
     reg [31:0] timeout_cnt;
+    integer bi;
+
+    // ---- fingerprint state ----
+    reg [127:0] fp_raw;            // first four words (bytes 0..15)
+    reg [127:0] fp_tail;           // rolling last-four-words shift register
+    reg [31:0]  wcrc;              // window CRC state (parallel to crc_w)
+    reg [1:0]   wbase_idx;         // index of the window being accumulated
+    wire [4:0]  nb5 = (n_bytes >= 32'd16) ? 5'd16 : n_bytes[4:0];
+    // n' = word-aligned file size; nrem_p = pad bytes inside the last word
+    // (the SDRAM garbage region). fp_last slot i holds file byte (n'-16+i):
+    //   valid <=> i >= max(0, 16-n')  AND  i + nrem_p < 16
+    wire [31:0] nprime = (n_bytes + 32'd3) & 32'hFFFFFFFC;
+    wire [1:0]  nrem_p = (4'd4 - n_bytes[1:0]) & 2'b11;
 
     wire [31:0] last_byte_addr = (n_bytes == 32'd0) ? 32'd0 : (n_bytes - 32'd1);
     wire [23:0] last_waddr = last_byte_addr[25:2];
@@ -111,6 +144,12 @@ module disk_verifier #(
     // hybrid against the reflected shift below.
     wire [31:0] crc_in = (bitc == 4'd0) ? (crc_w ^ {24'h0, byte_val}) : crc_w;
     wire [31:0] crc_step = (crc_in >> 1) ^ (crc_in[0] ? 32'hEDB88320 : 32'd0);
+    // Window CRC: identical step, separate accumulator (restarted at each
+    // 64 KB boundary; latched finalized at the boundary / run end).
+    wire [31:0] wcrc_in  = (bitc == 4'd0) ? (wcrc ^ {24'h0, byte_val}) : wcrc;
+    wire [31:0] wcrc_step = (wcrc_in >> 1) ^ (wcrc_in[0] ? 32'hEDB88320 : 32'd0);
+    wire        wboundary = (widx == 32'd16384) || (widx == 32'd32768) ||
+                            (widx == 32'd49152);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -126,6 +165,12 @@ module disk_verifier #(
             last_word   <= 32'd0;
             words_read  <= 16'd0;
             words_readout <= 16'd0;
+            fp_first    <= 128'd0;
+            fp_last     <= 128'd0;
+            fp_w0       <= 32'd0;
+            fp_w1       <= 32'd0;
+            fp_w2       <= 32'd0;
+            fp_w3       <= 32'd0;
         end else begin
             rst_n_s1 <= rst_n;
             rst_n_s2 <= rst_n_s1;
@@ -141,9 +186,21 @@ module disk_verifier #(
                     if (start) begin
                         start_done  <= 1'b1;
                         crc_w       <= 32'hFFFFFFFF;
+                        wcrc        <= 32'hFFFFFFFF;
+                        wbase_idx   <= 2'd0;
+                        fp_raw      <= 128'd0;
+                        fp_tail     <= 128'd0;
                         widx        <= 32'd0;
                         stuck       <= 1'b0;
                         words_read  <= 16'd0;
+                        // zero the displayed fingerprint immediately (a
+                        // stuck run must not keep showing the old image)
+                        fp_first    <= 128'd0;
+                        fp_last     <= 128'd0;
+                        fp_w0       <= 32'd0;
+                        fp_w1       <= 32'd0;
+                        fp_w2       <= 32'd0;
+                        fp_w3       <= 32'd0;
                         if (n_bytes == 32'd0) begin
                             // empty file: CRC32 of zero bytes
                             crc32     <= 32'h00000000;
@@ -165,6 +222,40 @@ module disk_verifier #(
                             first_word <= rd_data;
                         if (widx == last_waddr)
                             last_word  <= rd_data;
+                        // fingerprint: capture head/tail words; restart the
+                        // window CRC when this word starts a new 64 KB window
+                        // (finalizing the previous window first).
+                        // head: fill from the top (word 0 -> bits [127:96]),
+                        // tail: true 32-bit left shift (word K-1 ends in
+                        // [31:0]); note {reg[127:32],x} would discard the
+                        // low word on every shift.
+                        if (widx < 32'd4) begin
+                            // slot k fills when widx==k; slots below k are
+                            // still zero (never written). Every RHS must be
+                            // exactly 128 bits or Verilog zero-extends the
+                            // concatenation and the top slot silently dies.
+                            case (widx)
+                                32'd0: fp_raw <= {rd_data, 96'd0};
+                                32'd1: fp_raw <= {fp_raw[127:96], rd_data,
+                                                  64'd0};
+                                32'd2: fp_raw <= {fp_raw[127:96], fp_raw[95:64],
+                                                  rd_data, 32'd0};
+                                default: fp_raw <= {fp_raw[127:96], fp_raw[95:64],
+                                                    fp_raw[63:32], rd_data};
+                            endcase
+                        end
+                        fp_tail     <= {fp_tail[95:0], rd_data};
+                        if (wboundary) begin
+                            case (wbase_idx)
+                                2'd0: fp_w0 <= wcrc ^ 32'hFFFFFFFF;
+                                2'd1: fp_w1 <= wcrc ^ 32'hFFFFFFFF;
+                                2'd2: fp_w2 <= wcrc ^ 32'hFFFFFFFF;
+                                default: fp_w3 <= wcrc ^ 32'hFFFFFFFF;
+                            endcase
+                            wcrc      <= 32'hFFFFFFFF;
+                            // boundary words are 16384/32768/49152 = 2^14*k
+                            wbase_idx <= widx[16:14];
+                        end
                         words_read   <= words_read + 16'd1;
                         nbytes_w     <= (widx + 32'd1 == (n_bytes + 32'd3) >> 2)
                                         ? ((n_bytes & 32'd3) == 32'd0 ? 3'd4 : {1'b0, n_bytes[1:0]})
@@ -190,6 +281,7 @@ module disk_verifier #(
                 ST_CRC: begin
                     // 8 machine cycles per byte: reflected (IEEE) CRC32 step
                     crc_w <= crc_step;
+                    wcrc  <= wcrc_step;
                     if (bitc == 4'd7) begin
                         bitc <= 4'd0;
                         if (bidx + 4'd1 == {1'b0, nbytes_w}) begin
@@ -200,6 +292,29 @@ module disk_verifier #(
                                 // old value would be one step short)
                                 crc32         <= crc_step ^ 32'hFFFFFFFF;
                                 words_readout <= words_read;
+                                // finalize the last (partial or full) window
+                                case (wbase_idx)
+                                    2'd0: fp_w0 <= wcrc_step ^ 32'hFFFFFFFF;
+                                    2'd1: fp_w1 <= wcrc_step ^ 32'hFFFFFFFF;
+                                    2'd2: fp_w2 <= wcrc_step ^ 32'hFFFFFFFF;
+                                    default: fp_w3 <= wcrc_step ^ 32'hFFFFFFFF;
+                                endcase
+                                // head/tail bytes, zeroing bytes beyond EOF.
+                                // fp_first slot i = file byte i      (valid i < n)
+                                // fp_last  slot i = file byte n'-16+i (valid per
+                                //   the nprime/nrem_p rule in the header)
+                                for (bi = 0; bi < 16; bi = bi + 1) begin
+                                    if (bi < nb5)
+                                        fp_first[127 - bi*8 -: 8] <= fp_raw[127 - bi*8 -: 8];
+                                    else
+                                        fp_first[127 - bi*8 -: 8] <= 8'd0;
+                                    if (((nprime >= 32'd16) ? 1'b1 :
+                                         (bi[4:0] >= (16 - nprime[4:0]))) &&
+                                        ({2'b00, bi[4:0]} + {3'd0, nrem_p}) < 5'd16)
+                                        fp_last[127 - bi*8 -: 8] <= fp_tail[127 - bi*8 -: 8];
+                                    else
+                                        fp_last[127 - bi*8 -: 8] <= 8'd0;
+                                end
                                 st            <= ST_END;
                             end else begin
                                 widx <= widx + 32'd1;

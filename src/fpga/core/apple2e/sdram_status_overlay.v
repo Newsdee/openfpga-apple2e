@@ -11,6 +11,11 @@
 //   line 3:  R=NNNNNN C=NNNNNN OTS (words received / committed + flags:
 //              O=FIFO overflow, T=store timeout, S=verifier stuck)
 // plus an UNCONDITIONAL build marker in the top-left corner, always on
+//     plus (M1 no-boot diagnostics, always-on, NOT gated by the 5 s window):
+//       line 4: MT=x RD=NNNNN   (x=image mounted ?; NNNNN=cumulative sd reads)
+//       line 5: AC=x MO=x        (x=D1_ACTIVE / D1_MOTOR_ON)
+//     Interpretation of the logo stall: MT=0 -> mount never happened;
+//     MT=1 + RD=0 -> mounted but engine never reads; MT=1 + RD>0 -> engine reads.
 // (independent of storage state):  M 0 <stage> <status>
 //   stage  = furthest storage stage this generation: 0=none, 1=request
 //            seen, 2=data seen, 3=all-complete seen, 4=drain complete,
@@ -64,12 +69,34 @@ module sdram_status_overlay (
     input  wire [1:0]  res_fail_m,     // subcode: 0=ST, 1=OV, 2=TO, 3=IN
     input  wire [31:0] res_crc_m,
     input  wire [31:0] res_nbytes_m,
-
     // ---- debug (machine domain, for line 3 + the marker) ----
     input  wire [47:0] dbg_rc_m,   // {words_received[23:0], words_committed[23:0]}
     input  wire [2:0]  dbg_fl_m,   // bit0=FIFO overflow, bit1=store timeout, bit2=verifier stuck
-    input  wire [2:0]  stage_m     // furthest storage stage: 0..6 (see header)
-);
+    input  wire [2:0]  stage_m,    // furthest storage stage: 0..6 (see header)
+    // ---- drive activity (M1 no-boot diagnostics, always-on) ----
+    input  wire         drv_mounted,  // mount controller: image mounted ?
+    input  wire         drv_active,   // engine D1_ACTIVE (selected-drive motor)
+    input  wire         drv_motor,    // engine D1_MOTOR_ON (controller command)
+    input  wire [23:0]  drv_reads,    // cumulative sd_buff_wr bytes (saturating)
+    input  wire [2:0]   drv_mstate,   // mount-controller state 0=unm 1=mnted 2-4=eject
+    input  wire         drv_ack,      // transport sd_ack level (engine read service)
+    input  wire         drv_tfault,    // transport fault latch (triggers unmount)
+    input  wire         drv_rdreq,    // engine SD read request (woz_sd_rd) level
+
+    // ---- image fingerprint (M1 hardware-load diagnostics, always-on;
+    //      last latched verification pass; zero before the first pass) ----
+    // fp_first = file bytes [0:15] (MSB = byte 0); fp_last = bytes [n-16:n-1]
+    //   (word-aligned tail frame; see disk_verifier.v header);
+    // fp_w = {w0,w1,w2,w3} independent zlib-style CRC32s of byte windows
+    // [0:64K) [64K:128K) [128K:192K) [192K:n) (empty window = 0).
+    // On-screen (8 bytes fit per line): F= = bytes [0:8], L= = bytes [n-8:n].
+    // Compare on-screen values against tools/woz_fingerprint.py on the card
+    // file: any W mismatch localizes a hardware-load corruption to a 64 KB
+    // region; F=/L= give exact head/tail bytes.
+    input  wire [127:0] fp_first,
+    input  wire [127:0] fp_last,
+    input  wire [127:0] fp_w
+    );
 
     // Show-window length in machine clocks (default = 5 s @ 14.318 MHz;
     // a testbench may shorten it).
@@ -85,7 +112,7 @@ module sdram_status_overlay (
     // L=21 V=22 T=23 S=24 '='=25 ' '=26 N=27, M=28
     localparam GL_O = 5'd17, GL_K = 5'd18, GL_R = 5'd19, GL_I = 5'd20;
     localparam GL_L = 5'd21, GL_V = 5'd22, GL_T = 5'd23, GL_S = 5'd24;
-    localparam GL_N = 5'd27, GL_M = 5'd28;
+    localparam GL_N = 5'd27, GL_M = 5'd28, GL_W = 5'd29;
     localparam GL_C5 = 5'd13;         // 'C' (glyph code 13)
     localparam GL_EQ = 5'd25, GL_SP = 5'd26;
 
@@ -125,6 +152,7 @@ module sdram_status_overlay (
                 5'd26 : gf = 35'b00000_00000_00000_00000_00000_00000_00000; // ' '
                 5'd27 : gf = 35'b01000_10100_10010_10001_10000_10000_10000; // N
                 5'd28 : gf = 35'b00100_01100_10010_10001_10001_10001_10001; // M
+                5'd29 : gf = 35'b10001_10001_10001_10001_10101_10101_01010; // W
                 default: gf = 35'd0;
             endcase
         end
@@ -374,7 +402,278 @@ module sdram_status_overlay (
                     (row >= 8'd10) && (row < 8'd13);
     assign dbg_px = DBG_RECT && !hbl && !vbl && in_dr;
 
-    assign rgb_out = (mpx || px1 || px2 || px3 || dbg_px) ? 24'hFFFFFF : rgb_in;
+    // ---- drive-activity readout (always-on, NOT gated by the show window) ----
+    // line 4: 13 chars at X0=460, rows 33..39: "MT=x RD=NNNNN" (mounted + reads)
+    // line 5: 9 chars  at X0=460, rows 41..47: "AC=x MO=x"  (active + motor)
+    wire [4:0] d4 [0:12];
+    assign d4[0]  = GL_M;
+    assign d4[1]  = GL_T;
+    assign d4[2]  = GL_EQ;
+    assign d4[3]  = drv_mounted ? 5'd1 : 5'd0;
+    assign d4[4]  = GL_SP;
+    assign d4[5]  = GL_R;   // 'RD='
+    assign d4[6]  = 5'd14;  // 'D'
+    assign d4[7]  = GL_EQ;
+    assign d4[8]  = hexg(drv_reads[19:16]);
+    assign d4[9]  = hexg(drv_reads[15:12]);
+    assign d4[10] = hexg(drv_reads[11:8]);
+    assign d4[11] = hexg(drv_reads[7:4]);
+    assign d4[12] = hexg(drv_reads[3:0]);
+    wire        in_x4, in_l4;
+    wire [9:0]  cpx4, cidx4_w, cin4_w;
+    wire [7:0]  r4_w;
+    wire [4:0]  g4;
+    wire [34:0] g4_bits;
+    wire [4:0]  r4bits;
+    wire        px4;
+    assign in_x4   = (col >= 10'd460) && (col < 10'd540);
+    assign cpx4    = in_x4 ? (col - 10'd460) : 10'd0;
+    assign cidx4_w = cpx4 / 10'd6;
+    assign cin4_w  = cpx4 % 10'd6;
+    assign in_l4   = (row >= 8'd33) && (row < 8'd40);
+    assign r4_w    = in_l4 ? (row - 8'd33) : 8'd0;
+    assign g4      = (in_l4 && cidx4_w < 10'd13) ? d4[cidx4_w[3:0]] : 5'd0;
+    assign g4_bits = gf(g4);
+    assign r4bits  = g4_bits[34 - {2'b00, r4_w[2:0]} * 5'd5 -: 5];
+    assign px4 = !hbl && !vbl && in_x4 && in_l4 && cidx4_w < 10'd13 &&
+                cin4_w < 10'd5 && r4bits[3'd4 - cin4_w[2:0]];
+    wire [4:0] d5 [0:8];
+    assign d5[0] = 5'd11;  // 'A'
+    assign d5[1] = 5'd13;  // 'C'
+    assign d5[2] = GL_EQ;
+    assign d5[3] = drv_active ? 5'd1 : 5'd0;
+    assign d5[4] = GL_SP;
+    assign d5[5] = GL_M;   // 'MO='
+    assign d5[6] = GL_O;
+    assign d5[7] = GL_EQ;
+    assign d5[8] = drv_motor ? 5'd1 : 5'd0;
+    wire        in_x5, in_l5;
+    wire [9:0]  cpx5, cidx5_w, cin5_w;
+    wire [7:0]  r5_w;
+    wire [4:0]  g5;
+    wire [34:0] g5_bits;
+    wire [4:0]  r5bits;
+    wire        px5;
+    assign in_x5   = (col >= 10'd460) && (col < 10'd520);
+    assign cpx5    = in_x5 ? (col - 10'd460) : 10'd0;
+    assign cidx5_w = cpx5 / 10'd6;
+    assign cin5_w  = cpx5 % 10'd6;
+    assign in_l5   = (row >= 8'd41) && (row < 8'd48);
+    assign r5_w    = in_l5 ? (row - 8'd41) : 8'd0;
+    assign g5      = (in_l5 && cidx5_w < 10'd9) ? d5[cidx5_w[3:0]] : 5'd0;
+    assign g5_bits = gf(g5);
+    assign r5bits  = g5_bits[34 - {2'b00, r5_w[2:0]} * 5'd5 -: 5];
+    assign px5 = !hbl && !vbl && in_x5 && in_l5 && cidx5_w < 10'd9 &&
+                cin5_w < 10'd5 && r5bits[3'd4 - cin5_w[2:0]];
+    // line 6: 11 chars at X0=460, rows 49..55: "ST=x A=x F=x"
+    //   ST = mount-controller state (0 unm,1 mnted,2-4 eject); A = sd_ack level;
+    //   F  = transport fault. ST!=1 with MT=1 -> controller not really mounted;
+    //   A=0 persistently with MT=1 -> transport not servicing the engine's reads.
+    wire [4:0] d6 [0:10];
+    assign d6[0]  = 5'd19;  // 'S'
+    assign d6[1]  = 5'd23;  // 'T'
+    assign d6[2]  = GL_EQ;
+    assign d6[3]  = hexg({1'b0, drv_mstate[2:0]});
+    assign d6[4]  = GL_SP;
+    assign d6[5]  = 5'd11;  // 'A'
+    assign d6[6]  = GL_EQ;
+    assign d6[7]  = drv_ack ? 5'd1 : 5'd0;
+    assign d6[8]  = GL_SP;
+    assign d6[9]  = 5'd15;  // 'F'
+    assign d6[10] = drv_tfault ? 5'd1 : 5'd0;
+    wire        in_x6, in_l6;
+    wire [9:0]  cpx6, cidx6_w, cin6_w;
+    wire [7:0]  r6_w;
+    wire [4:0]  g6;
+    wire [34:0] g6_bits;
+    wire [4:0]  r6bits;
+    wire        px6;
+    assign in_x6   = (col >= 10'd460) && (col < 10'd526);
+    assign cpx6    = in_x6 ? (col - 10'd460) : 10'd0;
+    assign cidx6_w = cpx6 / 10'd6;
+    assign cin6_w  = cpx6 % 10'd6;
+    assign in_l6   = (row >= 8'd49) && (row < 8'd56);
+    assign r6_w    = in_l6 ? (row - 8'd49) : 8'd0;
+    assign g6      = (in_l6 && cidx6_w < 10'd11) ? d6[cidx6_w[3:0]] : 5'd0;
+    assign g6_bits = gf(g6);
+    assign r6bits  = g6_bits[34 - {2'b00, r6_w[2:0]} * 5'd5 -: 5];
+    assign px6 = !hbl && !vbl && in_x6 && in_l6 && cidx6_w < 10'd11 &&
+                cin6_w < 10'd5 && r6bits[3'd4 - cin6_w[2:0]];
+
+    // ---- sticky 'engine read request seen' (M1 no-boot diagnostic) ----
+    // Latches on the first woz_sd_req. RQ=0 -> the engine never requested a
+    // byte (mount/reset/parser-start path); RQ=1 -> it requested (transport/
+    // fetch/SDRAM-completion path). Cleared only by power-on reset, not by
+    // machine reset, so a late request is retained for the capture.
+    reg rd_req_seen = 1'b0;
+    always @(posedge clk or posedge reset) begin
+        if (reset)
+            rd_req_seen <= 1'b0;
+        else if (drv_rdreq)
+            rd_req_seen <= 1'b1;
+    end
+
+    // line 7: 4 chars at X0=460, rows 57..63: "RQ=x"
+    wire [4:0] d7 [0:3];
+    assign d7[0] = 5'd17;  // 'R'
+    assign d7[1] = 5'd18;  // 'Q'
+    assign d7[2] = GL_EQ;
+    assign d7[3] = rd_req_seen ? 5'd1 : 5'd0;
+    wire        in_x7, in_l7;
+    wire [9:0]  cpx7, cidx7_w, cin7_w;
+    wire [7:0]  r7_w;
+    wire [4:0]  g7;
+    wire [34:0] g7_bits;
+    wire [4:0]  r7bits;
+    wire        px7;
+    assign in_x7   = (col >= 10'd460) && (col < 10'd484);
+    assign cpx7    = in_x7 ? (col - 10'd460) : 10'd0;
+    assign cidx7_w = cpx7 / 10'd6;
+    assign cin7_w  = cpx7 % 10'd6;
+    assign in_l7   = (row >= 8'd57) && (row < 8'd64);
+    assign r7_w    = in_l7 ? (row - 8'd57) : 8'd0;
+    assign g7      = (in_l7 && cidx7_w < 10'd4) ? d7[cidx7_w[3:0]] : 5'd0;
+    assign g7_bits = gf(g7);
+    assign r7bits  = g7_bits[34 - {2'b00, r7_w[2:0]} * 5'd5 -: 5];
+    assign px7 = !hbl && !vbl && in_x7 && in_l7 && cidx7_w < 10'd4 &&
+                cin7_w < 10'd5 && r7bits[3'd4 - cin7_w[2:0]];
+
+    // ---- image fingerprint readout (always-on, M1 hardware-load diagnostic) ----
+    // line 8:  24 chars at X0=406, rows 65..71: "W0=XXXXXXXX W1=XXXXXXXX"
+    // line 9:  24 chars at X0=406, rows 73..79: "W2=XXXXXXXX W3=XXXXXXXX"
+    // line 10: 18 chars at X0=442, rows 81..87: "F=XXXXXXXXXXXXXXXX" (bytes 0..15)
+    // line 11: 18 chars at X0=442, rows 89..95: "L=XXXXXXXXXXXXXXXX" (last 16)
+    // fp_w = {w0, w1, w2, w3}; fp_first/fp_last MSB = the older byte.
+    wire [4:0] f8 [0:23];
+    assign f8[0]  = GL_W;  assign f8[1]  = 5'd0;  assign f8[2]  = GL_EQ;
+    assign f8[3]  = hexg(fp_w[127:124]); assign f8[4]  = hexg(fp_w[123:120]);
+    assign f8[5]  = hexg(fp_w[119:116]); assign f8[6]  = hexg(fp_w[115:112]);
+    assign f8[7]  = hexg(fp_w[111:108]); assign f8[8]  = hexg(fp_w[107:104]);
+    assign f8[9]  = hexg(fp_w[103:100]); assign f8[10] = hexg(fp_w[99:96]);
+    assign f8[11] = GL_SP;
+    assign f8[12] = GL_W;  assign f8[13] = 5'd1;  assign f8[14] = GL_EQ;
+    assign f8[15] = hexg(fp_w[95:92]);  assign f8[16] = hexg(fp_w[91:88]);
+    assign f8[17] = hexg(fp_w[87:84]);  assign f8[18] = hexg(fp_w[83:80]);
+    assign f8[19] = hexg(fp_w[79:76]);  assign f8[20] = hexg(fp_w[75:72]);
+    assign f8[21] = hexg(fp_w[71:68]);  assign f8[22] = hexg(fp_w[67:64]);
+    assign f8[23] = 5'd26;   // blank (line is 24 slots: 11 + SP + 12)
+    wire        in_x8, in_l8;
+    wire [9:0]  cpx8, cidx8_w, cin8_w;
+    wire [7:0]  r8_w;
+    wire [4:0]  g8;
+    wire [34:0] g8_bits;
+    wire [4:0]  r8bits;
+    wire        px8;
+    assign in_x8   = (col >= 10'd406) && (col < 10'd550);
+    assign cpx8    = in_x8 ? (col - 10'd406) : 10'd0;
+    assign cidx8_w = cpx8 / 10'd6;
+    assign cin8_w  = cpx8 % 10'd6;
+    assign in_l8   = (row >= 8'd65) && (row < 8'd72);
+    assign r8_w    = in_l8 ? (row - 8'd65) : 8'd0;
+    assign g8      = (in_l8 && cidx8_w < 10'd24) ? f8[cidx8_w[4:0]] : 5'd0;
+    assign g8_bits = gf(g8);
+    assign r8bits  = g8_bits[34 - {2'b00, r8_w[2:0]} * 5'd5 -: 5];
+    assign px8 = !hbl && !vbl && in_x8 && in_l8 && cidx8_w < 10'd24 &&
+                cin8_w < 10'd5 && r8bits[3'd4 - cin8_w[2:0]];
+    wire [4:0] f9 [0:23];
+    assign f9[0]  = GL_W;  assign f9[1]  = 5'd2;  assign f9[2]  = GL_EQ;
+    // fp_w = {w0[127:96], w1[95:64], w2[63:32], w3[31:0]}
+    assign f9[3]  = hexg(fp_w[63:60]); assign f9[4]  = hexg(fp_w[59:56]);
+    assign f9[5]  = hexg(fp_w[55:52]); assign f9[6]  = hexg(fp_w[51:48]);
+    assign f9[7]  = hexg(fp_w[47:44]); assign f9[8]  = hexg(fp_w[43:40]);
+    assign f9[9]  = hexg(fp_w[39:36]); assign f9[10] = hexg(fp_w[35:32]);
+    assign f9[11] = GL_SP;
+    assign f9[12] = GL_W;  assign f9[13] = 5'd3;  assign f9[14] = GL_EQ;
+    assign f9[15] = hexg(fp_w[31:28]); assign f9[16] = hexg(fp_w[27:24]);
+    assign f9[17] = hexg(fp_w[23:20]); assign f9[18] = hexg(fp_w[19:16]);
+    assign f9[19] = hexg(fp_w[15:12]); assign f9[20] = hexg(fp_w[11:8]);
+    assign f9[21] = hexg(fp_w[7:4]);   assign f9[22] = hexg(fp_w[3:0]);
+    assign f9[23] = 5'd26;   // blank (line is 24 slots: 11 + SP + 12)
+    wire        in_x9, in_l9;
+    wire [9:0]  cpx9, cidx9_w, cin9_w;
+    wire [7:0]  r9_w;
+    wire [4:0]  g9;
+    wire [34:0] g9_bits;
+    wire [4:0]  r9bits;
+    wire        px9;
+    assign in_x9   = (col >= 10'd406) && (col < 10'd550);
+    assign cpx9    = in_x9 ? (col - 10'd406) : 10'd0;
+    assign cidx9_w = cpx9 / 10'd6;
+    assign cin9_w  = cpx9 % 10'd6;
+    assign in_l9   = (row >= 8'd73) && (row < 8'd80);
+    assign r9_w    = in_l9 ? (row - 8'd73) : 8'd0;
+    assign g9      = (in_l9 && cidx9_w < 10'd24) ? f9[cidx9_w[4:0]] : 5'd0;
+    assign g9_bits = gf(g9);
+    assign r9bits  = g9_bits[34 - {2'b00, r9_w[2:0]} * 5'd5 -: 5];
+    assign px9 = !hbl && !vbl && in_x9 && in_l9 && cidx9_w < 10'd24 &&
+                cin9_w < 10'd5 && r9bits[3'd4 - cin9_w[2:0]];
+    wire [4:0] f10 [0:17];
+    assign f10[0]  = 5'd16;   // 'F' = first-16-bytes marker
+    assign f10[1]  = GL_EQ;
+    // byte i of fp_first sits at bits [127 - i*8 -: 8]; MSB nibble first
+    assign f10[2]  = hexg(fp_first[127:124]); assign f10[3]  = hexg(fp_first[123:120]);
+    assign f10[4]  = hexg(fp_first[119:116]); assign f10[5]  = hexg(fp_first[115:112]);
+    assign f10[6]  = hexg(fp_first[111:108]); assign f10[7]  = hexg(fp_first[107:104]);
+    assign f10[8]  = hexg(fp_first[103:100]); assign f10[9]  = hexg(fp_first[99:96]);
+    assign f10[10] = hexg(fp_first[95:92]);   assign f10[11] = hexg(fp_first[91:88]);
+    assign f10[12] = hexg(fp_first[87:84]);   assign f10[13] = hexg(fp_first[83:80]);
+    assign f10[14] = hexg(fp_first[79:76]);   assign f10[15] = hexg(fp_first[75:72]);
+    assign f10[16] = hexg(fp_first[71:68]);   assign f10[17] = hexg(fp_first[67:64]);
+    wire        in_x10, in_l10;
+    wire [9:0]  cpx10, cidx10_w, cin10_w;
+    wire [7:0]  r10_w;
+    wire [4:0]  g10;
+    wire [34:0] g10_bits;
+    wire [4:0]  r10bits;
+    wire        px10;
+    assign in_x10   = (col >= 10'd442) && (col < 10'd550);
+    assign cpx10    = in_x10 ? (col - 10'd442) : 10'd0;
+    assign cidx10_w = cpx10 / 10'd6;
+    assign cin10_w  = cpx10 % 10'd6;
+    assign in_l10   = (row >= 8'd81) && (row < 8'd88);
+    assign r10_w    = in_l10 ? (row - 8'd81) : 8'd0;
+    assign g10      = (in_l10 && cidx10_w < 10'd18) ? f10[cidx10_w[4:0]] : 5'd0;
+    assign g10_bits = gf(g10);
+    assign r10bits  = g10_bits[34 - {2'b00, r10_w[2:0]} * 5'd5 -: 5];
+    assign px10 = !hbl && !vbl && in_x10 && in_l10 && cidx10_w < 10'd18 &&
+                cin10_w < 10'd5 && r10bits[3'd4 - cin10_w[2:0]];
+    // line 11: 18 chars at X0=442, rows 89..95: "L=XXXXXXXXXXXXXXXX"
+    // 16 hex chars = 8 bytes: the LOW 64 bits of fp_last = the file's
+    // last 8 bytes (bytes n-8..n-1). F= likewise shows the FIRST 8 bytes.
+    // (A 32-hex-char 16-byte line would need 34 columns = 204 px, which
+    // does not fit in the 560-sample active run.)
+    wire [4:0] f11 [0:17];
+    assign f11[0]  = GL_L;    // 'L' = last-8-bytes marker
+    assign f11[1]  = GL_EQ;
+    assign f11[2]  = hexg(fp_last[63:60]);  assign f11[3]  = hexg(fp_last[59:56]);
+    assign f11[4]  = hexg(fp_last[55:52]);  assign f11[5]  = hexg(fp_last[51:48]);
+    assign f11[6]  = hexg(fp_last[47:44]);  assign f11[7]  = hexg(fp_last[43:40]);
+    assign f11[8]  = hexg(fp_last[39:36]);  assign f11[9]  = hexg(fp_last[35:32]);
+    assign f11[10] = hexg(fp_last[31:28]);  assign f11[11] = hexg(fp_last[27:24]);
+    assign f11[12] = hexg(fp_last[23:20]);  assign f11[13] = hexg(fp_last[19:16]);
+    assign f11[14] = hexg(fp_last[15:12]);  assign f11[15] = hexg(fp_last[11:8]);
+    assign f11[16] = hexg(fp_last[7:4]);    assign f11[17] = hexg(fp_last[3:0]);
+    wire        in_x11, in_l11;
+    wire [9:0]  cpx11, cidx11_w, cin11_w;
+    wire [7:0]  r11_w;
+    wire [4:0]  g11;
+    wire [34:0] g11_bits;
+    wire [4:0]  r11bits;
+    wire        px11;
+    assign in_x11   = (col >= 10'd442) && (col < 10'd550);
+    assign cpx11    = in_x11 ? (col - 10'd442) : 10'd0;
+    assign cidx11_w = cpx11 / 10'd6;
+    assign cin11_w  = cpx11 % 10'd6;
+    assign in_l11   = (row >= 8'd89) && (row < 8'd96);
+    assign r11_w    = in_l11 ? (row - 8'd89) : 8'd0;
+    assign g11      = (in_l11 && cidx11_w < 10'd18) ? f11[cidx11_w[4:0]] : 5'd0;
+    assign g11_bits = gf(g11);
+    assign r11bits  = g11_bits[34 - {2'b00, r11_w[2:0]} * 5'd5 -: 5];
+    assign px11 = !hbl && !vbl && in_x11 && in_l11 && cidx11_w < 10'd18 &&
+                cin11_w < 10'd5 && r11bits[3'd4 - cin11_w[2:0]];
+
+    assign rgb_out = (mpx || px1 || px2 || px3 || px4 || px5 || px6 || px7 ||
+                      px8 || px9 || px10 || px11 || dbg_px) ? 24'hFFFFFF : rgb_in;
 
 
 endmodule

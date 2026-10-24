@@ -56,6 +56,7 @@ module sdram_woz_transport (
     output reg  [15:0] fetch_lba,
     input  wire        fetch_busy,
     input  wire        sector_ready,
+    input  wire [15:0] sector_lba,     // lba of the published window (fetcher)
     input  wire [7:0]  sector_byte_data,
     input  wire        fetch_fault,
     output wire [8:0]  sector_byte_addr,
@@ -154,13 +155,36 @@ module sdram_woz_transport (
                         if (sector_ready)
                             sector_done <= 1'b1;
                         state     <= S_IDLE;
-                    end else if (sector_ready) begin
-                        // Raise ACK before delivering byte 0.
+                    end else if (sector_ready && (sector_lba == lba_l)) begin
+                        // Window matches the lba we requested: raise ACK
+                        // before delivering byte 0.
                         sd_ack   <= 1'b1;
                         byte_cnt <= 10'd0;
                         state    <= S_DATA;
+                    end else begin
+                        // 2026-10-22 stale-window guard: the published
+                        // window belongs to a superseded request (the
+                        // fetcher was busy with the previous sector when
+                        // our request edge arrived). Streaming it would
+                        // hand the engine another lba's bytes (measured:
+                        // engine lba=0 got lba=1's stream -> parse
+                        // garbage -> OOR eject). Release the stale window,
+                        // then re-arm the request: the fetcher's
+                        // acceptance is EDGE-based, so a request that
+                        // arrived while it was busy is lost without a
+                        // fresh 0->1 edge. fetch_req is held LOW while
+                        // the service is busy (fetch_busy) so that the
+                        // next assert while idle is a clean fresh edge;
+                        // while idle it is held HIGH (level) exactly as
+                        // the S_IDLE->S_REQ transition did, so no stray
+                        // edge re-triggers a just-fetched sector.
+                        if (sector_ready)
+                            sector_done <= 1'b1;
+                        if (!fetch_busy)
+                            fetch_req <= 1'b1;
+                        else
+                            fetch_req <= 1'b0;
                     end
-                    // else: keep waiting, fetch_req stays high
                 end
                 S_DATA: begin
                     // Stream one byte per cycle: sd_buff_wr is high for

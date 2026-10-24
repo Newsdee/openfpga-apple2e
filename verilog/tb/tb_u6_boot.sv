@@ -151,15 +151,15 @@ module tb_u6_boot;
     reg         mc_mounted_d;
     always @(posedge clk_mach) mc_mounted_d <= mc_img_mounted;
     wire        mc_mount_rise = mc_img_mounted && !mc_mounted_d;
-    wire [7:0]  m_pd_mux = (m_dev_sel | m_io_sel) ? woz_dout : 8'h00;
+    wire [7:0]  m_pd_mux = (m_dev_sel[6] | m_io_sel[6]) ? woz_dout : 8'h00;
 
     disk_ii_woz woz (
         .CLK_14M         ( clk_mach ),
         .RESET           ( machine_reset ),
         .DD_RESET        ( machine_reset ),
         .PHASE_ZERO      ( m_pz ),
-        .IO_SELECT       ( m_io_sel ),
-        .DEVICE_SELECT   ( m_dev_sel ),
+        .IO_SELECT       ( m_io_sel[6] ),
+        .DEVICE_SELECT   ( m_dev_sel[6] ),
         .WE              ( m_cpu_we ),
         .A               ( m_addr ),
         .D_IN            ( m_ram_di ),
@@ -214,6 +214,7 @@ module tb_u6_boot;
     wire        stor_new_load_m;
     wire [2:0]  stor_stage_m;
     wire        stor_fetch_req, stor_fetch_busy, stor_sector_ready;
+    wire [15:0] stor_sector_lba;   // 2026-10-24: published-window lba (stale-window guard)
     wire [15:0] stor_fetch_lba;
     wire [8:0]  stor_sector_byte_addr;
     wire [7:0]  stor_sector_byte_data;
@@ -269,6 +270,7 @@ module tb_u6_boot;
         .fetch_lba       ( stor_fetch_lba ),
         .fetch_busy      ( stor_fetch_busy ),
         .sector_ready    ( stor_sector_ready ),
+        .sector_lba      ( stor_sector_lba ),
         .sector_byte_addr( stor_sector_byte_addr ),
         .sector_byte_data( stor_sector_byte_data ),
         .sector_done     ( stor_sector_done ),
@@ -302,6 +304,7 @@ module tb_u6_boot;
         .fetch_lba      ( stor_fetch_lba ),
         .fetch_busy     ( stor_fetch_busy ),
         .sector_ready   ( stor_sector_ready ),
+        .sector_lba     ( stor_sector_lba ),
         .sector_byte_data( stor_sector_byte_data ),
         .fetch_fault    ( stor_fetch_fault ),
         .sector_byte_addr( stor_sector_byte_addr ),
@@ -390,19 +393,31 @@ module tb_u6_boot;
     // ==================================================================
     integer nfail = 0;
     integer bytes_checked = 0;
-    reg [8:0] sbyte_addr_d;
+    integer off = 0;
+    integer ncontent_fail = 0;
+    integer nslot6_fail   = 0;
+    integer ntrack0       = 0;
     // the engine samples sd_buff_dout on sd_buff_wr (host-paced strobe)
     always @(posedge clk_mach) begin
         if (woz_sd_buff_wr && woz_sd_ack) begin
             bytes_checked = bytes_checked + 1;
-            // absolute index = lba*512 + byte addr; compare to stored image
-            if (bytes_checked <= 2_000_000) begin
-                // (full-image compare would need the lba; Stage 1 just counts +
-                //  checks the first boot-sector byte is the WOZ magic is NOT
-                //  expected here - the engine serves DECODED tracks, not the
-                //  raw .woz. So Stage 1 verifies byte COUNT, not content.)
+            if (woz_sd_lba[15:0] < 16'd13) ntrack0 = ntrack0 + 1;  // track-0 region
+            off = woz_sd_lba*512 + woz_sd_buff_addr;  // image offset (512-byte sectors)
+            if (bytes_checked <= 3_000_000 && off < IMG_BYTES &&
+                woz_sd_buff_dout !== img[off]) begin
+                if (ncontent_fail < 20) $display("FAIL content: off=%0d got=%02h want=%02h @%0t",
+                    off, woz_sd_buff_dout, img[off], $time);
+                ncontent_fail = ncontent_fail + 1;
             end
         end
+    end
+    // slot-6 wiring guard (regression check for the bit-0 truncation bug):
+    // Disk II data must appear ONLY when slot 6 is selected, and never otherwise.
+    always @(posedge clk_mach) begin
+        if ((m_io_sel[6] || m_dev_sel[6]) && m_pd_mux !== woz_dout)
+            nslot6_fail = nslot6_fail + 1;
+        if (!(m_io_sel[6] || m_dev_sel[6]) && m_pd_mux !== 8'h00)
+            nslot6_fail = nslot6_fail + 1;
     end
 
     // watchdog
@@ -413,7 +428,7 @@ module tb_u6_boot;
         if (!done_flag) begin
             $display("FAIL watchdog: no completion by %0t", $time);
             $display("TB U6 BOOT: FAIL (watchdog)");
-            $finish;
+            $fatal(1, "TB U6 BOOT FAIL (watchdog)");
         end
     end
 
@@ -498,19 +513,33 @@ module tb_u6_boot;
         // speed, so that acceptance is the owner's Pocket hardware test.)
         wait_engine_parse(b1_ok);
         if (!b1_ok) begin
-            $display("FAIL B1: engine did not parse the WOZ from storage");
+            $display("FAIL B1: engine did not serve track 0 (bytes=%0d track0=%0d)", bytes_checked, ntrack0);
             nfail = nfail + 1;
         end else begin
-            $display("OK  B1: engine read WOZ from storage, bytes=%0d at %0t",
-                     bytes_checked, $time);
+            $display("OK  B1: engine served track 0 from storage, bytes=%0d track0=%0d at %0t",
+                     bytes_checked, ntrack0, $time);
         end
+        if (ncontent_fail != 0) begin
+            $display("FAIL B1: %0d engine-read byte mismatches (wrong LBA/offset?)", ncontent_fail);
+            nfail = nfail + 1;
+        end else
+            $display("OK  B1: all engine reads match the image (0 content mismatches)");
+        if (nslot6_fail != 0) begin
+            $display("FAIL slot6: %0d slot-6 wiring violations", nslot6_fail);
+            nfail = nfail + 1;
+        end else
+            $display("OK  slot6: Disk II data gated to slot 6 only");
 
         done_flag = 1'b1;
-        if (nfail == 0)
-            $display("TB U6 BOOT: ALL PASS (bytes=%0d) at %0t", bytes_checked, $time);
-        else
-            $display("TB U6 BOOT: FAIL (nfail=%0d) at %0t", nfail, $time);
-        $finish;
+        if (nfail == 0) begin
+            $display("TB U6 BOOT: ALL PASS (bytes=%0d track0=%0d content_fail=0 slot6_fail=0) at %0t",
+                     bytes_checked, ntrack0, $time);
+            $finish;
+        end else begin
+            $display("TB U6 BOOT: FAIL (nfail=%0d content_fail=%0d slot6_fail=%0d) at %0t",
+                     nfail, ncontent_fail, nslot6_fail, $time);
+            $fatal(1, "TB U6 BOOT FAIL nfail=%0d", nfail);
+        end
     end
 
     // ---- helpers ----
@@ -542,12 +571,11 @@ module tb_u6_boot;
         begin
             ok = 1'b0;
             t = 0;
-            // The machine's ROM boot requests track 0 (the boot track); the
-            // engine reads it from SDRAM (13 blocks = 6656 B for DOSMaster).
-            // >4000 proves a real track was read from storage (the header
-            // scan alone is only ~228 B).
-            while (bytes_checked < 1000 && t < 3000000) begin @(posedge clk_mach); t = t + 1; end
-            ok = (bytes_checked >= 1000);
+            // Track 0 (DOSMaster) = 13 blocks = 6656 raw bytes in the TRKS
+            // region (lba 0..12). ntrack0 >= 5000 proves a real track-0 load
+            // (the header scan alone is only ~228 B).
+            while (ntrack0 < 5000 && t < 3000000) begin @(posedge clk_mach); t = t + 1; end
+            ok = (ntrack0 >= 5000);
         end
     endtask
     task cpu_alive;

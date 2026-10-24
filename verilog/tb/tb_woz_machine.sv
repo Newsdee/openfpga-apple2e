@@ -113,6 +113,7 @@ module tb_woz_machine;
     wire [47:0] stor_dbg_rc_m;
     // Unit-2 fetch service (machine domain)
     wire        stor_fetch_req, stor_fetch_busy, stor_sector_ready;
+    wire [15:0] stor_sector_lba;
     wire [15:0] stor_fetch_lba;
     wire [8:0]  stor_sector_byte_addr;
     wire [7:0]  stor_sector_byte_data;
@@ -166,6 +167,7 @@ module tb_woz_machine;
         .fetch_lba       ( stor_fetch_lba ),
         .fetch_busy      ( stor_fetch_busy ),
         .sector_ready    ( stor_sector_ready ),
+        .sector_lba      ( stor_sector_lba ),
         .sector_byte_addr( stor_sector_byte_addr ),
         .sector_byte_data( stor_sector_byte_data ),
         .sector_done     ( stor_sector_done ),
@@ -263,6 +265,7 @@ module tb_woz_machine;
         .fetch_lba      ( stor_fetch_lba ),
         .fetch_busy     ( stor_fetch_busy ),
         .sector_ready   ( stor_sector_ready ),
+        .sector_lba     ( stor_sector_lba ),
         .sector_byte_data( stor_sector_byte_data ),
         .fetch_fault    ( stor_fetch_fault ),
         .sector_byte_addr( stor_sector_byte_addr ),

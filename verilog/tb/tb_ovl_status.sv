@@ -27,7 +27,8 @@ module tb_ovl_status;
     localparam ACT_W = 560;      // active samples/line (apf_video MAX_CAP)
     localparam LINE  = HBL_W + ACT_W;
     localparam VBL_L = 40;       // vbl lines at frame start
-    localparam VIS_L = 40;       // visible lines per frame
+    localparam VIS_L = 110;      // visible lines per frame (must reach the
+                                 // fingerprint rows 65..95 for T7)
     localparam FRAME = (VBL_L + VIS_L) * LINE;
 
     localparam T_CLK = 69.844;   // 14.31818 MHz
@@ -64,6 +65,7 @@ module tb_ovl_status;
     reg [47:0] dbg_rc_m;
     reg [2:0]  dbg_fl_m;
     reg [2:0]  stage_m;
+    reg [127:0] fp_first_r, fp_last_r, fp_w_r;
     wire [23:0] rgb_out;
 
     sdram_status_overlay #(.SHOW_CYCLES(4_000_000)) dut (
@@ -72,7 +74,8 @@ module tb_ovl_status;
         .res_valid_m(res_valid_m), .res_code_m(res_code_m),
         .res_fail_m(res_fail_m), .res_crc_m(res_crc_m),
         .res_nbytes_m(res_nbytes_m),
-        .dbg_rc_m(dbg_rc_m), .dbg_fl_m(dbg_fl_m), .stage_m(stage_m)
+        .dbg_rc_m(dbg_rc_m), .dbg_fl_m(dbg_fl_m), .stage_m(stage_m),
+        .fp_first(fp_first_r), .fp_last(fp_last_r), .fp_w(fp_w_r)
     );
 
     // ---- TB-side mirror of the DUT's counters (from the hbl/vbl the
@@ -158,20 +161,25 @@ module tb_ovl_status;
                           (r==3)?5'b10001:(r==4)?5'b10000:(r==5)?5'b10000:5'b10000; // N
                 5'd28 : refg = (r==0)?5'b00100:(r==1)?5'b01100:(r==2)?5'b10010:
                           (r==3)?5'b10001:(r==4)?5'b10001:(r==5)?5'b10001:5'b10001; // M
+                5'd29 : refg = (r==0)?5'b10001:(r==1)?5'b10001:(r==2)?5'b10001:
+                          (r==3)?5'b10001:(r==4)?5'b10101:(r==5)?5'b10101:5'b01010; // W
                 default: refg = 5'b00000;
             endcase
         end
     endfunction
 
     // ---- expected line content (set per test) ----
-    reg [4:0] exm [0:20];   // marker glyphs M 0 <stage> <status> (rest = SP)
-    reg [4:0] ex1 [0:20];   // line 1 (15 chars)
-    reg [4:0] ex2 [0:20];   // line 2 (10 chars)
-    reg [4:0] ex3 [0:20];   // line 3 (21 chars)
+    // Arrays are 28 deep: the fingerprint lines (T7) are 24 chars long;
+    // shorter lines leave the tail as SP (glyph 26, blank).
+    reg [4:0] exm [0:27];   // marker glyphs M 0 <stage> <status> (rest = SP)
+    reg [4:0] ex1 [0:27];   // line 1 (15 chars)
+    reg [4:0] ex2 [0:27];   // line 2 (10 chars)
+    reg [4:0] ex3 [0:27];   // line 3 (21 chars)
+    reg [4:0] exf [0:27];   // fingerprint line (24 chars)
     integer i;
     task set_marks;
         begin
-            for (i = 0; i < 21; i = i + 1) exm[i] = 5'd26;
+            for (i = 0; i < 28; i = i + 1) exm[i] = 5'd26;
             exm[0] = 5'd28;  // M
             exm[1] = 5'd0;   // 0
             exm[2] = stage_m;
@@ -182,17 +190,18 @@ module tb_ovl_status;
     endtask
     task set_ex1_ok(input [31:0] crc);
         begin
+            for (i = 0; i < 28; i = i + 1) ex1[i] = 5'd26;
             ex1[0]=5'd17; ex1[1]=5'd18; ex1[2]=5'd26; ex1[3]=5'd13;
             ex1[4]=5'd19; ex1[5]=5'd13; ex1[6]=5'd25;
             for (i=0;i<8;i=i+1)
                 ex1[7+i] = (crc[31-4*i-:4] < 4'd10) ?
                            {1'b0, crc[31-4*i-:4]} :
                            ({1'b0, crc[31-4*i-:4]} + 5'd1);
-            for (i=15;i<21;i=i+1) ex1[i]=5'd26;
         end
     endtask
     task set_ex1_no;
         begin
+            for (i = 0; i < 28; i = i + 1) ex1[i] = 5'd26;
             ex1[0]=5'd27; ex1[1]=5'd17; ex1[2]=5'd26; ex1[3]=5'd16;
             ex1[4]=5'd20; ex1[5]=5'd21; ex1[6]=5'd15;
             for (i=7;i<15;i=i+1) ex1[i]=5'd26;
@@ -200,7 +209,7 @@ module tb_ovl_status;
     endtask
     task set_ex2(input [31:0] nbytes);
         begin
-            for (i = 0; i < 21; i = i + 1) ex2[i] = 5'd26;
+            for (i = 0; i < 28; i = i + 1) ex2[i] = 5'd26;
             ex2[0]=5'd27; ex2[1]=5'd25;
             for (i=0;i<8;i=i+1)
                 ex2[2+i] = (nbytes[31-4*i-:4] < 4'd10) ?
@@ -224,6 +233,7 @@ module tb_ovl_status;
             ex3[18]= fl[0] ? 5'd17 : 5'd26;   // O
             ex3[19]= fl[1] ? 5'd23 : 5'd26;   // T
             ex3[20]= fl[2] ? 5'd24 : 5'd26;   // S
+            for (i = 21; i < 28; i = i + 1) ex3[i] = 5'd26;
         end
     endtask
 
@@ -338,7 +348,7 @@ module tb_ovl_status;
     integer mr;
     // unified expected array (all line arrays are copied in before a
     // check; Verilog-2001 task array args need matching sizes)
-    reg [4:0] exu [0:20];
+    reg [4:0] exu [0:27];
     // exact per-row pixel check: exu[] holds GLYPH CODES; refg() renders
     // the row-r bitmap of each glyph (bit 4 = leftmost pixel)
     task check_row(input [9:0] x0, input [9:0] len, input [2:0] r);
@@ -379,9 +389,9 @@ module tb_ovl_status;
 
     // ---- scenario drivers ----
     // unified copy of an expected array into exu
-    task copy_ex(reg [4:0] src [0:20]);
+    task copy_ex(reg [4:0] src [0:27]);
         begin
-            for (i = 0; i < 21; i = i + 1) exu[i] = src[i];
+            for (i = 0; i < 28; i = i + 1) exu[i] = src[i];
         end
     endtask
     task set_result(input rv, input [1:0] code, input [1:0] fl_code,
@@ -409,10 +419,10 @@ module tb_ovl_status;
 
     // sample 7 consecutive rows of a box and check each
     task check_line_block(input [7:0] row0, input [9:0] x0, input [9:0] len,
-                          reg [4:0] src [0:20]);
+                          reg [4:0] src [0:27]);
         integer r;
         begin
-            for (i = 0; i < 21; i = i + 1) exu[i] = src[i];
+            for (i = 0; i < 28; i = i + 1) exu[i] = src[i];
             for (r = 0; r < 7; r = r + 1) begin
                 sample_line(row0 + r);
                 check_row(x0, len, r[2:0]);
@@ -583,6 +593,56 @@ module tb_ovl_status;
             $display("T6 FAIL: window did not re-arm (px461=%b px462=%b px463=%b)",
                      px[461], px[462], px[463]);
         end
+
+        // ================= T7: fingerprint lines (always-on) ===========
+        // rows 65..71: "W0=0644D9BB W1=3BB1796C"  (24 chars, X0=406)
+        // rows 73..79: "W2=431FCE9A W3=E79D5F99"
+        // rows 81..87: "F=574F5A32FF0A0D0A"        (18 chars, X0=442)
+        // rows 89..95: "L=...4C4D4E4F"
+        // Values mirror tools/woz_fingerprint.py output for a known image.
+        fp_w_r     <= {32'h0644D9BB, 32'h3BB1796C, 32'h431FCE9A, 32'hE79D5F99};
+        fp_first_r <= 128'h574F5A32_FF0A0D0A_6680666C_00000000;
+        fp_last_r  <= 128'h00000000_00000000_00000000_4C4D4E4F;
+        repeat (40) @(negedge clk);
+        fbase = fails;
+        for (i = 0; i < 28; i = i + 1) exf[i] = 5'd26;
+        exf[0]=5'd29; exf[1]=5'd0;  exf[2]=5'd25;              // W0=
+        exf[3]=5'd0; exf[4]=5'd6;  exf[5]=5'd4;  exf[6]=5'd4;
+        exf[7]=5'd14; exf[8]=5'd9; exf[9]=5'd12; exf[10]=5'd12;   // D9BB
+        exf[11]=5'd26;
+        exf[12]=5'd29; exf[13]=5'd1; exf[14]=5'd25;            // W1=
+        exf[15]=5'd3; exf[16]=5'd12; exf[17]=5'd12; exf[18]=5'd1;
+        exf[19]=5'd7; exf[20]=5'd9; exf[21]=5'd6;  exf[22]=5'd13;
+        exf[23]=5'd26;
+        check_line_block(8'd65, 10'd406, 24, exf);
+        for (i = 0; i < 28; i = i + 1) exf[i] = 5'd26;
+        exf[0]=5'd29; exf[1]=5'd2;  exf[2]=5'd25;              // W2=
+        exf[3]=5'd4; exf[4]=5'd3;  exf[5]=5'd1;  exf[6]=5'd16;
+        exf[7]=5'd13; exf[8]=5'd15; exf[9]=5'd9;  exf[10]=5'd11;
+        exf[11]=5'd26;
+        exf[12]=5'd29; exf[13]=5'd3; exf[14]=5'd25;            // W3=
+        exf[15]=5'd15; exf[16]=5'd7; exf[17]=5'd9; exf[18]=5'd14;
+        exf[19]=5'd5; exf[20]=5'd16; exf[21]=5'd9; exf[22]=5'd9;
+        exf[23]=5'd26;
+        check_line_block(8'd73, 10'd406, 24, exf);
+        for (i = 0; i < 28; i = i + 1) exf[i] = 5'd26;
+        exf[0]=5'd16; exf[1]=5'd25;                             // F=
+        exf[2]=5'd5;  exf[3]=5'd7;  exf[4]=5'd4;  exf[5]=5'd16;
+        exf[6]=5'd5;  exf[7]=5'd11; exf[8]=5'd3;  exf[9]=5'd2;
+        exf[10]=5'd16; exf[11]=5'd16; exf[12]=5'd0; exf[13]=5'd11;
+        exf[14]=5'd0; exf[15]=5'd14; exf[16]=5'd0; exf[17]=5'd11;
+        check_line_block(8'd81, 10'd442, 18, exf);
+        // L= line: LOW 64 bits of fp_last = the file's last 8 bytes.
+        // fp_last_r = 128'h00000000_00000000_00000000_4C4D4E4F
+        // -> "L=000000004C4D4E4F"
+        for (i = 0; i < 28; i = i + 1) exf[i] = 5'd26;
+        exf[0]=5'd21; exf[1]=5'd25;                             // L=
+        for (i = 2; i < 10; i = i + 1) exf[i] = 5'd0;           // 00000000
+        exf[10]=5'd4;  exf[11]=5'd13; exf[12]=5'd4;  exf[13]=5'd14;
+        exf[14]=5'd4;  exf[15]=5'd15; exf[16]=5'd4;  exf[17]=5'd16; // 4C4D4E4F
+        check_line_block(8'd89, 10'd442, 18, exf);
+        if (fails == fbase) $display("T7 PASS: fingerprint lines W0/W1/W2/W3/F/L exact");
+        else $display("T7 FAIL (%0d new)", fails - fbase);
 
         // ---- DUMP phase: OK result, stage 6 - file dump for offline decode ----
         set_result(1'b1, 2'd0, 2'd0, 32'hC9260F5E, 32'd512, 48'h000080_000080, 3'd0, 3'd6);

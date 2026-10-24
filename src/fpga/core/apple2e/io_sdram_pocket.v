@@ -13,7 +13,15 @@
 //                                (the base had this as a commented-out line)
 //   4. new port boot_done     - init sequence complete, stable afterwards
 //   5. word_busy now asserted for the duration of an op (base only cleared it)
-// No other line differs. Verify: diff io_sdram.v io_sdram_pocket.v
+//   6. parameter BOOT_CYCLES (default 30000 = base behavior) - TB shortcut
+//   7. parameter CAP_PIPE (default 3; base hardwired stage 4) - hardware fix
+//      2026-10-23: the chip runs in power-up-default CAS2 mode (the base's
+//      boot "LMR" writes use CMD_LMR=3'b000 = undefined SDRAM command, which
+//      real chips ignore), so read data arrives one cycle earlier than the
+//      base's 4-stage pipeline assumed. Stage 4 captured the SECOND read's
+//      data in both word_q halves ({low16,low16} per word - proven byte-exact
+//      by the hardware image fingerprint, see docs).
+// Verify: diff io_sdram.v io_sdram_pocket.v
 //
 
 module io_sdram_pocket (
@@ -58,6 +66,23 @@ output  reg             word_done,      // POCKET-DIFF: write op complete
 output  reg             word_rd_valid,  // POCKET-DIFF: word_q complete
 output  reg             boot_done       // POCKET-DIFF: init complete
 );
+
+    // BOOT_CYCLES: power-on delay before CKE/precharge (real: 30000 ~=
+    // 225 us @133.12MHz, covers the DRAM power-settle). TBs may shorten.
+    parameter BOOT_CYCLES = 30000;
+    // CAP_PIPE: read-capture stage relative to the READ command edge.
+    // HARDWARE-FIXED 2026-10-23 (fingerprint evidence, see header):
+    //   the chip presents read data ONE CYCLE EARLIER than the original
+    //   4-stage pipeline assumed (chip runs at its power-up-default
+    //   CAS2 mode - the boot "LMR" writes drive CMD_LMR=3'b000 which is
+    //   an undefined SDRAM command and is ignored by the chip). At the
+    //   180 deg chip phase, sampling at stage 3 lands mid-window of the
+    //   chip's actual data; stage 4 landed one cycle late and captured
+    //   the SECOND read's data (low half) in BOTH word_q halves:
+    //   every 32-bit word came back {low16, low16} (hardware fingerprint
+    //   byte-exact: CRC/W0-W3/F/L all matched that transformation).
+    //   tb_dram_model CAS=2 models the chip's actual mode.
+    parameter CAP_PIPE    = 3;
 
     // tristate for DQ
     reg             phy_dq_oe;      
@@ -163,6 +188,8 @@ synch_3 #(.WIDTH(32)) s5(word_data, word_data_s, controller_clk);
     wire    [10:0]  length_next = length - 'h1;
     reg             enable_dq_read, enable_dq_read_1, enable_dq_read_2, enable_dq_read_3, enable_dq_read_4, enable_dq_read_5;
     reg             enable_dq_read_toggle;
+    wire cap_en;
+    assign cap_en = (CAP_PIPE == 3) ? enable_dq_read_3 : enable_dq_read_4;
     
     reg             enable_data_done, enable_data_done_1, enable_data_done_2, enable_data_done_3, enable_data_done_4;
 
@@ -209,7 +236,7 @@ always @(posedge controller_clk) begin
     // delayed by CAS latency for reads
     // this is triggered by the read FSM but delayed by 3 clocks
     // this makes the FSM simple and everybody happy
-    if(enable_dq_read_4) begin
+    if(cap_en) begin
         enable_dq_read_toggle <= ~enable_dq_read_toggle;
         
         if(word_op) begin
@@ -256,8 +283,8 @@ always @(posedge controller_clk) begin
     ST_BOOT_0: begin
         delay_boot <= delay_boot + 1'b1;
 
-        if(delay_boot == 30000-16) phy_cke <= 1;
-        if(delay_boot == 30000) begin
+        if(delay_boot == BOOT_CYCLES-16) phy_cke <= 1;
+        if(delay_boot == BOOT_CYCLES) begin
             // 200uS @ 166mhz
             dc <= 0;
             

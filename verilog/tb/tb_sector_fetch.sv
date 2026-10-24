@@ -152,6 +152,7 @@ module tb_sector_fetch;
     reg         fetch_req;
     reg  [15:0] fetch_lba;
     wire        fetch_busy, sector_ready, fetch_fault;
+    wire [15:0] sector_lba;   // 2026-10-22: published-window lba (observed, unused here)
     wire [7:0]  sector_byte_data;
     reg         sector_done;
     reg  [7:0]  img_gen_tb;
@@ -197,6 +198,7 @@ module tb_sector_fetch;
         .fetch_lba     ( fetch_lba ),
         .fetch_busy    ( fetch_busy ),
         .sector_ready  ( sector_ready ),
+        .sector_lba    ( sector_lba ),
         .sector_byte_addr ( ba_r ),
         .sector_byte_data ( sector_byte_data ),
         .sector_done   ( sector_done ),

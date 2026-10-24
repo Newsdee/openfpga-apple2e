@@ -4,11 +4,11 @@
         "metadata": {
             "platform_ids": ["apple2e"],
             "shortname": "Apple2eStreamVideo",
-            "description": "Apple IIe Phase 1 streaming prototype (native 560x192 raster, no frame buffer)",
+            "description": "Apple IIe (native 560x192 streaming raster, no frame buffer; WOZ floppy drive via Pocket SDRAM, on-screen keyboard)",
             "author": "Newsdee",
             "url": "https://github.com/Newsdee",
-            "version": "0.1.0",
-            "date_release": "2026-10-15"
+            "version": "0.2.0",
+            "date_release": "2026-10-21"
         },
         "framework": {
             "target_product": "Analogue Pocket",

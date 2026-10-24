@@ -64,6 +64,11 @@ module sdram_storage (
     output wire [31:0] ver_first_word,
     output wire [31:0] ver_last_word,
     output wire [15:0] ver_words_readout,
+    // ---- image fingerprint (machine domain, for the on-screen overlay;
+    //      see disk_verifier.v header for the byte/window semantics) ----
+    output wire [127:0] fp_first_m,      // file bytes [0:15]
+    output wire [127:0] fp_last_m,       // file bytes [n-16:n-1]
+    output wire [127:0] fp_w_m,          // {w0,w1,w2,w3} 64 KB window CRC32s
     output wire [31:0] n_bytes_m,           // config in machine domain
     output wire        store_timeout_m,     // for the on-screen overlay
     output wire        fifo_overflow_m,     // for the on-screen overlay
@@ -75,6 +80,7 @@ module sdram_storage (
     input  wire [15:0] fetch_lba,           // 512-byte sector number
     output wire        fetch_busy,
     output wire        sector_ready,
+    output wire [15:0] sector_lba,      // lba of the published window (stale-window guard)
     input  wire [8:0]  sector_byte_addr,
     output wire [7:0]  sector_byte_data,
     input  wire        sector_done,
@@ -286,6 +292,7 @@ module sdram_storage (
         .fetch_lba     ( fetch_lba ),
         .fetch_busy    ( fetch_busy ),
         .sector_ready  ( sector_ready ),
+        .sector_lba    ( sector_lba ),
         .sector_byte_addr ( sector_byte_addr ),
         .sector_byte_data ( sector_byte_data ),
         .sector_done   ( sector_done ),
@@ -353,6 +360,9 @@ module sdram_storage (
     synch_3        s_vto     (store_timeout_i, store_timeout_m_i, clk_mach, , );
     synch_3        s_vovf    (fifo_overflow,   fifo_overflow_m_i, clk_mach, , );
 
+    wire [127:0] v_fp_first, v_fp_last;
+    wire [31:0]  v_fp_w0, v_fp_w1, v_fp_w2, v_fp_w3;
+
     disk_verifier #(.TIMEOUT_CYCLES(20000)) ver0 (
         .clk(clk_mach), .rst_n(rst_n_mach),
         .n_bytes(v_nbytes_m), .start(v_start_pulse), .start_done(v_start_done),
@@ -361,8 +371,15 @@ module sdram_storage (
         .busy(v_busy), .done(v_done_i), .ok(v_ok_i), .stuck(v_stuck),
         .timeout_override(timeout_override),
         .crc32(v_crc32), .first_word(v_first_word), .last_word(v_last_word),
-        .words_read(v_words_read), .words_readout(v_words_readout)
+        .words_read(v_words_read), .words_readout(v_words_readout),
+        .fp_first(v_fp_first), .fp_last(v_fp_last),
+        .fp_w0(v_fp_w0), .fp_w1(v_fp_w1), .fp_w2(v_fp_w2), .fp_w3(v_fp_w3)
     );
+
+    // Machine-domain passthrough (verifier and overlay share clk_mach - no CDC).
+    assign fp_first_m = v_fp_first;
+    assign fp_last_m  = v_fp_last;
+    assign fp_w_m     = {v_fp_w0, v_fp_w1, v_fp_w2, v_fp_w3};
 
     // ==================================================================
     // diagnostics: 74.25-domain syncs + 0xF9 readout

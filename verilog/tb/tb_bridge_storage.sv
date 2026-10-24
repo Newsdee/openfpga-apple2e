@@ -529,10 +529,13 @@ module tb_bridge_storage;
             $fatal(1, "B6: expected FAIL IN, got code=%d fail=%d", res_code_m, res_fail_m);
         $display("B6: incomplete transfer rejected FAIL IN");
 
-        // B7: FIFO overflow: unpaced 100-word burst -> FAIL OV
-        hb_cmd(16'h0082, 16'd1, 32'd512, res);
+        // B7: FIFO overflow: unpaced 512-word burst (FIFO depth 256) -> FAIL OV.
+        // (Was a 100-word burst: cannot fill the 256-deep post-Unit-5 FIFO, so
+        // the overflow wait timed out - pre-existing TB bug, mirrored from
+        // tb_top_storage T7 on 2026-10-21.)
+        hb_cmd(16'h0082, 16'd1, 32'd4096, res);
         wait_res_fall;
-        for (i = 0; i < 100; i = i + 1)
+        for (i = 0; i < 512; i = i + 1)
             hb_word_raw(i*4, p32(i));
         w = 0;
         while (!fifo_overflow) begin

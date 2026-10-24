@@ -146,6 +146,7 @@ module tb_woz_transport;
 
     // sector service (machine domain) - driven by the TRANSPORT
     wire        fetch_busy, sector_ready, fetch_fault;
+    wire [15:0] sector_lba;
     wire [7:0]  sector_byte_data;
     wire        fetch_req;
     wire [15:0] fetch_lba;
@@ -194,6 +195,7 @@ module tb_woz_transport;
         .fetch_lba     ( fetch_lba ),
         .fetch_busy    ( fetch_busy ),
         .sector_ready  ( sector_ready ),
+        .sector_lba    ( sector_lba ),
         .sector_byte_addr ( sector_byte_addr ),
         .sector_byte_data ( sector_byte_data ),
         .sector_done   ( sector_done ),
@@ -241,6 +243,7 @@ module tb_woz_transport;
         .fetch_lba      ( fetch_lba ),
         .fetch_busy     ( fetch_busy ),
         .sector_ready   ( sector_ready ),
+        .sector_lba     ( sector_lba ),
         .sector_byte_data ( sector_byte_data ),
         .fetch_fault    ( fetch_fault ),
         .sector_byte_addr ( sector_byte_addr ),

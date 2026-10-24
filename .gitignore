@@ -40,3 +40,24 @@ refs/
 
 # --- Python bytecode ---
 __pycache__/
+
+# M1 no-boot repro scratch (tb_woz_mount_race builds)
+verilog/u7_race/
+verilog/u7_race_fixed/
+
+# --- Regenerated run/build logs (kept out of the tree) ---
+build_relink.log
+verilog/*.log
+verilog/u6_out.txt
+
+# M1 pocket_boot harness scratch (build tree, staged ROMs, shots, test image,
+# generated hex - see docs/VERILATOR_BOOT_HARNESS_2026-10-21.md)
+verilog/pocket_boot/obj_dir/
+verilog/pocket_boot/pocket_boot_shots/
+verilog/pocket_boot/rtl/
+verilog/pocket_boot/*.log
+verilog/pocket_boot/*.hex
+verilog/pocket_boot/disk.woz
+
+# one-off scratch edit script
+/tools/_m0_sdram_edit.pl

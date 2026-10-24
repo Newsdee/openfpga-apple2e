@@ -781,6 +781,7 @@ wire        stor_timeout_m, stor_ovf_m;
 wire        stor_res_valid_m;
 wire [1:0]  stor_res_code_m, stor_res_fail_m;
 wire [31:0] stor_res_crc_m, stor_res_nbytes_m;
+wire [127:0] stor_fp_first_m, stor_fp_last_m, stor_fp_w_m;   // image fingerprint (overlay)
 wire        stor_new_load_m;   // proactive unmount pulse (0082 generation)
 // debug counters to the overlay (machine domain)
 wire [47:0] stor_dbg_rc_m;
@@ -792,6 +793,7 @@ wire [2:0] stor_stage_m;
 // M1 sector service (machine domain; Unit-3 transport <-> Unit-2 fetcher)
 wire        stor_fetch_req, stor_fetch_busy, stor_sector_ready;
 wire [15:0] stor_fetch_lba;
+wire [15:0] stor_sector_lba;   // 2026-10-22: lba of the fetcher's published window
 wire [8:0]  stor_sector_byte_addr;
 wire [7:0]  stor_sector_byte_data;
 wire        stor_sector_done, stor_fetch_fault;
@@ -841,12 +843,16 @@ sdram_storage stor (
     .res_fail_m      ( stor_res_fail_m ),
     .res_crc_m       ( stor_res_crc_m ),
     .res_nbytes_m    ( stor_res_nbytes_m ),
+    .fp_first_m      ( stor_fp_first_m ),
+    .fp_last_m       ( stor_fp_last_m ),
+    .fp_w_m          ( stor_fp_w_m ),
     .new_load_m      ( stor_new_load_m ),
     .stage_m         ( stor_stage_m ),
     .fetch_req       ( stor_fetch_req ),
     .fetch_lba       ( stor_fetch_lba ),
     .fetch_busy      ( stor_fetch_busy ),
     .sector_ready    ( stor_sector_ready ),
+    .sector_lba      ( stor_sector_lba ),
     .sector_byte_addr( stor_sector_byte_addr ),
     .sector_byte_data( stor_sector_byte_data ),
     .sector_done     ( stor_sector_done ),
@@ -897,21 +903,21 @@ wire        mc_mount_rise = mc_img_mounted && !mc_mounted_d;
 // slot-qualified PD mux (C9): the disk slot is $C0E0-$C0EF (device select)
 // plus the Disk II ROM at $C600-$C6FF (IO select); D_OUT is already gated
 // internally (rom vs data register) - the mux only selects the slot.
-wire [7:0]  m_pd_mux = (m_dev_sel | m_io_sel) ? woz_dout : 8'h00;
+wire [7:0]  m_pd_mux = (m_dev_sel[6] | m_io_sel[6]) ? woz_dout : 8'h00;
 
 disk_ii_woz woz (
     .CLK_14M         ( clk_core_14318 ),
     .RESET           ( machine_reset ),
     .DD_RESET        ( machine_reset ),
     .PHASE_ZERO      ( m_pz ),
-    .IO_SELECT       ( m_io_sel ),
-    .DEVICE_SELECT   ( m_dev_sel ),
+    .IO_SELECT       ( m_io_sel[6] ),
+    .DEVICE_SELECT   ( m_dev_sel[6] ),
     .WE              ( m_cpu_we ),
     .A               ( m_addr ),
     .D_IN            ( m_ram_di ),
     .D_OUT           ( woz_dout ),
-    .D1_ACTIVE       ( ), .D2_ACTIVE ( ),
-    .D1_MOTOR_ON     ( ), .D2_MOTOR_ON ( ),
+    .D1_ACTIVE       ( drv_active ), .D2_ACTIVE ( ),
+    .D1_MOTOR_ON     ( drv_motor ), .D2_MOTOR_ON ( ),
     .D1_STEP         ( ), .D2_STEP ( ),
     .D1_TRACK0       ( ), .D2_TRACK0 ( ),
     .D1_IO           ( ), .D2_IO ( ),
@@ -948,6 +954,7 @@ sdram_woz_transport woz_tr (
     .fetch_lba      ( stor_fetch_lba ),
     .fetch_busy     ( stor_fetch_busy ),
     .sector_ready   ( stor_sector_ready ),
+    .sector_lba     ( stor_sector_lba ),
     .sector_byte_data( stor_sector_byte_data ),
     .fetch_fault    ( stor_fetch_fault ),
     .sector_byte_addr( stor_sector_byte_addr ),
@@ -973,6 +980,17 @@ woz_mount_ctl woz_mc (
     .mount_state_m   ( mc_state )
 );
 
+// ---- drive-activity diagnostics (M1 no-boot: where is it stuck?) ----
+wire        drv_active;            // engine D1_ACTIVE (selected-drive motor)
+wire        drv_motor;             // engine D1_MOTOR_ON (controller command)
+reg  [23:0] drv_reads;             // cumulative sd_buff_wr bytes (saturating)
+always @(posedge clk_core_14318 or posedge machine_reset) begin
+    if (machine_reset)
+        drv_reads <= 24'd0;
+    else if (drv_reads != 24'hFFFFF)
+        drv_reads <= woz_sd_buff_wr ? drv_reads + 24'd1 : drv_reads;
+end
+
 // ---- on-screen diagnostic (temporary, M0 only) ----
 wire [23:0] ovl_rgb;
 sdram_status_overlay ovl (
@@ -982,11 +1000,22 @@ sdram_status_overlay ovl (
     .res_valid_m(stor_res_valid_m), .res_code_m(stor_res_code_m),
     .res_fail_m(stor_res_fail_m), .res_crc_m(stor_res_crc_m),
     .res_nbytes_m(stor_res_nbytes_m),
+    // image fingerprint (always-on lines 8-11; last latched verify pass)
+    .fp_first(stor_fp_first_m), .fp_last(stor_fp_last_m),
+    .fp_w(stor_fp_w_m),
     .dbg_rc_m(stor_dbg_rc_m),
     // bit2=S(verifier stuck), bit1=T(store timeout), bit0=O(FIFO overflow) -
     // the overlay's interpretation; an earlier revision had O and S swapped
     .dbg_fl_m({stor_vstuck, stor_timeout_m, stor_ovf_m}),
-    .stage_m(stor_stage_m)
+    .stage_m(stor_stage_m),
+    .drv_mounted(mc_img_mounted),
+    .drv_active(drv_active),
+    .drv_motor(drv_motor),
+    .drv_reads(drv_reads),
+    .drv_mstate(mc_state),
+    .drv_ack(woz_sd_ack),
+    .drv_tfault(woz_transport_fault),
+    .drv_rdreq(woz_sd_rd)
 );
 
 
