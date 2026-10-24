@@ -114,14 +114,19 @@ Repo state at handover:
 > **pocket_boot smoke, investigated 2026-10-24 (not a sweep regression):** the
 > headless smoke failed with the machine held in reset — but the *pre-sweep*
 > smoke run of 01:41 failed identically, and the failure is a harness-budget
-> bug, not RTL: context time is in **ps**, the smoke budget was `50e9` = **50 ms**,
-> while the TB host cycle needs ~80 ms (2 ms trigger + 20 ms pre-wait + ~58 ms
-> WOZ load at `load_pace=40` + Reset-Exit) and the pass milestone requires
-> `t > 800e9` = 800 ms. The smoke could therefore never pass as configured.
-> Fix (C++ only, this commit): `budgetPs` 50e9 → 1000e9 (1 ms = 1e9 ps). The
-> old interactive runs prove the full chain works (run_cpu.log: host cycle
-> done at ~60 ms, machine released, frames arriving) — a full smoke re-run is
-> a ~1-hour background job and is queued after the owner's Quartus runs.
+> bug, not RTL: the TB host cycle needs ~80 ms of sim time (2 ms trigger +
+> 20 ms pre-wait + ~58 ms WOZ load at `load_pace=40` + Reset-Exit) while the
+> smoke budget was only 50 ms and the pass milestone required t > 800 ms.
+> Fix (C++ only, `7006c25` + `5ca5be6`): `budgetPs` 50e9 → 1000e9, milestone
+> 800e9 → 100e9 (first frame observed at ~68 ms in the old interactive
+> runs). **Result: `SMOKE BOOT OK` — frames=9, crc=74EA1324 (byte-exact),
+> mt=1, tf=0, res8f=0000, exit 0** — the real top with the new sweep RAM
+> completes the full host cycle and boots.
+>
+> **Full verification chain for the sweep change (all green):**
+> `tb_reboot_ctl` 7/7 PASS (handshake + timeout), `tb_u6_boot` ALL PASS
+> (window=65601, RAM cleared, machine re-booting), full-top Verilator lint
+> clean, pocket_boot smoke BOOT OK, `eol_guard` clean.
 
 ---
 
