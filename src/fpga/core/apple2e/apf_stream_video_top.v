@@ -837,8 +837,8 @@ wire [127:0] stor_fp_first_m, stor_fp_last_m, stor_fp_w_m;   // image fingerprin
 wire        stor_new_load_m;   // proactive unmount pulse (0082 generation)
 // debug counters to the overlay (machine domain)
 wire [47:0] stor_dbg_rc_m;
-synch_3 #(.WIDTH(48)) s_dbg_rc({stor_received, stor_committed},
-                              stor_dbg_rc_m, clk_core_14318, , );
+synch_3 #(.WIDTH(48)) s_dbg_rc (.i({stor_received, stor_committed}),
+                               .o(stor_dbg_rc_m), .clk(clk_core_14318));
 // furthest storage stage (0..6) to the overlay marker (machine domain;
 // sdram_storage syncs 74.25 -> machine internally, like res_*_m)
 wire [2:0] stor_stage_m;

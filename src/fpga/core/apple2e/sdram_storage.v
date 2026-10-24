@@ -355,7 +355,7 @@ module sdram_storage (
             v_n_bytes_host <= ld_size; // exact size (partial words masked in CRC)
         end
     end
-    synch_3 s_vstart (v_start_host, v_start_sync, clk_mach, v_start_pulse, );
+    synch_3 s_vstart (.i(v_start_host), .o(v_start_sync), .clk(clk_mach), .rise(v_start_pulse));
 
     wire        v_busy, v_done_i, v_ok_i, v_stuck;
     wire [31:0] v_crc32, v_first_word, v_last_word;
@@ -363,9 +363,9 @@ module sdram_storage (
     wire [31:0] v_nbytes_m;
     wire        store_timeout_m_i, fifo_overflow_m_i;
 
-    synch_3 #(.WIDTH(32)) s_vnbytes (v_n_bytes_host, v_nbytes_m, clk_mach, , );
-    synch_3        s_vto     (store_timeout_i, store_timeout_m_i, clk_mach, , );
-    synch_3        s_vovf    (fifo_overflow,   fifo_overflow_m_i, clk_mach, , );
+    synch_3 #(.WIDTH(32)) s_vnbytes (.i(v_n_bytes_host), .o(v_nbytes_m), .clk(clk_mach));
+    synch_3 s_vto (.i(store_timeout_i), .o(store_timeout_m_i), .clk(clk_mach));
+    synch_3 s_vovf (.i(fifo_overflow), .o(fifo_overflow_m_i), .clk(clk_mach));
 
     wire [127:0] v_fp_first, v_fp_last;
     wire [31:0]  v_fp_w0, v_fp_w1, v_fp_w2, v_fp_w3;
@@ -398,20 +398,20 @@ module sdram_storage (
     wire [15:0] v_words_readout_74;
     wire        v_done_rise_74;
 
-    synch_3 s_sd0 (sdram_init_done, init_done_74, clk_74a, , );
-    synch_3 s_sd1 (load_drained_i,  load_drained_74, clk_74a, , );
-    synch_3 s_sd2 (store_busy_i,    store_busy_74,   clk_74a, , );
-    synch_3 s_sd3 (store_timeout_i, store_timeout_74, clk_74a, , );
-    synch_3 #(.WIDTH(24)) s_sd4 (words_received_i,  words_received_74,  clk_74a, , );
-    synch_3 #(.WIDTH(24)) s_sd5 (words_committed_i, words_committed_74, clk_74a, , );
-    synch_3 s_v0  (v_done_i,      v_done_74,      clk_74a, v_done_rise_74, );
-    synch_3 s_v1  (v_ok_i,        v_ok_74,        clk_74a, , );
-    synch_3 s_v2  (v_stuck,       v_stuck_74,     clk_74a, , );
-    synch_3 s_v3  (v_busy,        v_busy_74,      clk_74a, , );
-    synch_3 #(.WIDTH(32)) s_v4  (v_crc32,        v_crc32_74,        clk_74a, , );
-    synch_3 #(.WIDTH(32)) s_v5  (v_first_word,   v_first_word_74,   clk_74a, , );
-    synch_3 #(.WIDTH(32)) s_v6  (v_last_word,    v_last_word_74,    clk_74a, , );
-    synch_3 #(.WIDTH(16)) s_v7  (v_words_readout, v_words_readout_74, clk_74a, , );
+    synch_3 s_sd0 (.i(sdram_init_done), .o(init_done_74), .clk(clk_74a));
+    synch_3 s_sd1 (.i(load_drained_i), .o(load_drained_74), .clk(clk_74a));
+    synch_3 s_sd2 (.i(store_busy_i), .o(store_busy_74), .clk(clk_74a));
+    synch_3 s_sd3 (.i(store_timeout_i), .o(store_timeout_74), .clk(clk_74a));
+    synch_3 #(.WIDTH(24)) s_sd4 (.i(words_received_i), .o(words_received_74), .clk(clk_74a));
+    synch_3 #(.WIDTH(24)) s_sd5 (.i(words_committed_i), .o(words_committed_74), .clk(clk_74a));
+    synch_3 s_v0 (.i(v_done_i), .o(v_done_74), .clk(clk_74a), .rise(v_done_rise_74));
+    synch_3 s_v1 (.i(v_ok_i), .o(v_ok_74), .clk(clk_74a));
+    synch_3 s_v2 (.i(v_stuck), .o(v_stuck_74), .clk(clk_74a));
+    synch_3 s_v3 (.i(v_busy), .o(v_busy_74), .clk(clk_74a));
+    synch_3 #(.WIDTH(32)) s_v4 (.i(v_crc32), .o(v_crc32_74), .clk(clk_74a));
+    synch_3 #(.WIDTH(32)) s_v5 (.i(v_first_word), .o(v_first_word_74), .clk(clk_74a));
+    synch_3 #(.WIDTH(32)) s_v6 (.i(v_last_word), .o(v_last_word_74), .clk(clk_74a));
+    synch_3 #(.WIDTH(16)) s_v7 (.i(v_words_readout), .o(v_words_readout_74), .clk(clk_74a));
 
     // ==================================================================
     // Load/verify coordinator (host domain)
@@ -573,11 +573,11 @@ co_st      <= CO_RES;
     end
 
     // Host -> machine: coordinator result (on-screen overlay inputs)
-    synch_3          s_rv  (res_valid,  res_valid_m,  clk_mach, , );
-    synch_3 #(.WIDTH(2)) s_rc  (res_code,   res_code_m,   clk_mach, , );
-    synch_3 #(.WIDTH(2)) s_rf  (res_fail,   res_fail_m,   clk_mach, , );
-    synch_3 #(.WIDTH(32)) s_rca (res_crc,    res_crc_m,    clk_mach, , );
-    synch_3 #(.WIDTH(32)) s_rnb (res_nbytes, res_nbytes_m, clk_mach, , );
+    synch_3 s_rv (.i(res_valid), .o(res_valid_m), .clk(clk_mach));
+    synch_3 #(.WIDTH(2)) s_rc (.i(res_code), .o(res_code_m), .clk(clk_mach));
+    synch_3 #(.WIDTH(2)) s_rf (.i(res_fail), .o(res_fail_m), .clk(clk_mach));
+    synch_3 #(.WIDTH(32)) s_rca (.i(res_crc), .o(res_crc_m), .clk(clk_mach));
+    synch_3 #(.WIDTH(32)) s_rnb (.i(res_nbytes), .o(res_nbytes_m), .clk(clk_mach));
 
     // ---- stage indicator (per generation, for the overlay marker) ----
     // bit0 = first data word seen, bit1 = 008F seen, bit2 = drain
@@ -603,7 +603,7 @@ co_st      <= CO_RES;
                           stg[1]    ? 3'd3 :
                           stg[0]    ? 3'd2 :
                           (co_st == CO_IDLE) ? 3'd0 : 3'd1;
-    synch_3 #(.WIDTH(3)) s_stg (stage_74, stage_m, clk_mach, , );
+    synch_3 #(.WIDTH(3)) s_stg (.i(stage_74), .o(stage_m), .clk(clk_mach));
 
     reg [31:0] diag_rd_data_r;
     always @(*) begin
