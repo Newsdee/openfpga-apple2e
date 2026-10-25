@@ -88,9 +88,11 @@ the OSK; with the OSK closed:
 | face-X | centre both paddles (calibration-style games) |
 | face-Y | PB2 / `$C063` — IIe shift line / third fire |
 
-Core Settings → **Joystick** selects the mode: Relative (slow / normal /
-fast) or Absolute (snap). Relative speed = paddle update step 2 / 1 / 0.5 ms
-(default normal). Paddle values are the classic one-shot interval: a `$C07x`
+Core Settings → **Joystick** selects the mode: Absolute (snap) - the
+default - or Relative (slow / normal / fast). Absolute is the default because
+many titles are digital-only and snap instantly to the d-pad extremes;
+Relative accumulates a virtual paddle position, with an update step of
+2 / 1 / 0.5 ms for slow / normal / fast. Paddle values are the classic one-shot interval: a `$C07x`
 read arms the counter (2800 ticks at centre, 0–5650 with position); PDL2/PDL3
 read 0 (poll loops terminate).
 
