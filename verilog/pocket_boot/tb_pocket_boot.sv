@@ -1029,4 +1029,156 @@ module tb_pocket_boot;
         $finish;
     end
 
+    // ------------------------------------------------------------------
+    // VBL-exit geometry probe (+vidprobe), v2.
+    //
+    // v1 was VACUOUS and is replaced: it armed on video_vs, which by
+    // construction fires AFTER sel_vbl has already fallen, so the three
+    // VBL-fall positions were never observed and simply reported their
+    // initialised zeros ("line 0 pos 0" for all three - identical values that
+    // should have been impossible, since sel_vbl is ntsc_vbl delayed by
+    // VBL_ALIGN=32). A measurement that returns the initial value for every
+    // probe point is not a measurement.
+    //
+    // v2 free-runs and defines line 0 as the line in which sel_vbl FALLS, so
+    // the fall is inside the observation window by construction. It records,
+    // for each of the three VBL variants (machine m_vbl, pipeline ntsc_vbl,
+    // aligned sel_vbl), the position of the falling edge within its line, and
+    // whether DE asserted on each of the first lines after the fall.
+    //
+    // Why this matters: hardware shows first-line corruption on colour
+    // screens, and DEC2X=0 in this build, so de_out = de_active = !hbl && !vbl
+    // and the win_en_line / line-buffer logic is NOT involved. The only way to
+    // lose or damage the first line is for sel_vbl to still be high when
+    // sel_hbl goes low on that line - which is exactly what a VBL_ALIGN delay
+    // could cause if the pipeline's own VBL_O already falls late in the line.
+    //
+    // Also note: fb_h reported by the smoke run is ROWS-1, because fc_ymax
+    // records fc_y before it increments. fb=560x191 means 192 rows.
+    // ------------------------------------------------------------------
+    reg        vp_m_vbl_r, vp_n_vbl_r, vp_s_vbl_r, vp_s_hbl_r;
+    reg        vp_de_this_line;
+    reg        vp_de_prev;        // DE status of the last CLOSED line at restart
+    reg        vp_de_last_closed; // updated at every line close
+    int        vp_line, vp_pos, vp_seen;
+    int        vp_de_line0, vp_de_line1, vp_de_line2, vp_de_line3;
+    int        vp_de_rows;
+    reg [15:0] vp_mfall_pos, vp_nfall_pos, vp_sfall_pos;
+    int        vp_mfall_line, vp_nfall_line, vp_sfall_line;
+    reg        vp_hbl_at_m, vp_hbl_at_n;
+    int        vp_hbl_start, vp_hbl_end, vp_de_start_pos;
+
+    initial begin : vidprobe_block
+        if (!$test$plusargs("vidprobe")) disable vidprobe_block;
+        vp_line = 0; vp_pos = 0; vp_seen = 0;
+        vp_de_line0 = 0; vp_de_line1 = 0; vp_de_line2 = 0; vp_de_line3 = 0;
+        vp_de_rows = 0;
+        vp_mfall_pos = 0; vp_nfall_pos = 0; vp_sfall_pos = 0;
+        vp_mfall_line = -1; vp_nfall_line = -1; vp_sfall_line = -1;
+        vp_de_this_line = 0;
+        vp_de_prev = 1; vp_de_last_closed = 1;
+        vp_hbl_at_m = 0; vp_hbl_at_n = 0;
+        vp_hbl_start = -1; vp_hbl_end = -1; vp_de_start_pos = -1;
+
+        wait (d_reset_n);
+        repeat (400000) @(posedge dut.clk_core_14318);   // reach a steady raster
+
+        // observe 3 frames; keep the last complete one
+        while (vp_seen < 3) begin
+            @(posedge dut.clk_core_14318);
+            vp_m_vbl_r <= dut.m_vbl;
+            vp_n_vbl_r <= dut.ntsc_vbl;
+            vp_s_vbl_r <= dut.sel_vbl;
+            vp_s_hbl_r <= dut.sel_hbl;
+
+            // line boundary: sel_hbl rising edge (the adapter's own definition)
+            if (!vp_s_hbl_r && dut.sel_hbl) begin
+                // close out the line just finished
+                case (vp_line)
+                    0: vp_de_line0 = vp_de_this_line;
+                    1: vp_de_line1 = vp_de_this_line;
+                    2: vp_de_line2 = vp_de_this_line;
+                    3: vp_de_line3 = vp_de_this_line;
+                    default: ;
+                endcase
+                if (vp_de_this_line) vp_de_rows++;
+                vp_de_last_closed = vp_de_this_line;   // line that just closed
+                vp_line = vp_line + 1;
+                vp_pos  = 0;
+                vp_de_this_line = 0;
+                if (vp_line >= 262) begin
+                    vp_line = 0;
+                    vp_seen = vp_seen + 1;
+                    vp_de_rows = 0;
+                end
+            end else begin
+                vp_pos = vp_pos + 1;
+            end
+
+            if (video_de) vp_de_this_line = 1;
+
+            // falling edges of each VBL variant, with position inside the line
+            if (vp_m_vbl_r && !dut.m_vbl && vp_mfall_line < 0) begin
+                vp_mfall_line = vp_line; vp_mfall_pos = vp_pos;
+                vp_hbl_at_m = dut.m_hbl; vp_hbl_at_n = dut.ntsc_hbl;
+            end
+            // HBL window extents, so the 0..351 assumption can be checked
+            // rather than inherited from the parity TB's synthetic stimulus
+            if (!vp_s_hbl_r && dut.sel_hbl) vp_hbl_start = vp_pos;
+            if (vp_s_hbl_r && !dut.sel_hbl) begin
+                vp_hbl_end = vp_pos;
+                vp_de_start_pos = -1;
+            end
+            if (video_de && vp_de_start_pos < 0) vp_de_start_pos = vp_pos;
+            if (vp_n_vbl_r && !dut.ntsc_vbl && vp_nfall_line < 0) begin
+                vp_nfall_line = vp_line; vp_nfall_pos = vp_pos;
+            end
+            if (vp_n_vbl_r && !dut.ntsc_vbl && vp_nfall_line < 0) begin
+                vp_nfall_line = vp_line; vp_nfall_pos = vp_pos;
+            end
+            if (vp_s_vbl_r && !dut.sel_vbl) begin
+                // restart the frame here: line 0 := the line sel_vbl falls in
+                vp_sfall_line = vp_line; vp_sfall_pos = vp_pos;
+                // the line we are restarting in the middle of is the suspect:
+                // sel_vbl fell 26 clocks into it, so if VBL_ALIGN pushed the
+                // fall past this line's start, its DE was suppressed
+                // The suspect line is the one that CLOSED at this boundary
+                // (the line ntsc_vbl fell in, at pos 905), NOT the partial line
+                // we are 26 clocks into - that one is still inside HBL (0..352)
+                // so DE cannot have asserted yet and reading it proves nothing.
+                vp_de_prev = vp_de_last_closed;
+                vp_line = 0; vp_pos = 0; vp_de_this_line = 0;
+                vp_mfall_line = -1; vp_nfall_line = -1;
+                vp_de_rows = 0;
+                // NOTE: vp_hbl_at_m/vp_hbl_at_n are deliberately NOT cleared
+                // here. The restart happens at the sel_vbl fall, which is AFTER
+                // the m_vbl/ntsc_vbl falls of the same frame, so clearing them
+                // would report the cleared value instead of the measurement
+                // (that bug produced a bogus 'm_hbl = 0' on the first run).
+                vp_seen = vp_seen + 1;
+            end
+        end
+
+        $display("---- VBL-exit geometry v2 (+vidprobe) ----");
+        $display("sel_vbl   falls at line %0d pos %0d  <- defines line 0", vp_sfall_line, vp_sfall_pos);
+        $display("m_vbl     falls at line %0d pos %0d", vp_mfall_line, vp_mfall_pos);
+        $display("ntsc_vbl  falls at line %0d pos %0d", vp_nfall_line, vp_nfall_pos);
+        $display("DE on line 0/1/2/3 after the sel_vbl fall = %0b %0b %0b %0b",
+                 vp_de_line0[0], vp_de_line1[0], vp_de_line2[0], vp_de_line3[0]);
+        $display("DE rows per frame = %0d   (adapter contract: 192)", vp_de_rows);
+        $display("line BEFORE the sel_vbl-fall line (the suspect): DE=%0b  <- if 0, VBL_ALIGN killed the first visible line",
+                 vp_de_prev);
+        $display("m_hbl at the m_vbl fall      = %0b   (vs_pulse needs 1)", vp_hbl_at_m);
+        $display("ntsc_hbl at the ntsc_vbl fall= %0b   (vs_pulse needs 1)", vp_hbl_at_n);
+        $display("sel_hbl window: rises at pos %0d, falls at pos %0d; first DE at pos %0d",
+                 vp_hbl_start, vp_hbl_end, vp_de_start_pos);
+        if (vp_mfall_line < 0 || vp_nfall_line < 0)
+            $display("WARNING: a VBL variant's falling edge was still not observed - probe remains partly vacuous");
+        if (vp_de_line0 == 0 && vp_de_line1 == 1)
+            $display("DIAGNOSIS: the first line after the VBL fall has NO DE - one line is being eaten");
+        else if (vp_de_line0 == 1)
+            $display("first line after the VBL fall DOES have DE - no line is eaten at the VBL exit");
+        $finish;
+    end
+
 endmodule
