@@ -73,6 +73,31 @@ Works on both cores; START opens/closes the panel.
 The panel's Caps/Ctrl/Shift keys latch like the real machine; the arrow
 keys and Apple-logo key behave as on MiSTer.
 
+## Joystick / paddle controls (streaming core)
+
+The d-pad and face buttons double as an Apple II joystick/paddle port
+(donor `joystick_input` + one-shot `pdl_timer`, 2026-10-25). While the OSK
+is open the joystick is frozen (not re-centred) and the buttons belong to
+the OSK; with the OSK closed:
+
+| Button | Apple II |
+|---|---|
+| D-pad | paddle X/Y — accumulate (Relative) or snap to extremes (Absolute) |
+| face-A | PB0 / `$C061` — fire 0 (OR'd with the OSK open-apple) |
+| face-B | PB1 / `$C062` — fire 1 (OR'd with the OSK closed-apple) |
+| face-X | centre both paddles (calibration-style games) |
+| face-Y | PB2 / `$C063` — IIe shift line / third fire |
+
+Core Settings → **Joystick** selects the mode: Relative (slow / normal /
+fast) or Absolute (snap). Relative speed = paddle update step 2 / 1 / 0.5 ms
+(default normal). Paddle values are the classic one-shot interval: a `$C07x`
+read arms the counter (2800 ticks at centre, 0–5650 with position); PDL2/PDL3
+read 0 (poll loops terminate).
+
+Core Settings → **Controls** (input.json) lets the four face mappings above
+be remapped to any of the face buttons/triggers/start/select; the d-pad is
+not remappable (it is the OSK cursor).
+
 ## Layout
 
 ```
@@ -161,6 +186,32 @@ stale artifact from before that cleanup.
 
 (`refs/basicassets/` is third-party reference material and `archive/sd-legacy/`
 is frozen history; both keep their own JSONs and are not part of the package.)
+
+## Documentation policy
+
+This repository keeps only **durable, contributor-facing** documentation:
+
+| File | Content |
+|---|---|
+| `README.md` | this file - status, controls, layout, build, sim |
+| `AGENTS.md` | operating guide for agents and engineers working in this tree |
+| `docs/HARDWARE_CAPTURE_CHECKLIST.md` | how to capture hardware evidence |
+| `docs/OSK_KEYBOARD_FLOOD.md` | on-screen keyboard behaviour and its limits |
+| `docs/POCKET_BOOT_HARNESS.md` | the `verilog/pocket_boot/` simulation harness |
+| `src/fpga/core/woz/NOTICE.md` | pinned-donor provenance for the WOZ engine |
+
+**Interim working documents are deliberately not published here.** Expert reviews,
+external-review briefs, coder kickoff briefs, milestone plans and handovers live in
+a private repository and are `.gitignore`d. The convention is mechanical: **a date
+in the filename marks a document as interim** (`docs/*_20YY-MM-DD.md`), so dated
+files are ignored automatically and undated files are tracked normally. When adding
+permanent documentation, give it an undated name.
+
+The files still exist on disk in a working copy - only their tracking is suppressed -
+so cross-references between documents keep resolving locally.
+
+Note that documents published before 2026-10-25 remain in this repository's git
+history; the split applies from that date forward and history was not rewritten.
 
 ## Provenance / licensing
 

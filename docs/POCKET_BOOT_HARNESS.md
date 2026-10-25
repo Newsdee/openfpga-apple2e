@@ -1,4 +1,8 @@
-# Verilator boot-debug harness (`verilog/pocket_boot/`) — 2026-10-21
+# Pocket boot-debug harness (`verilog/pocket_boot/`)
+
+Durable reference for the boot harness. Originally written 2026-10-21; renamed
+from `VERILATOR_BOOT_HARNESS_2026-10-21.md` on 2026-10-25 so it reads as
+current documentation for the shipped tool rather than an interim status note.
 
 Built after the "still not booting" hardware report: a full-DUT Verilator
 simulation of `stream_video_core_top` (the exact Pocket core) with an APF
