@@ -1,6 +1,32 @@
 {
     "input": {
         "magic": "APF_VER_1",
-        "controllers": []
+        "controllers": [
+            {
+                "type": "default",
+                "mappings": [
+                    {
+                        "id": 4,
+                        "name": "PB0 Fire",
+                        "key": "pad_btn_a"
+                    },
+                    {
+                        "id": 5,
+                        "name": "PB1 Fire",
+                        "key": "pad_btn_b"
+                    },
+                    {
+                        "id": 6,
+                        "name": "Centre paddles",
+                        "key": "pad_btn_x"
+                    },
+                    {
+                        "id": 7,
+                        "name": "PB2",
+                        "key": "pad_btn_y"
+                    }
+                ]
+            }
+        ]
     }
 }

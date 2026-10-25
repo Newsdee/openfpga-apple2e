@@ -91,6 +91,8 @@ verilator_bin --cc --timing -j 4 \
     "$ROOT/src/fpga/core/apple2e/apf_stream_video_top.v" \
     "$ROOT/src/fpga/core/apple2e/apf_stream_video.v" \
     "$ROOT/src/fpga/core/apple2e/apple2e_osk.v" \
+    "$ROOT/src/fpga/core/apple2e/joystick_input.sv" \
+    "$ROOT/src/fpga/core/apple2e/pdl_timer.v" \
     "$ROOT/src/fpga/core/apple2e/apf_stream_proto_pll.v" \
     "$ROOT/src/fpga/core/apple2e/apple2e_sdram_pll.v" \
     "$ROOT/src/fpga/core/apple2e/sdram_storage.v" \

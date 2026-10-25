@@ -1,0 +1,12 @@
+%Error: Cannot find file containing module: 'tb/tb_joystick_input.sv'
+        ... See the manual at https://verilator.org/verilator_doc.html?v=5.050 for more assistance.
+        ... This may be because there's no search path specified with -I<dir>.
+        ... Looked in:
+             tb/tb_joystick_input.sv
+             tb/tb_joystick_input.sv.v
+             tb/tb_joystick_input.sv.sv
+             obj_dir_joy_tb_joystick_input\tb/tb_joystick_input.sv
+             obj_dir_joy_tb_joystick_input\tb/tb_joystick_input.sv.v
+             obj_dir_joy_tb_joystick_input\tb/tb_joystick_input.sv.sv
+        ... With current working directory 'E:\MiSTer\Apple-II_FPGAdev\apple2e-pocket-ntsc'
+%Error: Exiting due to 1 error(s)

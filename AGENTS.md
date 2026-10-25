@@ -97,35 +97,54 @@ Consequences:
   (`generateBuildID_Verilog`) would force a recompile and is deliberately
   commented out. Do not chase the MIF as a cause of slow builds.
 
-### Why a cold A&S takes ~26 minutes for a 6,700-ALM design (measured 2026-10-25)
+### Cold A&S took ~26 minutes for a 6,700-ALM design - root cause found and fixed (measured 2026-10-25)
 
-It is **database I/O, not synthesis**. The same run reports:
+The earlier hypothesis ("database I/O; move to NVMe") was **wrong** - the
+cost was **single-threaded CPU time spent processing the procedural RAM
+zero-initialization representation** (the nested 256x256 `initial` loop that
+zero-filled the 64 KiB main/aux RAM, entered in commit 9085041). The
+"Elapsed Time Per Partition: Top 00:00:41" reading is misleading: the
+partition timer does not account for the memory-initialization merge pass
+that runs outside it. CPU time ~= wall time (26:40 vs 25:55) is the
+tell-tale of a single-threaded phase.
 
-```
-Analysis & Synthesis stage      00:25:49
-Elapsed Time Per Partition: Top  00:00:41     <-- actual synthesis
-```
+Controlled probe evidence (tools/ram_repro_*, identical one-bank 64Kx8 RAM,
+5CEBA4F23C8, same volume and host):
 
-So ~25 minutes is overhead around 41 seconds of real work. Contributing factors:
+| Init representation            | A&S wall | CPU (single-thread) |
+|--------------------------------|----------|---------------------|
+| none / plain                   | ~16 s    | 3 s                 |
+| nested 256x256 zero loop       | 19:13    | 18:52               |
+| $readmemh 64 KiB zero image    | 1:28     | 1:13                |
 
-- **The project lives on `E:`, a WDC WD60EZAZ 5400 rpm SATA HDD.** `src/fpga/db/`
-  is ~62 MB across **658 files**, plus 16 MB of `incremental_db`. A&S churns these
-  constantly and the cost is dominated by seek time.
-- The host **endpoint AV** inspects every file Quartus writes (the same agent
-  documented elsewhere in this file as killing freshly linked executables).
-- Not memory pressure: the host has 96 GB with ~60 GB free, against a 5.2 GB A&S
-  peak and 7.4 GB Fitter peak.
+The fix (shipped 2026-10-25): the loop was replaced by two `$readmemh` calls
+from the canonical `src/fpga/rtl/roms/ram_zero_64k.hex` (65,536 x "00";
+`*.hex text eol=lf` in .gitattributes so checkouts stay byte-exact). Full-core
+result: **A&S 25:55 -> 2:14 (11.7x), total flow 30:15 -> 7:24**, with
+bit-identical resources (8,060 ALM / 6,696 regs / 1,527,836 mem bits),
+hardware-verified (power-on boot + reboot-on-load). Cold `quartus_map` after
+a top-level edit is now on the order of minutes, not ~27.
 
-For scale, a warm build of the same design completed the entire flow in **00:02:28**
-(A&S 00:00:16) on 2026-10-19. **Suspected remedy, not yet tested:** move the tree
-(or at least `db/`, `incremental_db/` and `output_files_apple2e/`, all regenerable)
-to an NVMe volume — `S:` is a Samsung 990 PRO with 1.5 TB free — and add an AV
-exclusion for the build directories. Validate by comparing `flow.rpt` stage times.
+Open follow-ups: (1) the runtime clearing sweep already zeroes both banks
+after every cold reset and Cyclone V M10K power-up contents are defined -
+removing configuration-time init entirely (the "none" probe is just as fast)
+is a hardware-verified decision, deliberately NOT made as part of the
+build-speed fix; (2) the 19:13 loop number is historical (2026-10-24); a
+fresh loop-repeat control (~20 min) was not run - the plain/none/file
+numbers are fresh (2026-10-25).
 
-Do not diagnose a slow build as a design problem without first checking the
-per-partition elapsed time against the stage total.
-- **`quartus_map` alone is the cheap interface check** — but only when warm. From
-  cold it is still ~27 min, so it is not a shortcut after a top-level edit.
+Lessons that survived the correction: a stage that is slow despite a short
+per-partition timer means look for work OUTSIDE the partition (init
+processing, netlist passes) instead of blaming disk I/O; `flow.rpt` stage
+totals plus "Total CPU time" are the honest numbers (CPU ~= wall implies a
+single-threaded phase). The endpoint-AV interference documented in this file
+is real for *simulation* builds (it kills freshly linked executables), but it
+is not the A&S bottleneck.
+
+- **`quartus_map` alone is the cheap interface check** - and after the
+  2026-10-25 file-init fix even a cold run is on the order of minutes for
+  this design (A&S 2:14), so it is a legitimate shortcut after a top-level
+  edit again.
 - A "stuck at 22%" progress bar is **normal**: the netlist synthesis/optimisation
   phase emits no messages for tens of minutes and `db/*.map.qmsg` stops growing.
   Prove liveness with CPU time, not the log —

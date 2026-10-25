@@ -64,7 +64,10 @@ module apple2e_osk #(
     output wire        open_apple,
     output wire        closed_apple,
     // OSK command (warm/cold) reset - OR into the machine reset
-    output wire        command_reset
+    output wire        command_reset,
+    // OSK visibility (Start toggle) - the top freezes (not zeroes) the
+    // joystick/paddle path while the OSK is on screen
+    output wire        osk_visible
 );
 
     // ------------------------------------------------------------------
@@ -164,6 +167,10 @@ module apple2e_osk #(
         if (reset) osk_en <= 1'b0;
         else if (osk_enabled_toggle) osk_en <= ~osk_en;
     end
+
+    // Visibility to the top (joystick gate). osk_en is machine-domain,
+    // so no synchronisation is needed.
+    assign osk_visible = osk_en;
 
     // ------------------------------------------------------------------
     // controller (cursor state machine + virtual key events)
