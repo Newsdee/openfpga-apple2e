@@ -221,6 +221,28 @@ module tb_pocket_boot;
     end
 
     // ------------------------------------------------------------------
+    // LINE0-PROBE (temporary, 2026-10-25): hardware reported 1st-line
+    // corruption + left-edge color strip on the NTSC color path. On each
+    // captured frame (every 20th), print the first 12 pixels of rows 0/1/2
+    // and of a mid row (100) so the sim frame can be compared against the
+    // hardware screenshots. fb holds the exact streamed pixels.
+    // ------------------------------------------------------------------
+    integer l0_x;
+    always @(posedge video_pclk) begin
+        if (frame_new && fb_h > 100) begin
+            $display("L0 frame=%0d w=%0d h=%0d", frame_cnt, fb_w, fb_h);
+            if (fb_h >= 101) begin
+                for (l0_x = 0; l0_x < 12; l0_x = l0_x + 1) begin
+                    $display("L0 r0 x%02d = %h", l0_x, fb[l0_x]);
+                    $display("L0 r1 x%02d = %h", l0_x, fb[FBW + l0_x]);
+                    $display("L0 r2 x%02d = %h", l0_x, fb[2*FBW + l0_x]);
+                    $display("L0 r100 x%02d = %h", l0_x, fb[100*FBW + l0_x]);
+                end
+            end
+        end
+    end
+
+    // ------------------------------------------------------------------
     // Diagnostic taps (public for pocket_main.cpp)
     // ------------------------------------------------------------------
     reg  [31:0] e74a /* verilator public */;
@@ -900,6 +922,111 @@ module tb_pocket_boot;
             action_go = 1'b0;   // cycle consumed; F9 re-arms
             wait (action_go);
         end
+    end
+
+    // ------------------------------------------------------------------
+    // OSD video option plumbing test (+opt_test). Self-contained: it does
+    // NOT run the boot sequence, so it can be invoked on its own.
+    //
+    // Proves three things about the two new writeonly options:
+    //   1. defaults - display_mode_m/comp_preset_m start at 0 (Colour,
+    //      Calibrated), matching the values that were hardwired before the
+    //      options existed, so the shipping picture is unchanged.
+    //   2. the bridge write path reaches the pipeline - a host write to
+    //      0x01F00004/0x01F00008 propagates through synch_3 into the
+    //      machine domain and out to the video_pipeline_q17 instance ports.
+    //   3. the read-back decode is UNCHANGED - reading 0x01F00004 and
+    //      0x01F00008 still returns cfg_reboot_word, exactly as the proven
+    //      09:26 wildcard does. Both options are writeonly, so nothing may
+    //      read them back; if this ever changes the J7/J9 disk-load
+    //      regression risk comes back with it.
+    // ------------------------------------------------------------------
+    initial begin : opt_test_block
+        integer opt_fail;
+        reg [31:0] rd;
+        opt_fail = 0;
+        if (!$test$plusargs("opt_test")) disable opt_test_block;
+        // wait for the DUT to come out of reset and the PLLs to lock
+        wait (d_reset_n);
+        repeat (200) @(posedge clk_74a);
+
+        $display("---- OSD video option plumbing (+opt_test) ----");
+
+        // (1) defaults
+        if (dut.display_mode_m !== 2'd0) begin
+            $display("FAIL: display_mode_m default = %0d, want 0 (Colour)", dut.display_mode_m);
+            opt_fail = opt_fail + 1;
+        end
+        if (dut.comp_preset_m !== 2'd0) begin
+            $display("FAIL: comp_preset_m default = %0d, want 0 (Calibrated)", dut.comp_preset_m);
+            opt_fail = opt_fail + 1;
+        end
+        if (dut.ntsc_pipe.SCREEN_MODE !== 2'd0) begin
+            $display("FAIL: pipeline SCREEN_MODE input = %0d, want 0", dut.ntsc_pipe.SCREEN_MODE);
+            opt_fail = opt_fail + 1;
+        end
+
+        // (2) write both options and confirm they arrive in the machine domain
+        hb_wr(32'h01F00004, 32'd2);   // Display Mode = Green
+        hb_wr(32'h01F00008, 32'd3);   // Colour Preset = Muted
+        repeat (40) @(posedge dut.clk_core_14318);
+        if (dut.display_mode_m !== 2'd2) begin
+            $display("FAIL: display_mode_m = %0d after write of 2 - option does not reach the machine domain",
+                     dut.display_mode_m);
+            opt_fail = opt_fail + 1;
+        end
+        if (dut.comp_preset_m !== 2'd3) begin
+            $display("FAIL: comp_preset_m = %0d after write of 3 - option does not reach the machine domain",
+                     dut.comp_preset_m);
+            opt_fail = opt_fail + 1;
+        end
+        // strongest check: the value must arrive on the pipeline's OWN ports
+        if (dut.ntsc_pipe.SCREEN_MODE !== 2'd2) begin
+            $display("FAIL: pipeline SCREEN_MODE = %0d, want 2 - option does not reach video_pipeline_q17",
+                     dut.ntsc_pipe.SCREEN_MODE);
+            opt_fail = opt_fail + 1;
+        end
+        if (dut.ntsc_pipe.comp_preset !== 2'd3) begin
+            $display("FAIL: pipeline comp_preset = %0d, want 3 - option does not reach video_pipeline_q17",
+                     dut.ntsc_pipe.comp_preset);
+            opt_fail = opt_fail + 1;
+        end
+
+        // (3) read-back must be unchanged: the wildcard still returns the
+        //     reboot word for every 01F0xxxx address, so the two new option
+        //     words are NOT readable and the proven decode is untouched.
+        dut.cfg_reboot_word = 32'hA5A5_0001;
+        repeat (4) @(posedge clk_74a);
+        hb_rd(32'h01F00004, rd);
+        if (rd !== 32'hA5A5_0001) begin
+            $display("FAIL: read of 0x01F00004 returned %08X, want the reboot word A5A50001 - the read decode changed",
+                     rd);
+            opt_fail = opt_fail + 1;
+        end
+        hb_rd(32'h01F00008, rd);
+        if (rd !== 32'hA5A5_0001) begin
+            $display("FAIL: read of 0x01F00008 returned %08X, want the reboot word A5A50001 - the read decode changed",
+                     rd);
+            opt_fail = opt_fail + 1;
+        end
+        // and the written option words must NOT be observable on read
+        hb_wr(32'h01F00000, 32'hA5A5_0001);   // restore reboot word via the real path
+        repeat (4) @(posedge clk_74a);
+
+        // restore defaults so a subsequent boot sequence is unaffected
+        hb_wr(32'h01F00004, 32'd0);
+        hb_wr(32'h01F00008, 32'd0);
+        repeat (40) @(posedge dut.clk_core_14318);
+        if (dut.display_mode_m !== 2'd0 || dut.comp_preset_m !== 2'd0) begin
+            $display("FAIL: options did not return to defaults");
+            opt_fail = opt_fail + 1;
+        end
+
+        if (opt_fail == 0)
+            $display("OPT-TEST PASS: defaults correct, both options reach the pipeline, read-back decode unchanged");
+        else
+            $display("OPT-TEST FAIL: %0d check(s) failed", opt_fail);
+        $finish;
     end
 
 endmodule
