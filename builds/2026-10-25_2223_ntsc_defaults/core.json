@@ -1,0 +1,34 @@
+{
+    "core": {
+        "magic": "APF_VER_1",
+        "metadata": {
+            "platform_ids": ["apple2e"],
+            "shortname": "Apple2eStreamVideo",
+            "description": "Apple IIe (native 560x192 streaming raster, no frame buffer; WOZ floppy drive via Pocket SDRAM, on-screen keyboard; NTSC colour, hardwired defaults - hardware test image)",
+            "author": "Newsdee",
+            "url": "https://github.com/Newsdee",
+            "version": "0.2.4",
+            "date_release": "2026-10-25"
+        },
+        "framework": {
+            "target_product": "Analogue Pocket",
+            "version_required": "1.1",
+            "sleep_supported": false,
+            "dock": {
+                "supported": true,
+                "analog_output": false
+            },
+            "hardware": {
+                "link_port": false,
+                "cartridge_adapter": -1
+            }
+        },
+        "cores": [
+            {
+                "name": "default",
+                "id": 0,
+                "filename": "bitstream.rbf_r"
+            }
+        ]
+    }
+}
