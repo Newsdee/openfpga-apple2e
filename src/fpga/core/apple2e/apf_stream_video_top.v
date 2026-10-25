@@ -251,6 +251,14 @@ always @(posedge clk_74a)
     if (bridge_wr && bridge_addr == 32'h01F00000)
         cfg_reboot_word <= bridge_wr_data;
 
+// ---- "Joystick" option word: REMOVED (2026-10-25, J10) ----
+// The option + its 0x01F00004 bridge latch were removed after the disk-
+// regression bisection (J7/J9): builds carrying the option-word delta
+// (read-back mux arm + cfg_joy_word) failed to load disks on silicon
+// (11:02, 14:42) while option-free logic booted (09:26, 12:49, 15:24).
+// Joystick mode is now hardwired to Absolute at the instance below.
+// The 01F0xxxx read-back wildcard stays in its proven 09:26 form.
+
 // cart is unused, so set all level translators accordingly
 // directions are 0:IN, 1:OUT
 assign cart_tran_bank3 = 8'hzz;
@@ -339,7 +347,9 @@ always @(*) begin
         bridge_rd_data <= stor_diag_rd;
     end
     32'h01F0xxxx: begin
-        // "Reboot on disk change" option word (framework read-back)
+        // TEMP DISK-BISECT (2026-10-25): exact 09:26 wildcard (pre-fix).
+        // The fixed build decodes 0x01F00000/0x01F00004 individually (the
+        // wildcard clobbered the Joystick persist entry on every quit).
         bridge_rd_data <= cfg_reboot_word;
     end
     endcase
@@ -667,6 +677,7 @@ wire        osk_video;
 wire [23:0] osk_rgb24;
 wire        osk_cmd_reset;
 wire        osk_open_apple, osk_closed_apple;
+wire        osk_visible;
 apple2e_osk osk (
     .clk(clk_core_14318),
     .reset(osk_reset),
@@ -681,7 +692,76 @@ apple2e_osk osk (
     .akd(m_akd),
     .open_apple(osk_open_apple),
     .closed_apple(osk_closed_apple),
-    .command_reset(osk_cmd_reset)
+    .command_reset(osk_cmd_reset),
+    .osk_visible(osk_visible)
+);
+
+// ---- Joystick/paddle input (2026-10-25, PLAN_JOYSTICK_INPUT; J10) ----
+// The byte-pinned donor joystick_input (NOTICE.md) runs in the machine
+// domain on a gated slice of clk_core_14318 (143.18 MHz).
+// J10 (2026-10-25): the "Joystick" mode option is REMOVED (disk-regression
+// isolation, J7/J9) - the mode is hardwired to Absolute: the analog stick
+// snaps combinationally (the gate is irrelevant in Absolute and sits at
+// 100%) and d-pad/face inputs snap to the axis extremes.
+//   * while the OSK is visible the gate closes: the state FREEZES (not
+//     zeroed) and the face buttons belong to the OSK.
+// face-X (joy[6]) overrides both paddles to centre (joy_an 0x0000 =
+// signed 0 = the 2800-tick one-shot centre) - calibration-style games.
+wire [31:0] cont1_key_m;
+synch_3 #(.WIDTH(32)) s_joy_key (
+    .i(cont1_key), .o(cont1_key_m), .clk(clk_core_14318)
+);
+wire        joy_enable = ~osk_visible;
+wire        joy_clk    = clk_core_14318 & joy_enable;   // Absolute: full clock, OSK-gated
+// APF d-pad/face bits -> donor digital convention
+// ([0]=right [1]=left [2]=up [3]=down; [4]=A [5]=B [6]=X [7]=Y)
+wire [15:0] joy_dig = {8'b0,
+                       cont1_key_m[7],   // face Y  -> PB2 (bit 7)
+                       cont1_key_m[6],   // face X  -> centre (bit 6)
+                       cont1_key_m[5],   // face B  -> PB1 (bit 5)
+                       cont1_key_m[4],   // face A  -> PB0 (bit 4)
+                       cont1_key_m[1],   // dpad_down -> [3]
+                       cont1_key_m[0],   // dpad_up   -> [2]
+                       cont1_key_m[2],   // dpad_left -> [1]
+                       cont1_key_m[3]};  // dpad_right -> [0]
+wire [15:0] joy_an;
+wire [7:0]  joy;
+joystick_input #(.RELATIVE_UPDATE_CYCLES(71591)) u_joy (
+    .clk(joy_clk),
+    .reset(machine_reset),
+    .joystick_digital(joy_dig),
+    .joystick_analog(16'h0),
+    .paddle(8'h0),
+    .swap_axes(1'b0),
+    .paddle_as_x(1'b0),
+    .paddle_as_y(1'b0),
+    .x_center(3'd0),
+    .relative_mode(1'b0),   // J10: hardwired Absolute (mode option removed)
+    .joy_an(joy_an),
+    .joy(joy)
+);
+// centre override + the one-shot interval timer (donor P1 block)
+wire [15:0] joy_an_eff = (joy[6] & joy_enable) ? 16'h0000 : joy_an;
+// ---- Y-axis PDL polarity fix (2026-10-25, found in hardware: "down goes up") ----
+// Real Apple II 555 PDL time convention: left/up = SHORT duration, right/down
+// = LONG duration. The donor joy_an Y (up=+127 / down=-127 in absolute mode)
+// is correct for X but inverted for Y (up -> 5594 ticks, down -> 6). The
+// donor module is byte-pinned, so flip it here in the glue: two's-complement
+// negation of the Y byte, with the relative-mode saturation extreme 0x80
+// (-128, held-down) remapped to +127 (its negation wraps to itself in
+// 8-bit two's complement and would stay "short" = wrong direction).
+// Centre 0x00 and the face-X centre override (0x0000) are invariant.
+wire [7:0] joy_y_pdl = (joy_an_eff[7:0] == 8'h80) ? 8'h7F :
+                       (~joy_an_eff[7:0] + 8'h01);
+wire [15:0] joy_an_pdl = {joy_an_eff[15:8], joy_y_pdl};
+wire        joyx, joyy;
+pdl_timer u_pdl (
+    .clk(clk_core_14318),
+    .tick(m_clk2m),
+    .pdl_strobe(m_pdl),
+    .joy_an(joy_an_pdl),
+    .joyx(joyx),
+    .joyy(joyy)
 );
 
 apple2 d1 (
@@ -699,7 +779,11 @@ apple2 d1 (
     .HGR80_MODE(m_hgr80_mode), .GR2(m_gr2), .COL80(m_col80), .DHIRES_MODE(m_dhires),
     .HBL(m_hbl), .VBL(m_vbl),
     .K(m_K), .READ_KEY(m_read_key), .AKD(m_akd), .AN(m_an),
-     .GAMEPORT({2'b00,1'b0,1'b0,1'b0,osk_closed_apple,osk_open_apple,1'b0}),
+     .GAMEPORT({1'b0,1'b0,joyy,joyx,
+                joy[7] & joy_enable,
+                (joy[5] & joy_enable) | osk_closed_apple,
+                (joy[4] & joy_enable) | osk_open_apple,
+                1'b0}),
     .PDL_STROBE(m_pdl), .STB(m_stb),
     .IO_SELECT(m_io_sel), .DEVICE_SELECT(m_dev_sel), .IO_STROBE(m_io_str),
     .ioctl_addr(25'b0), .ioctl_data(8'b0), .ioctl_index(8'b0),
@@ -882,7 +966,11 @@ parameter FP_DIAG = 1'b0;
 // pixel pass-through - no MO/ACK/ST lines, show window, marker, or
 // fingerprint rows). 1 = hardware-debug build. Separate from FP_DIAG so a
 // build can carry the verifier fp logic without drawing anything.
-parameter OVL_DEBUG = 1'b0;
+// TEMP DISK-BISECT (2026-10-25): forced 1 so the failing bitstream's load
+// chain is readable on the Pocket screen (badge + MT/RD/AC/MO). Draw-only
+// (video chain; no disk-path logic) so the bisect verdict stands. Replaced
+// by the runtime "Debug" interact option in the follow-up compile (J9).
+parameter OVL_DEBUG = 1'b1;
 
 sdram_storage #(.FP_EN(FP_DIAG)) stor (
     .clk_74a         ( clk_74a ),
@@ -1093,9 +1181,23 @@ end
 
 // ---- on-screen diagnostic (temporary, M0 only) ----
 wire [23:0] ovl_rgb;
+// J11 (2026-10-25): overlay visibility = OSK visible OR ~4.7 s after each
+// machine reset (2026-10-25 rev2: shortened from ~9.4 s - owner found the
+// longer window "always on" in practice). The boot window covers the
+// disk-load/verify diagnostics (they happen while the keyboard is closed)
+// and re-arms on every reset, including the "Reboot on disk change" cold
+// reboots. Machine-domain only - no bridge read-back (J7/J9 two-line
+// mystery). Keyboard open (Start) shows diagnostics at any time.
+reg  [25:0] dbg_win_cnt = 26'd0;
+always @(posedge clk_core_14318)
+    if (machine_reset) dbg_win_cnt <= 26'd0;
+    else if (dbg_win_cnt != 26'h3FFFFF) dbg_win_cnt <= dbg_win_cnt + 26'd1;
+wire        ovl_debug_en = osk_visible | (dbg_win_cnt != 26'h3FFFFF);
+
 sdram_status_overlay #(.SHOW_FP(FP_DIAG), .OVL_DBG(OVL_DEBUG)) ovl (
     .clk(clk_core_14318), .reset(machine_reset),
     .rgb_in(osk_rgb24), .hbl(m_hbl), .vbl(m_vbl),
+    .debug_en(ovl_debug_en),
     .rgb_out(ovl_rgb),
     .res_valid_m(stor_res_valid_m), .res_code_m(stor_res_code_m),
     .res_fail_m(stor_res_fail_m), .res_crc_m(stor_res_crc_m),

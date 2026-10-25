@@ -61,6 +61,7 @@ module sdram_status_overlay (
     input  wire [23:0] rgb_in,
     input  wire        hbl,
     input  wire        vbl,
+    input  wire        debug_en,   // J11 runtime visibility gate (top: OSK visible | boot window),
     output wire [23:0] rgb_out,
 
     // ---- result (machine domain, from the load/verify coordinator) ----
@@ -116,6 +117,8 @@ module sdram_status_overlay (
     // Master switch for all overlay drawing: 0 = shipping build (rgb_out is
     // a pure pass-through of rgb_in - no debug lines, marker, fingerprint,
     // or debug rectangle); 1 = hardware-debug build (top-level OVL_DEBUG).
+    // J11: even at 1, drawing is additionally gated at runtime by debug_en
+    // (top: OSK visible OR ~9.4 s post-reset boot window).
     // Needed because lines 4..6 (MO/ACK/ST-A-F) draw outside the 5 s show
     // window and are not covered by SHOW_FP.
     parameter OVL_DBG = 1'b0;
@@ -685,9 +688,29 @@ module sdram_status_overlay (
     assign px11 = SHOW_FP && !hbl && !vbl && in_x11 && in_l11 && cidx11_w < 10'd18 &&
                 cin11_w < 10'd5 && r11bits[3'd4 - cin11_w[2:0]];
 
+    // ---- J9 drive-status indicator: three 2x2 "LEDs" top-right, ALWAYS on ----
+    // MiSTer-style drive lamps (2026-10-25, owner request): green = drive
+    // active (drv_active, D1_ACTIVE incl. spin-down), red = motor on
+    // (drv_motor, D1_MOTOR_ON), white = sector IO in flight (drv_ack,
+    // transport read service). Shipping feature - NOT gated by OVL_DBG /
+    // debug_en. Rows 0..7, cols 554..555 (top-right margin: the badge is
+    // top-LEFT, the text lines sit at rows 33..47 X0=460).
+    wire st_act = (col >= 10'd554) && (col <= 10'd555) && (row <= 8'd1) && !hbl && !vbl;
+    wire st_mot = (col >= 10'd554) && (col <= 10'd555) && (row >= 8'd3) && (row <= 8'd4) && !hbl && !vbl;
+    wire st_io  = (col >= 10'd554) && (col <= 10'd555) && (row >= 8'd6) && (row <= 8'd7) && !hbl && !vbl;
+    wire led_act = st_act && drv_active;
+    wire led_mot = st_mot && drv_motor;
+    wire led_io  = st_io  && drv_ack;
+
     wire ovl_px = mpx || px1 || px2 || px3 || px4 || px5 || px6 || px7 ||
                   px8 || px9 || px10 || px11 || dbg_px;
-    assign rgb_out = (OVL_DBG && ovl_px) ? 24'hFFFFFF : rgb_in;
+    // J11 (2026-10-25): drawing is additionally gated by debug_en - clean
+    // screen during gameplay, diagnostics visible at boot and while the
+    // on-screen keyboard is up. J9: the drive LEDs always override in.
+    assign rgb_out = (OVL_DBG && debug_en && ovl_px) ? 24'hFFFFFF :
+                     led_act ? 24'h00FF00 :
+                     led_mot ? 24'hFF0000 :
+                     led_io  ? 24'hFFFFFF : rgb_in;
 
 
 endmodule

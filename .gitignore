@@ -45,6 +45,15 @@ __pycache__/
 verilog/u7_race/
 verilog/u7_race_fixed/
 
+# --- Per-build archives (builds/<tag>/): NOTE.md + manifests tracked,
+#     bitstream binaries local (same convention as known_good/) ---
+builds/**/*.rbf
+
+# --- Transient flow/map logs (regenerated each compile) ---
+.map_joy.log
+src/fpga/flow_continue.log
+src/fpga/flow_continue.err.log
+
 # --- Regenerated run/build logs (kept out of the tree) ---
 build_relink.log
 verilog/*.log

@@ -1,0 +1,46 @@
+{
+  "interact": {
+    "magic": "APF_VER_1",
+    "variables": [
+      {
+        "name": "Reboot on load",
+        "id": 2,
+        "type": "check",
+        "enabled": true,
+        "persist": true,
+        "defaultval": 1,
+        "address": "0x01F00000",
+        "value": 1,
+        "value_off": 0
+      },
+      {
+        "name": "Joystick",
+        "id": 3,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "defaultval": 1,
+        "address": "0x01F00004",
+        "options": [
+          {
+            "value": 0,
+            "name": "Relative (slow)"
+          },
+          {
+            "value": 1,
+            "name": "Relative (normal)"
+          },
+          {
+            "value": 2,
+            "name": "Relative (fast)"
+          },
+          {
+            "value": 3,
+            "name": "Absolute (snap)"
+          }
+        ]
+      }
+    ],
+    "messages": []
+  }
+}

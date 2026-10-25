@@ -173,7 +173,7 @@ module tb_pocket_boot;
         .bridge_wr_data(bridge_wr_data),
 
         // controllers
-        .cont1_key(32'd0), .cont2_key(32'd0), .cont3_key(32'd0), .cont4_key(32'd0),
+        .cont1_key(pad_key), .cont2_key(32'd0), .cont3_key(32'd0), .cont4_key(32'd0),
         .cont1_joy(32'd0), .cont2_joy(32'd0), .cont3_joy(32'd0), .cont4_joy(32'd0),
         .cont1_trig(16'd0), .cont2_trig(16'd0), .cont3_trig(16'd0), .cont4_trig(16'd0)
     );
@@ -283,6 +283,97 @@ module tb_pocket_boot;
     wire        dbg_pendv    = dut.woz_mc.pend_valid;
     wire [1:0]  dbg_pendcode = dut.woz_mc.pend_code;
     wire        dbg_nv       = dut.woz_mc.res_v_d;
+
+    // ------------------------------------------------------------------
+    // PDL axis probe (2026-10-25): hardware reported "up and down doesn't
+    // seem to work". Drives real pad bits (cont1_key) and observes the
+    // whole axis chain: pad -> joy_dig -> joystick_input -> joy_an ->
+    // pdl_timer, to settle whether the Y axis moves at all in the RTL.
+    // Enable with +PDLPROBE=1 (pocket_main forwards argv to
+    // Verilated::commandArgs), e.g.
+    //   ./Vtb_pocket_boot.exe --smoke --budget-ms 5000 +PDLPROBE=1
+    // NOTE: the probe presses d-pad bits, which the OSK key path types
+    // into the machine, so this run deliberately will NOT match the
+    // byte-exact smoke baseline - it is a diagnostic run, not a
+    // regression run.
+    // ------------------------------------------------------------------
+    reg  [31:0] pad_key = 32'd0;
+    reg         pdl_probe = 1'b0;
+    wire [15:0] dbg_joy_dig = dut.joy_dig;
+    wire [15:0] dbg_joy_an  = dut.joy_an;
+    wire [15:0] dbg_joy_pdl = dut.joy_an_pdl;  // post Y-polarity-flip, pre pdl_timer
+    initial if ($test$plusargs("PDLPROBE")) pdl_probe = 1'b1;
+
+    initial begin
+        integer    idle_x, idle_y, xr, xl, yu, yd;
+        integer    dx, dy, waitms;
+        reg  [7:0] pdl_yu, pdl_yd;
+        if (!pdl_probe) begin
+            #1_000_000; // no-op branch: probe disabled (default runs)
+        end else begin
+            waitms = 0;
+            while (dut.machine_reset === 1'b1 && waitms < 200) begin
+                #1_000_000; waitms = waitms + 1;
+            end
+            #5_000_000; // settle after reset release
+            $display("PDL-PROBE start: mode=absolute(hardwired) joy_enable=%b osk_visible=%b",
+                     dut.joy_enable, dut.osk_visible);
+            idle_x = dbg_joy_an[15:8]; idle_y = dbg_joy_an[7:0];
+            $display("PDL-PROBE idle   joy_dig=%04b joy_an=%04x (x=%02x y=%02x) pdl=%04x",
+                     dbg_joy_dig, dbg_joy_an, dbg_joy_an[15:8], dbg_joy_an[7:0], dbg_joy_pdl);
+            pad_key = 32'd8;   // APF bit 3 = right
+            #20_000_000;
+            xr = dbg_joy_an[15:8];
+            $display("PDL-PROBE right  joy_dig=%04b joy_an=%04x (x=%02x y=%02x) pdl=%04x joyx=%b",
+                     dbg_joy_dig, dbg_joy_an, xr, dbg_joy_an[7:0], dbg_joy_pdl, dut.joyx);
+            pad_key = 32'd4;   // APF bit 2 = left
+            #20_000_000;
+            xl = dbg_joy_an[15:8];
+            $display("PDL-PROBE left   joy_dig=%04b joy_an=%04x (x=%02x y=%02x) pdl=%04x joyx=%b",
+                     dbg_joy_dig, dbg_joy_an, xl, dbg_joy_an[7:0], dbg_joy_pdl, dut.joyx);
+            pad_key = 32'd1;   // APF bit 0 = up
+            #20_000_000;
+            yu = dbg_joy_an[7:0];
+            pdl_yu = dbg_joy_pdl[7:0];
+            $display("PDL-PROBE up     joy_dig=%04b joy_an=%04x (x=%02x y=%02x) pdl=%04x joyy=%b",
+                     dbg_joy_dig, dbg_joy_an, dbg_joy_an[15:8], yu, dbg_joy_pdl, dut.joyy);
+            pad_key = 32'd2;   // APF bit 1 = down
+            #20_000_000;
+            yd = dbg_joy_an[7:0];
+            pdl_yd = dbg_joy_pdl[7:0];
+            $display("PDL-PROBE down   joy_dig=%04b joy_an=%04x (x=%02x y=%02x) pdl=%04x joyy=%b",
+                     dbg_joy_dig, dbg_joy_an, dbg_joy_an[15:8], yd, dbg_joy_pdl, dut.joyy);
+            pad_key = 32'd0;
+            #10_000_000;
+            // verdict: an axis is ALIVE if its byte moved more than 2 from
+            // idle (mode-agnostic: absolute snaps +/-127, relative
+            // accumulates ~+/-1.5 per 0.5 ms update)
+            dx = $signed({1'b0, xr[7:0]}) - $signed({1'b0, idle_x[7:0]});
+            if (dx < 0) dx = -dx;
+            if ($signed({1'b0, xl[7:0]}) - $signed({1'b0, idle_x[7:0]}) < -dx)
+                dx = -($signed({1'b0, xl[7:0]}) - $signed({1'b0, idle_x[7:0]}));
+            dy = $signed({1'b0, yu[7:0]}) - $signed({1'b0, idle_y[7:0]});
+            if (dy < 0) dy = -dy;
+            if ($signed({1'b0, yd[7:0]}) - $signed({1'b0, idle_y[7:0]}) < -dy)
+                dy = -($signed({1'b0, yd[7:0]}) - $signed({1'b0, idle_y[7:0]}));
+            $display("PDL-PROBE verdict: |dX|=%0d |dY|=%0d -> X %s, Y %s",
+                     dx, dy, (dx > 2) ? "ALIVE" : "DEAD", (dy > 2) ? "ALIVE" : "DEAD");
+            // Y-polarity flip check (post-fix): absolute mode up must map to
+            // 0x81 (short duration = up on real hardware) and down to 0x7F
+            // (long = down); in relative mode the extremes are 0x81/0x7F via
+            // the 0x80 remap. X must be unaffected.
+            if (pdl_yu == 8'h81 && pdl_yd == 8'h7F)
+                $display("PDL-PROBE Y-flip: up=%02x down=%02x -> PASS (real-hardware convention)",
+                         pdl_yu, pdl_yd);
+            else if (pdl_yu == 8'h80 && pdl_yd == 8'h7F)
+                $display("PDL-PROBE Y-flip: up=%02x down=%02x -> PASS (relative extreme via 0x80 remap)",
+                         pdl_yu, pdl_yd);
+            else
+                $display("PDL-PROBE Y-flip: up=%02x down=%02x -> FAIL (expected 81/7F or 80/7F)",
+                         pdl_yu, pdl_yd);
+        end
+    end
+
     reg  [20:0] par_cnt;
 
     always @(posedge clk_74a) begin
@@ -692,6 +783,29 @@ module tb_pocket_boot;
         fault_halt   = 1'b0;
         trace_req    = 1'b0;
         fb_w = 12'd0; fb_h = 12'd0; frame_cnt = 16'd0;
+    end
+
+    // ------------------------------------------------------------------
+    // Interact option read-back check (2026-10-25): the Pocket framework
+    // writes the selected option value into the core at boot and reads
+    // every value back at shutdown to refresh interact_persist.json.
+    // Verify each 0x01F000xx address decodes to its OWN register - the
+    // 01F0xxxx wildcard used to return the reboot word for the joystick
+    // address, which clobbered the persisted Joystick value on every
+    // quit (the option appeared stuck in hardware).
+    // ------------------------------------------------------------------
+    reg [31:0] ib_d;
+    initial begin
+        #1_000_000; // 1 ms: before the 2 ms auto-boot host cycle
+        // J10 (2026-10-25): the Joystick option is REMOVED from the core
+        // and from interact.json (disk-regression isolation, J7/J9) -
+        // only the Reboot variable (0x01F00000) remains.
+        hb_wr(32'h01F00000, 32'd0);   // Reboot = OFF (check only)
+        hb_rd(32'h01F00000, ib_d);
+        if (ib_d !== 32'd0)
+            $fatal(1, "TB: interact read-back 0x01F00000 = %0d, expected 0 (reboot word)", ib_d);
+        hb_wr(32'h01F00000, 32'd1);   // restore Reboot = ON (shipping default)
+        $display("TB: interact read-back check done (reboot=1, no joystick option) t=%t", $time);
     end
 
     // auto-boot: fire the host cycle at 2 ms (unless the C++ side poked
