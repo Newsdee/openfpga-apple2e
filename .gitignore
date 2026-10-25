@@ -114,3 +114,7 @@ REVIEW_RECOMMENDATIONS_*.md
 
 # Quartus run logs from this worktree (generated, not source)
 src/fpga/*.log
+
+# Verilator harness build logs (generated)
+verilog/obj_dir_*/*.log
+verilog/obj_dir_*.log
