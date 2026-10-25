@@ -259,6 +259,46 @@ always @(posedge clk_74a)
 // Joystick mode is now hardwired to Absolute at the instance below.
 // The 01F0xxxx read-back wildcard stays in its proven 09:26 form.
 
+// ---- NTSC video option words (2026-10-26, plan §4: exactly two knobs) ----
+// Both interact.json entries are "writeonly": true, so the host NEVER reads
+// these addresses back. That is a deliberate design choice, not a shortcut: it
+// lets the 01F0xxxx read-back wildcard below stay byte-identical to its proven
+// 09:26 form, which is the exact logic whose modification was implicated in the
+// J7/J9 disk-load failures. Only the write side grows, and it grows in the same
+// shape as the cfg_reboot_word latch that has always worked.
+//
+// Bridge-domain (clk_74a) registers, so like cfg_reboot_word they must survive
+// machine_reset - they hold a host preference, not machine state.
+// Defaults match the previously hardwired values exactly (SCREEN_MODE 2'b00
+// Colour, comp_preset 2'd0 Calibrated), so behaviour is unchanged until the user
+// moves an option.
+reg [31:0] cfg_display_word = 32'd0;   // [1:0] = SCREEN_MODE
+reg [31:0] cfg_preset_word  = 32'd0;   // [1:0] = comp_preset
+always @(posedge clk_74a) begin
+    if (bridge_wr && bridge_addr == 32'h01F00004)
+        cfg_display_word <= bridge_wr_data;
+    if (bridge_wr && bridge_addr == 32'h01F00008)
+        cfg_preset_word  <= bridge_wr_data;
+end
+
+// bridge(74.25) -> machine(14.318) CDC, same synch_3 pattern as the reboot
+// option above. Per-bit synchronization means a 2-bit value can transiently
+// present a mixed code while it settles (e.g. 3 -> 0 may pass through 1 or 2).
+// For these knobs that is at most one frame of a different picture mode while
+// the user is actively changing the option, which is cosmetically harmless; it
+// is not acceptable for a multi-bit datapath value, and would need a handshake
+// or gray coding if these ever became one.
+wire [1:0] display_mode_m;
+wire [1:0] comp_preset_m;
+synch_3 #(.WIDTH(2)) u_display_mode_sync (
+    .i(cfg_display_word[1:0]), .o(display_mode_m),
+    .clk(clk_core_14318), .rise(), .fall()
+);
+synch_3 #(.WIDTH(2)) u_comp_preset_sync (
+    .i(cfg_preset_word[1:0]), .o(comp_preset_m),
+    .clk(clk_core_14318), .rise(), .fall()
+);
+
 // cart is unused, so set all level translators accordingly
 // directions are 0:IN, 1:OUT
 assign cart_tran_bank3 = 8'hzz;
@@ -713,7 +753,7 @@ video_pipeline_q17 ntsc_pipe (
     .COLOR_LINE         (m_col_line),
     .TEXT_MODE          (m_text_mode),
     .LO_RES_TEXT        (1'b1),
-    .SCREEN_MODE        (2'b00),        // Colour
+    .SCREEN_MODE        (display_mode_m),  // OSD "Display Mode" (writeonly)
     .COLOR_PALETTE      (2'd0),
     .RUN_FILL_OK        (m_run_fill_ok),
     .NTSC_VERTICAL_COMB (1'b1),
@@ -736,7 +776,7 @@ video_pipeline_q17 ntsc_pipe (
     .reset              (machine_reset),
     .machine_ce         (1'b1),
     .use_composite      (1'b1),
-    .comp_preset        (2'd0),         // Calibrated
+    .comp_preset        (comp_preset_m),   // OSD "Colour Preset" (writeonly)
     .comp_hue_adj       (5'd0),
     .comp_bright_st     (2'd0),
     .comp_sat_st        (2'd0),

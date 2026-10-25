@@ -12,6 +12,38 @@
         "address": "0x01F00000",
         "value": 1,
         "value_off": 0
+      },
+      {
+        "name": "Display Mode",
+        "id": 4,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "defaultval": 0,
+        "address": "0x01F00004",
+        "options": [
+          { "value": 0, "name": "Colour" },
+          { "value": 1, "name": "Monochrome" },
+          { "value": 2, "name": "Green" },
+          { "value": 3, "name": "Amber" }
+        ]
+      },
+      {
+        "name": "Colour Preset",
+        "id": 5,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "defaultval": 0,
+        "address": "0x01F00008",
+        "options": [
+          { "value": 0, "name": "Calibrated" },
+          { "value": 1, "name": "Eyeballed" },
+          { "value": 2, "name": "Punchy" },
+          { "value": 3, "name": "Muted" }
+        ]
       }
     ],
     "messages": []
