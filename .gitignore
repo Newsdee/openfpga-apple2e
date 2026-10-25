@@ -68,6 +68,10 @@ verilog/pocket_boot/*.log
 verilog/pocket_boot/*.hex
 verilog/pocket_boot/disk.woz
 
+# speaker_i2s unit TB scratch (verilog/tb/run_tb_speaker_i2s.sh runs from repo root)
+obj_tb_speaker_i2s/
+obj_tb_speaker_i2s.*.log
+
 # one-off scratch edit script
 /tools/_m0_sdram_edit.pl
 

@@ -941,13 +941,14 @@ assign video_skip = apf_skip;
 
 
 //
-// audio i2s silence generator
-// see other examples for actual audio generation
+// 555 speaker audio (speaker_i2s.v, 2026-10-26): box-averaged duty sample
+// from the machine's 1-bit speaker + local DC blocker + 16-bit I2S framing.
+// Replaces the previous silence generator (mclk/sclk generation is kept).
 //
 
 assign audio_mclk = audgen_mclk;
-assign audio_dac = audgen_dac;
-assign audio_lrck = audgen_lrck;
+assign audio_dac = spk_dac;
+assign audio_lrck = spk_lrck;
 
 // generate MCLK = 12.288mhz with fractional accumulator
     reg         [21:0]  audgen_accum;
@@ -964,27 +965,20 @@ end
 // generate SCLK = 3.072mhz by dividing MCLK by 4
     reg [1:0]   aud_mclk_divider;
     wire        audgen_sclk = aud_mclk_divider[1] /* synthesis keep*/;
-    reg         audgen_lrck_1;
 always @(posedge audgen_mclk) begin
     aud_mclk_divider <= aud_mclk_divider + 1'b1;
 end
 
-// shift out audio data as I2S 
-// 32 total bits per channel, but only 16 active bits at the start and then 16 dummy bits
-//
-    reg     [4:0]   audgen_lrck_cnt;    
-    reg             audgen_lrck;
-    reg             audgen_dac;
-always @(negedge audgen_sclk) begin
-    audgen_dac <= 1'b0;
-    // 48khz * 64
-    audgen_lrck_cnt <= audgen_lrck_cnt + 1'b1;
-    if(audgen_lrck_cnt == 31) begin
-        // switch channels
-        audgen_lrck <= ~audgen_lrck;
-        
-    end 
-end
+// 555 speaker -> I2S (module; m_spk is the machine-domain speaker bit)
+    wire        spk_dac, spk_lrck;
+    speaker_i2s u_spk_i2s (
+        .clk_14m  ( clk_core_14318 ),
+        .spk_bit  ( m_spk ),
+        .mclk     ( audgen_mclk ),
+        .sclk     ( audgen_sclk ),
+        .lrck     ( spk_lrck ),
+        .dac      ( spk_dac )
+    );
 
 
 ///////////////////////////////////////////////
