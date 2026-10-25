@@ -33,12 +33,31 @@ if [ "${1:-}" = "clean" ]; then
     exit 0
 fi
 
+# generate the NTSC q17 variants the top instantiates (video_pipeline_q17 etc.).
+# Quartus 17 rejects the donor's N'(expr) casts; the generated files are proven
+# cycle-exact against the pinned donor by verilog/verilate_ntsc_parity.sh.
+# --check first: a stale q17 file must fail the build, not silently ship.
+/c/msys64/ucrt64/bin/python.exe "$ROOT/tools/gen_video_q17.py" --check \
+    || /c/msys64/ucrt64/bin/python.exe "$ROOT/tools/gen_video_q17.py"
+
 # stage machine ROMs (CWD-relative $readmemh paths: rtl/roms/*.hex)
 mkdir -p rtl/roms
 cp -f "$VERILOG/u6/rtl/roms/apple2e.hex" rtl/roms/ 2>/dev/null \
     || cp -f "$ROOT/../Apple-II-Verilog_MiSTer/verilator/rtl/roms/apple2e.hex" rtl/roms/
 cp -f "$VERILOG/u6/rtl/roms/video2.hex"  rtl/roms/ 2>/dev/null \
     || cp -f "$ROOT/../Apple-II-Verilog_MiSTer/verilator/rtl/roms/video2.hex"  rtl/roms/
+
+# RAM zero image (the top's $readmemh init, 2026-10-25 Phase B). Canonical
+# source only, with preflight: token count + all-zero content. An empty or
+# truncated image is indistinguishable from a correct zero image in sim
+# (Verilator default-zero memory) - the preflight is the real gate.
+ZIMG="$ROOT/src/fpga/rtl/roms/ram_zero_64k.hex"
+[ -f "$ZIMG" ] || { echo "FATAL: missing $ZIMG"; exit 1; }
+zlines=$(wc -l < "$ZIMG")
+[ "$zlines" = "65536" ] || { echo "FATAL: ram_zero_64k.hex has $zlines lines (want 65536)"; exit 1; }
+zbad=$(grep -cv '^00$' "$ZIMG" || true)
+[ "$zbad" = "0" ] || { echo "FATAL: ram_zero_64k.hex has $zbad non-zero/invalid lines"; exit 1; }
+cp -f "$ZIMG" rtl/roms/
 
 # APF templates mf_pllbase.v (core/) and mf_datatable.v (apf/) declare
 # `timescale 1ps/1ps`; a ps-timescale file poisons Verilator's
@@ -110,6 +129,10 @@ verilator_bin --cc --timing -j 4 \
     "$ROOT/machine/cpu/wdc65c02/cpu_alu.sv" \
     "$ROOT/machine/osk/virtual_keyboard_controller.sv" \
     "$ROOT/machine/osk/virtual_keyboard_overlay.sv" \
+    "$ROOT/machine/video/video_pipeline_q17.sv" \
+    "$ROOT/machine/video/apple_composite_q17.sv" \
+    "$ROOT/machine/video/composite_decoder_q17.sv" \
+    "$ROOT/machine/video/vga_controller.v" \
     "$VERILOG/stubs/altera_pll_sim.v" \
     "$VERILOG/stubs/altsyncram_sim.v"
 

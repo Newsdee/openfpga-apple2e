@@ -30,7 +30,19 @@
 //
 `default_nettype none
 
-module apple2e_osk (
+module apple2e_osk #(
+    // RGB_IN=1: composite the OSK over a supplied 24-bit RGB background instead
+    // of expanding the 1-bit `video_in` internally. This is what the NTSC color
+    // path needs (plan §5 N2 step 2: "make OSK RGB input compatible with every
+    // caller"). Default 0 keeps every existing instantiation - apf_stream_proto_top,
+    // apple2e_core_top, tb_apf_video, tb_p2b_shots, tb_phase2_shots and the
+    // simulation runners - bit-for-bit unchanged; they simply omit the port and
+    // the parameter, and `rgb_in` reads as unconnected/z without being used.
+    // (Wording note: do not begin a comment line with the word "verilator" -
+    // the tool parses `// verilator ...` as a lint pragma and errors out with
+    // BADVLTPRAGMA. This comment was rewritten for exactly that reason.)
+    parameter RGB_IN = 1'b0
+) (
     input  wire        clk,          // 14.318 MHz (machine domain)
     input  wire        reset,        // machine reset
     input  wire [31:0] cont1_key,    // APF pad domain (74.25 MHz) - synced internally
@@ -38,6 +50,10 @@ module apple2e_osk (
     input  wire        video_in,     //   native 1-bit video
     input  wire        hblank,
     input  wire        vblank,
+    // externally composited background (RGB_IN=1 only). Must be pixel-aligned
+    // with hblank/vblank: RGB and its own blanking travel together, so the NTSC
+    // path supplies the pipeline's HBL_O/VBL_O, not the raw machine flags.
+    input  wire [23:0] rgb_in,
     output wire        video_out,    //   OSK-composited 1-bit video
     output wire [23:0] video_rgb24,  //   OSK-composited 24-bit RGB (Phase 2 streaming)
     // Apple II keyboard interface (to the machine core)
@@ -260,7 +276,12 @@ module apple2e_osk (
         if (kb_transp_cycle) transp <= transp + 1'b1;
     end
 
-    wire [23:0] m_rgb = video_in ? 24'hFFFFFF : 24'h000000;
+    // Background select. With RGB_IN=0 this is byte-for-byte the original
+    // expression, so the monochrome fallback path is unchanged; with RGB_IN=1
+    // the caller supplies the background (NTSC-decoded RGB, or the same mono
+    // expansion computed one level up - see apf_stream_video_top.v).
+    wire [23:0] m_rgb_mono = video_in ? 24'hFFFFFF : 24'h000000;
+    wire [23:0] m_rgb = RGB_IN ? rgb_in : m_rgb_mono;
     wire [23:0] osk_rgb;
     wire        osk_font_alt, osk_font_lcase;
     wire [6:0]  osk_font_char;

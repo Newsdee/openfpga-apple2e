@@ -33,6 +33,12 @@ check cpu/nmos6502/cpu_65c02.sv
 check cpu/nmos6502/cpu_alu.sv
 check cpu/wdc65c02/cpu_65c02.sv
 check cpu/wdc65c02/cpu_alu.sv
+# NTSC color path (byte-pinned donor import; see machine/video/NOTICE.md).
+# Source of truth for these is $SRC/video, and check() prepends machine/.
+check video/video_pipeline.sv
+check video/apple_composite.sv
+check video/composite_decoder.sv
+check video/vga_controller.v
 
 # q17 variant: the QSF compiles machine/osk/virtual_keyboard_overlay_q17.sv
 # (generated: drops the 60 SystemVerilog N'(expr) casts Quartus 17 rejects).

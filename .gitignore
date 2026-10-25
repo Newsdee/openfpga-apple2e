@@ -96,3 +96,6 @@ verilog/mf_datatable_sim.v
 docs/*_20[0-9][0-9]-[0-9][0-9]-[0-9][0-9].md
 docs/recommendation.md
 REVIEW_RECOMMENDATIONS_*.md
+
+# Quartus run logs from this worktree (generated, not source)
+src/fpga/*.log

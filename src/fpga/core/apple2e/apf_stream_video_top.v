@@ -601,9 +601,7 @@ end
 // The machine (CPU + Disk II) is in cold reset for the whole sweep
 // (reboot_ctl holds cold_reset until done + HOLD), so hijacking the RAM
 // write port is safe: apple2 and disk_ii_woz are reset-gated. The
-// initial block is the power-on state only (MIF zero-fill).
-integer ram_init_i;
-integer ram_init_j;
+// initial block is the power-on state only (file zero-fill).
 reg  [7:0]  ram_main [0:65535];
 reg  [7:0]  ram_aux  [0:65535];
 reg  [15:0] m_ram_do;
@@ -628,13 +626,20 @@ ram_sweep_ctl woz_sweep (
     .we(swp_we), .addr(swp_addr), .aux(swp_aux), .done(swp_done)
 );
 initial begin
-    // power-on RAM state (MIF zero-fill)
-    for (ram_init_i = 0; ram_init_i < 256; ram_init_i = ram_init_i + 1) begin
-        for (ram_init_j = 0; ram_init_j < 256; ram_init_j = ram_init_j + 1) begin
-            ram_main[{ram_init_i[7:0], ram_init_j[7:0]}] = 8'd0;
-            ram_aux[{ram_init_i[7:0], ram_init_j[7:0]}]  = 8'd0;
-        end
-    end
+    // power-on RAM state (file zero-fill, 2026-10-25 Phase B): the nested
+    // 256x256 procedural loop cost ~19 min of single-threaded A&S CPU on
+    // the full core (probe evidence: tools/ram_repro_init 19:13 vs
+    // tools/ram_repro_file 1:28 for the identical one-bank RAM - the file
+    // form is ~13x faster). Canonical image: src/fpga/rtl/roms/
+    // ram_zero_64k.hex (65,536 x "00", LF, git-tracked, *.hex text eol=lf).
+    // Path is CWD-relative: Quartus runs from src/fpga; the sim runner
+    // stages the same file under its rtl/roms/ (verilog/pocket_boot/
+    // build.sh, with preflight). Configuration-time initialization only -
+    // a machine reset is NOT a reload of this file: the runtime clearing
+    // sweep (ram_sweep_ctl below) still clears both banks after every
+    // cold reset before the CPU is released.
+    $readmemh("rtl/roms/ram_zero_64k.hex", ram_main);
+    $readmemh("rtl/roms/ram_zero_64k.hex", ram_aux);
 end
 // ---- the proven M1 RAM shape: plain single-port per bank, write-first
 //      bypass - consumes the overlayed _f nets only ----
@@ -662,18 +667,129 @@ wire [7:0]  m_io_sel, m_dev_sel;
 wire        m_io_str, m_pdl, m_stb;
 wire [3:0]  m_an;
 
+// ---- NTSC color path (PLAN_NTSC_PORT_2026-10-24, N2) ----
+// NTSC_EN=1 inserts the pinned donor video_pipeline between the machine and the
+// OSK; NTSC_EN=0 restores the original monochrome path. The fallback is not a
+// separate code path: mono_rgb below is the SAME expression apple2e_osk used to
+// compute internally (video_in ? FFFFFF : 000000), and the OSK is now always
+// instantiated with RGB_IN=1, so with NTSC_EN=0 the pixels reaching the overlay
+// and APF are unchanged by construction. Verify that in simulation, do not
+// assume it.
+//
+// The shipping build compiles the generated *_q17 modules (Quartus 17.0.2
+// rejects the donor's 15 `N'(expr)` size casts with Error 10170). Those are
+// proven cycle-exact against the pinned donor by verilog/verilate_ntsc_parity.sh
+// over 3.8M cycles x all 4 presets x all 4 screen modes, 0 mismatches. The
+// canonical donor files stay in machine/video/ as the reference only.
+parameter NTSC_EN = 1'b1;
+
+wire [23:0] ntsc_rgb;
+wire        ntsc_hbl, ntsc_vbl, ntsc_hs, ntsc_vs;
+wire        ntsc_ioctl_wait;   // must never assert (downloads are tied off)
+
+// Fixed configuration per plan section 4 (owner decisions 2026-10-24):
+// exactly TWO user-facing knobs exist (SCREEN_MODE, comp_preset) and v1 ships
+// both as constants. Everything else is hardwired and must NOT be exposed:
+//   use_composite=1 (always composite, no RGB-monitor mode)
+//   NTSC_VERTICAL_COMB=1 (comb always on)
+//   LO_RES_TEXT=1, comp_hue_adj=0, bright/sat/contrast offsets 0
+//   COLOR_PALETTE=constant (dead: it only reaches vga_controller, which is
+//   unobserved at use_composite=1 and must fold away in synthesis)
+video_pipeline_q17 ntsc_pipe (
+    .CLK_14M            (clk_core_14318),
+    .VIDEO              (m_video),
+    .HBL                (m_hbl),
+    .VBL                (m_vbl),
+    .COLOR_LINE         (m_col_line),
+    .TEXT_MODE          (m_text_mode),
+    .LO_RES_TEXT        (1'b1),
+    .SCREEN_MODE        (2'b00),        // Colour
+    .COLOR_PALETTE      (2'd0),
+    .RUN_FILL_OK        (m_run_fill_ok),
+    .NTSC_VERTICAL_COMB (1'b1),
+    .EARLY_VIDEO        (m_early_video),
+    .HGR_MODE           (m_hgr_mode),
+    .HGR80_MODE         (m_hgr80_mode),
+    .GR2                (m_gr2),
+    .COL80              (m_col80),
+    .DHIRES_MODE        (m_dhires),
+    .ioctl_addr         (25'd0),
+    .ioctl_data         (8'd0),
+    .ioctl_index        (8'd0),
+    .ioctl_download     (1'b0),
+    .ioctl_wr           (1'b0),
+    .ioctl_wait         (ntsc_ioctl_wait),
+    // machine_reset now includes cold_reset_m (the disk-change cold reboot),
+    // so the encoder/decoder is reset on EVERY disk change, not just at
+    // power-on. Plan section 4a calls this the most important new interaction:
+    // colour must re-acquire within the 2-frame bound after a disk swap.
+    .reset              (machine_reset),
+    .machine_ce         (1'b1),
+    .use_composite      (1'b1),
+    .comp_preset        (2'd0),         // Calibrated
+    .comp_hue_adj       (5'd0),
+    .comp_bright_st     (2'd0),
+    .comp_sat_st        (2'd0),
+    .comp_contrast_st   (2'd0),
+    .R                  (ntsc_rgb[23:16]),
+    .G                  (ntsc_rgb[15:8]),
+    .B                  (ntsc_rgb[7:0]),
+    .HS                 (ntsc_hs),      // NOT driven onto APF: the adapter
+    .VS                 (ntsc_vs),      // regenerates its own 1-clock pulses
+    .HBL_O              (ntsc_hbl),
+    .VBL_O              (ntsc_vbl)
+);
+
+// ---- VBL/HBL alignment for the APF adapter (measured, not assumed) ----
+// apf_stream_video.v:81 generates its frame pulse as
+//     vs_pulse = (vbl_r & ~vbl) & hbl
+// so VBL's FALLING edge must be seen while HBL is high. The donor pipeline
+// breaks that contract because it delays the two flags by DIFFERENT amounts:
+//     HBL_O = hb_c_s   (hb_c_out piped through the variable hshift_idx tap)
+//     VBL_O = vb_c_out (not piped)
+// Measured in verilog/tb/tb_ntsc_parity.sv over 16 frames:
+//     raw machine VBL falls = 15, of which HBL high = 15   (contract holds)
+//     pipeline  VBL_O falls = 15, of which HBL_O high =  0 (contract broken)
+// Raw VBL falls at the line start, so sampling HBL hshift_idx cycles earlier
+// lands in the PREVIOUS line's active video - hence 0/15, hence video_vs never
+// pulses and the boot harness counts frames=0.
+//
+// Fix in Pocket glue (the donor files are byte-pinned, so they must not change):
+// delay VBL_O by a fixed VBL_ALIGN so its falling edge lands inside the same
+// line's HBL_O window. Safe for any hshift_idx <= VBL_ALIGN because machine HBL
+// is high for 352 clocks from the line start (132 pre-sync + 220 post-sync,
+// per composite_decoder.sv:118-119), and hshift_idx is bounded by
+// HSHIFT_COMP + HSHIFT_SMOOTH = 21 (video_pipeline.sv:271-272). A 32-clock
+// shift is far inside the 54-line vertical blanking interval, so frame
+// boundaries move by a negligible amount.
+localparam VBL_ALIGN = 32;
+reg [VBL_ALIGN:0] vbl_align_pipe;
+always @(posedge clk_core_14318) begin
+    if (machine_reset) vbl_align_pipe <= {(VBL_ALIGN+1){1'b1}};
+    else               vbl_align_pipe <= {vbl_align_pipe[VBL_ALIGN-1:0], ntsc_vbl};
+end
+wire ntsc_vbl_aligned = vbl_align_pipe[VBL_ALIGN];
+
+// ---- selected video: RGB and its OWN blanking always travel together ----
+// Plan section 4: do not combine delayed decoded RGB with raw machine blanking.
+wire [23:0] mono_rgb = m_video ? 24'hFFFFFF : 24'h000000;
+wire [23:0] sel_rgb  = NTSC_EN ? ntsc_rgb : mono_rgb;
+wire        sel_hbl  = NTSC_EN ? ntsc_hbl : m_hbl;
+wire        sel_vbl  = NTSC_EN ? ntsc_vbl_aligned : m_vbl;
+
 // ---- OSK (buttons -> keystrokes; overlay over the native video) ----
 wire        osk_video;
 wire [23:0] osk_rgb24;
 wire        osk_cmd_reset;
 wire        osk_open_apple, osk_closed_apple;
-apple2e_osk osk (
+apple2e_osk #(.RGB_IN(1'b1)) osk (
     .clk(clk_core_14318),
     .reset(osk_reset),
     .cont1_key(cont1_key),
     .video_in(m_video),
-    .hblank(m_hbl),
-    .vblank(m_vbl),
+    .hblank(sel_hbl),
+    .vblank(sel_vbl),
+    .rgb_in(sel_rgb),
     .video_out(osk_video),
     .video_rgb24(osk_rgb24),
     .K(m_K),
@@ -723,7 +839,7 @@ wire        apf_de, apf_vs, apf_hs, apf_skip;
 // brief (EXPERT_BRIEF_PHASE2_280_SHIFT) for its fix status.
 apf_stream_video #(.DEC2X(0)) apfv (
     .clk(clk_core_14318), .reset(machine_reset),
-    .rgb_in(ovl_rgb), .hbl(m_hbl), .vbl(m_vbl),
+    .rgb_in(ovl_rgb), .hbl(sel_hbl), .vbl(sel_vbl),
     .video_rgb(apf_rgb), .video_de(apf_de), .video_vs(apf_vs),
     .video_hs(apf_hs), .video_skip(apf_skip)
 );
@@ -1095,7 +1211,7 @@ end
 wire [23:0] ovl_rgb;
 sdram_status_overlay #(.SHOW_FP(FP_DIAG), .OVL_DBG(OVL_DEBUG)) ovl (
     .clk(clk_core_14318), .reset(machine_reset),
-    .rgb_in(osk_rgb24), .hbl(m_hbl), .vbl(m_vbl),
+    .rgb_in(osk_rgb24), .hbl(sel_hbl), .vbl(sel_vbl),
     .rgb_out(ovl_rgb),
     .res_valid_m(stor_res_valid_m), .res_code_m(stor_res_code_m),
     .res_fail_m(stor_res_fail_m), .res_crc_m(stor_res_crc_m),

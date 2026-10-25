@@ -1,4 +1,17 @@
 # Shell scripts must keep LF: MSYS2 bash breaks on CRLF shebangs.
 *.sh text eol=lf
+# Hex data files must keep LF: the canonical ram_zero_64k.hex has a
+# byte-exact size spec (65,536 x "00" + LF = 196,608 bytes) and a CRLF
+# checkout would silently bloat it 65,536 bytes.
+*.hex text eol=lf
 # Normalize everything else in the repo; checkout follows core.autocrlf.
 * text=auto
+
+# machine/video/ donor files are byte-pinned to Apple-II_MiSTer/rtl/video/ and
+# verified by check_machine_sync.sh with byte-exact `cmp -s`. All four are
+# CRLF/mixed-EOL IN THE DONOR (CR counts 325/166/783/905, recorded in
+# machine/video/NOTICE.md). `* text=auto` + core.autocrlf=true would normalize
+# them to LF in the index and rewrite them CRLF on any checkout/merge, which
+# breaks the pin guard. Treat them as binary: git stores and restores exact bytes.
+machine/video/*.sv -text
+machine/video/*.v  -text

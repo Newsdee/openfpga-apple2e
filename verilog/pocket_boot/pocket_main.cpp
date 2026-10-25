@@ -344,20 +344,77 @@ int main(int argc, char **argv)
             bool mountOk = P(d_mt) && !P(d_tf);
             if (crcOk && mountOk && P(frame_cnt) >= 3 && t > 100e9) {
                 fprintf(stderr,
-                        "SMOKE BOOT OK: frames=%d reads=%u crc=%08X mt=%d tf=%d res8f=%04X t=%.3fms\n",
+                        "SMOKE BOOT OK: frames=%d reads=%u crc=%08X mt=%d tf=%d res8f=%04X t=%.3fms fb=%ux%u\n",
                         (int)P(frame_cnt), (unsigned)P(d_reads),
                         (unsigned)P(d_crc), (int)P(d_mt), (int)P(d_tf),
-                        (int)P(load_res8f), t / 1e6);
+                        (int)P(load_res8f), t / 1e6,
+                        (unsigned)P(fb_w), (unsigned)P(fb_h));
+                // ---- direct chroma measurement (does not depend on dumpPpm) ----
+                // The framebuffer holds the last captured frame. Count pixels
+                // whose channel spread (max-min) exceeds a small threshold:
+                // monochrome video has R==G==B everywhere, so ANY chromatic
+                // pixel proves the NTSC decoder produced real chroma rather
+                // than an expanded 1-bit image.
+                {
+                    int w = (int)P(fb_w), h = (int)P(fb_h);
+                    long chromatic = 0, total = 0, maxSpread = 0;
+                    unsigned firstChroma = 0; bool gotFirst = false;
+                    if (w > 0 && h > 0) {
+                        for (int y = 0; y < h; y++)
+                            for (int x = 0; x < w; x++) {
+                                uint32_t c = P(fb)[y * 720 + x];
+                                int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF,
+                                    b = c & 0xFF;
+                                int mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+                                int mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+                                int sp = mx - mn;
+                                total++;
+                                if (sp > maxSpread) maxSpread = sp;
+                                if (sp > 8) {
+                                    chromatic++;
+                                    if (!gotFirst) { firstChroma = c; gotFirst = true; }
+                                }
+                            }
+                    }
+                    // grayscale sanity: is this a real screen or a dead capture?
+                    long nBlack = 0, nWhite = 0, nMid = 0, distinct = 0;
+                    {
+                        bool seen[256] = {false};
+                        for (int y = 0; y < h; y++)
+                            for (int x = 0; x < w; x++) {
+                                uint32_t c = P(fb)[y * 720 + x];
+                                int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF,
+                                    b = c & 0xFF;
+                                if (r == g && g == b) {
+                                    seen[r] = true;
+                                    if (r == 0) nBlack++;
+                                    else if (r == 255) nWhite++;
+                                    else nMid++;
+                                }
+                            }
+                        for (int i = 0; i < 256; i++) if (seen[i]) distinct++;
+                    }
+                    fprintf(stderr,
+                            "GRAY: distinct_gray_levels=%ld black=%ld white=%ld mid=%ld\n",
+                            distinct, nBlack, nWhite, nMid);
+                    fprintf(stderr,
+                            "CHROMA: fb=%dx%d pixels=%ld chromatic(spread>8)=%ld "
+                            "(%.2f%%) max_spread=%ld first_chroma=%06X\n",
+                            w, h, total, chromatic,
+                            total ? 100.0 * (double)chromatic / (double)total : 0.0,
+                            maxSpread, firstChroma);
+                }
                 smokePass = true;
                 break;
             }
             if (t > budgetPs) {
                 fprintf(stderr,
-                        "SMOKE END: frames=%d reads=%u crc=%08X(exp %08X) mt=%d tf=%d res8f=%04X (t>%.0fms)\n",
+                        "SMOKE END: frames=%d reads=%u crc=%08X(exp %08X) mt=%d tf=%d res8f=%04X (t>%.0fms) fb=%ux%u\n",
                         (int)P(frame_cnt), (unsigned)P(d_reads),
                         (unsigned)P(d_crc), wozaCrc,
                         (int)P(d_mt), (int)P(d_tf), (int)P(load_res8f),
-                        budgetPs / 1e6);
+                        budgetPs / 1e6,
+                        (unsigned)P(fb_w), (unsigned)P(fb_h));
                 break;
             }
         }
