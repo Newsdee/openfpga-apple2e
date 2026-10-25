@@ -1,0 +1,4 @@
+QUARTUS_VERSION = "17.0"
+DATE = "RAM file-init experiment candidate (2026-10-25)"
+
+PROJECT_REVISION = "ram_repro_file"

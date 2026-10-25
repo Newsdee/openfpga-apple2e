@@ -611,9 +611,7 @@ end
 // The machine (CPU + Disk II) is in cold reset for the whole sweep
 // (reboot_ctl holds cold_reset until done + HOLD), so hijacking the RAM
 // write port is safe: apple2 and disk_ii_woz are reset-gated. The
-// initial block is the power-on state only (MIF zero-fill).
-integer ram_init_i;
-integer ram_init_j;
+// initial block is the power-on state only (file zero-fill).
 reg  [7:0]  ram_main [0:65535];
 reg  [7:0]  ram_aux  [0:65535];
 reg  [15:0] m_ram_do;
@@ -638,13 +636,20 @@ ram_sweep_ctl woz_sweep (
     .we(swp_we), .addr(swp_addr), .aux(swp_aux), .done(swp_done)
 );
 initial begin
-    // power-on RAM state (MIF zero-fill)
-    for (ram_init_i = 0; ram_init_i < 256; ram_init_i = ram_init_i + 1) begin
-        for (ram_init_j = 0; ram_init_j < 256; ram_init_j = ram_init_j + 1) begin
-            ram_main[{ram_init_i[7:0], ram_init_j[7:0]}] = 8'd0;
-            ram_aux[{ram_init_i[7:0], ram_init_j[7:0]}]  = 8'd0;
-        end
-    end
+    // power-on RAM state (file zero-fill, 2026-10-25 Phase B): the nested
+    // 256x256 procedural loop cost ~19 min of single-threaded A&S CPU on
+    // the full core (probe evidence: tools/ram_repro_init 19:13 vs
+    // tools/ram_repro_file 1:28 for the identical one-bank RAM - the file
+    // form is ~13x faster). Canonical image: src/fpga/rtl/roms/
+    // ram_zero_64k.hex (65,536 x "00", LF, git-tracked, *.hex text eol=lf).
+    // Path is CWD-relative: Quartus runs from src/fpga; the sim runner
+    // stages the same file under its rtl/roms/ (verilog/pocket_boot/
+    // build.sh, with preflight). Configuration-time initialization only -
+    // a machine reset is NOT a reload of this file: the runtime clearing
+    // sweep (ram_sweep_ctl below) still clears both banks after every
+    // cold reset before the CPU is released.
+    $readmemh("rtl/roms/ram_zero_64k.hex", ram_main);
+    $readmemh("rtl/roms/ram_zero_64k.hex", ram_aux);
 end
 // ---- the proven M1 RAM shape: plain single-port per bank, write-first
 //      bypass - consumes the overlayed _f nets only ----

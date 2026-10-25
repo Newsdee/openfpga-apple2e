@@ -40,6 +40,18 @@ cp -f "$VERILOG/u6/rtl/roms/apple2e.hex" rtl/roms/ 2>/dev/null \
 cp -f "$VERILOG/u6/rtl/roms/video2.hex"  rtl/roms/ 2>/dev/null \
     || cp -f "$ROOT/../Apple-II-Verilog_MiSTer/verilator/rtl/roms/video2.hex"  rtl/roms/
 
+# RAM zero image (the top's $readmemh init, 2026-10-25 Phase B). Canonical
+# source only, with preflight: token count + all-zero content. An empty or
+# truncated image is indistinguishable from a correct zero image in sim
+# (Verilator default-zero memory) - the preflight is the real gate.
+ZIMG="$ROOT/src/fpga/rtl/roms/ram_zero_64k.hex"
+[ -f "$ZIMG" ] || { echo "FATAL: missing $ZIMG"; exit 1; }
+zlines=$(wc -l < "$ZIMG")
+[ "$zlines" = "65536" ] || { echo "FATAL: ram_zero_64k.hex has $zlines lines (want 65536)"; exit 1; }
+zbad=$(grep -cv '^00$' "$ZIMG" || true)
+[ "$zbad" = "0" ] || { echo "FATAL: ram_zero_64k.hex has $zbad non-zero/invalid lines"; exit 1; }
+cp -f "$ZIMG" rtl/roms/
+
 # APF templates mf_pllbase.v (core/) and mf_datatable.v (apf/) declare
 # `timescale 1ps/1ps`; a ps-timescale file poisons Verilator's
 # mixed-timescale delay handling for the whole model (ns delays in the other

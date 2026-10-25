@@ -1,4 +1,8 @@
 # Shell scripts must keep LF: MSYS2 bash breaks on CRLF shebangs.
 *.sh text eol=lf
+# Hex data files must keep LF: the canonical ram_zero_64k.hex has a
+# byte-exact size spec (65,536 x "00" + LF = 196,608 bytes) and a CRLF
+# checkout would silently bloat it 65,536 bytes.
+*.hex text eol=lf
 # Normalize everything else in the repo; checkout follows core.autocrlf.
 * text=auto
