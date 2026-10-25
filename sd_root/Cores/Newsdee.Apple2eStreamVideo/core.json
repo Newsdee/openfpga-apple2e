@@ -7,7 +7,7 @@
             "description": "Apple IIe (native 560x192 streaming raster, no frame buffer; WOZ floppy drive via Pocket SDRAM, on-screen keyboard)",
             "author": "Newsdee",
             "url": "https://github.com/Newsdee",
-            "version": "0.2.2",
+            "version": "0.2.3",
             "date_release": "2026-10-25"
         },
         "framework": {

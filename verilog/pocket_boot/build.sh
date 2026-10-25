@@ -100,6 +100,7 @@ verilator_bin --cc --timing -j 4 \
     "$ROOT/src/fpga/core/apple2e/ram_sweep_ctl.v" \
     "$ROOT/src/fpga/core/apple2e/io_sdram_pocket.v" \
     "$ROOT/src/fpga/core/apple2e/sdram_status_overlay.v" \
+    "$ROOT/src/fpga/core/apple2e/speaker_i2s.v" \
     "$ROOT/src/fpga/core/woz/disk_ii_rom.v" \
     "$ROOT/src/fpga/core/woz/disk_ii_woz.sv" \
     "$ROOT/src/fpga/core/woz/flux_drive.v" \
