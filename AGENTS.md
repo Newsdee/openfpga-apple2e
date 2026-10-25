@@ -89,8 +89,41 @@ Consequences:
 
 - **Batch top-level edits.** Collect several `apf_stream_video_top.v` changes into
   one compile instead of one compile per change.
-- Also invalidating: adding/removing source files, editing the `.qsf`, changing
-  `apf/build_id.mif` (regenerated every build by `apf/build_id_gen.tcl`).
+- Also invalidating: adding or removing source files, and editing the `.qsf`.
+  **`apf/build_id.mif` is NOT one of these** — it is regenerated on every build
+  (`PRE_FLOW_SCRIPT_FILE`) and its date/time/hash words do change, but the
+  generator's own comments state that *"MIF bram contents like above won't affect
+  the random seed or trigger recompilation"*. The Verilog variant
+  (`generateBuildID_Verilog`) would force a recompile and is deliberately
+  commented out. Do not chase the MIF as a cause of slow builds.
+
+### Why a cold A&S takes ~26 minutes for a 6,700-ALM design (measured 2026-10-25)
+
+It is **database I/O, not synthesis**. The same run reports:
+
+```
+Analysis & Synthesis stage      00:25:49
+Elapsed Time Per Partition: Top  00:00:41     <-- actual synthesis
+```
+
+So ~25 minutes is overhead around 41 seconds of real work. Contributing factors:
+
+- **The project lives on `E:`, a WDC WD60EZAZ 5400 rpm SATA HDD.** `src/fpga/db/`
+  is ~62 MB across **658 files**, plus 16 MB of `incremental_db`. A&S churns these
+  constantly and the cost is dominated by seek time.
+- The host **endpoint AV** inspects every file Quartus writes (the same agent
+  documented elsewhere in this file as killing freshly linked executables).
+- Not memory pressure: the host has 96 GB with ~60 GB free, against a 5.2 GB A&S
+  peak and 7.4 GB Fitter peak.
+
+For scale, a warm build of the same design completed the entire flow in **00:02:28**
+(A&S 00:00:16) on 2026-10-19. **Suspected remedy, not yet tested:** move the tree
+(or at least `db/`, `incremental_db/` and `output_files_apple2e/`, all regenerable)
+to an NVMe volume — `S:` is a Samsung 990 PRO with 1.5 TB free — and add an AV
+exclusion for the build directories. Validate by comparing `flow.rpt` stage times.
+
+Do not diagnose a slow build as a design problem without first checking the
+per-partition elapsed time against the stage total.
 - **`quartus_map` alone is the cheap interface check** — but only when warm. From
   cold it is still ~27 min, so it is not a shortcut after a top-level edit.
 - A "stuck at 22%" progress bar is **normal**: the netlist synthesis/optimisation
@@ -115,44 +148,43 @@ resource numbers:
 
 ### Acceptance baseline
 
-Two coherent full builds exist; know which one you are comparing against.
+Three coherent full builds exist; know which one you are comparing against.
 
-**Current reference - 2026-10-25 00:59** (`c1914f4`, `OVL_DEBUG=0` overlay gate).
-This is the newest build with coherent fit + asm + sta reports:
-
-```
-Fitter        6,489 / 18,480 ALMs (35 %)
-Registers     6,101 (fit)  /  5,708 (map)
-Memory bits   1,527,836 / 3,153,920 (48 %)   <-- MUST match exactly
-RAM blocks    190 / 308      DSP 0 / 66      PLLs 2 / 4
-```
-
-**Previous reference - 2026-10-24 22:30** (the last build staged to the SD card,
-with the status overlay still drawing):
+**Current reference - 2026-10-25 11:02** (first coherent full build *including*
+the joystick; `joystick_input:u_joy` and `pdl_timer:u_pdl` both present in the
+netlist, rbf staged to `sd_root` at 11:41):
 
 ```
-Fitter        7,962 / 18,480 ALMs (43 %)
-Registers     6,573 (fit)  /  6,067 (map)
-Memory bits   1,527,836      DSP 0 / 66      PLLs 2 / 4
-Worst slack   +1.104 ns on mp2, TNS 0.000
+Fitter        6,688 / 18,480 ALMs (36 %)
+Registers     6,255 (fit)  /  5,738 (map)
+Memory bits   1,527,836 / 3,153,920 (48 %)   <-- unchanged, inference fine
+RAM blocks    190 / 308      DSP 4 / 66      PLLs 2 / 4
+Worst slack   +0.900 ns, all corners positive, TNS 0.000
+Stage times   A&S 25:49 | Fitter 3:38 | Asm 0:07 | STA 0:21 | total 29:55
 ```
 
-The **1,473-ALM drop is the `OVL_DEBUG=0` gate working as intended**, not a lost
-feature - the overlay drawing logic folded away. Do not "recover" it.
+The **4 DSP blocks are expected and benign**: `pdl_timer.v` ports the donor's
+`2800 + 22 * $signed(axis)` and Quartus infers DSP for those multiplies. Record
+the change from the old 0-DSP baseline; do not "fix" it. (22*x is expressible as
+16x+4x+2x if the DSPs are ever needed elsewhere.)
 
-**`1,527,836` block memory bits is the single most important regression check**, and
-is identical across both builds. Any change means a RAM was inferred that should not
-have been (or one stopped being inferred) - stop and investigate before proceeding.
+Earlier references, for delta tracking:
 
-**No coherent full build of the joystick design exists yet** (as of 2026-10-25
-01:30): the 00:59 fit predates the `apf_stream_video_top.v` integration at 01:14,
-and the 01:17 `map.summary` came from a separate map-only run that overlapped it.
-Run a clean full compile from a settled tree before quoting joystick numbers.
-Expect registers/ALMs near the 00:59 reference plus a small delta, and
-**DSP 0 -> 4**: `pdl_timer.v` implements the donor's
-`2800 + 22 * $signed(axis)` and Quartus infers DSP for those multiplies. 4 of 66
-is fine and faithful to the donor - record it, do not "fix" it.
+| Build | ALMs | Regs (fit/map) | Mem bits | DSP | Notes |
+|---|---|---|---|---|---|
+| 2026-10-25 11:02 | 6,688 (36%) | 6,255 / 5,738 | 1,527,836 | 4 | **current**; + joystick |
+| 2026-10-25 00:59 | 6,489 (35%) | 6,101 / 5,708 | 1,527,836 | 0 | `OVL_DEBUG=0` overlay gate |
+| 2026-10-24 22:30 | 7,962 (43%) | 6,573 / 6,067 | 1,527,836 | 0 | overlay still drawing; slack +1.104 ns |
 
+Read the deltas, not the absolutes: 22:30 -> 00:59 dropped 1,473 ALMs because
+`OVL_DEBUG=0` folds the overlay drawing logic away (**intended - do not
+"recover" it**); 00:59 -> 11:02 added 199 ALMs, 154 registers and 4 DSPs for the
+joystick, which is the right order of magnitude for ~240 lines of donor logic.
+
+**`1,527,836` block memory bits has been identical across all three** and is the
+single most important regression check. Any change means a RAM was inferred that
+should not have been, or one stopped being inferred - stop and investigate before
+proceeding.
 
 ### Stage the bitstream
 
