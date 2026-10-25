@@ -39,9 +39,9 @@
         "defaultval": 0,
         "address": "0x01F00008",
         "options": [
-          { "value": 0, "name": "Calibrated" },
-          { "value": 1, "name": "Eyeballed" },
-          { "value": 2, "name": "Punchy" },
+          { "value": 0, "name": "NTSC //e" },
+          { "value": 1, "name": "Old TV" },
+          { "value": 2, "name": "AppleWin" },
           { "value": 3, "name": "Muted" }
         ]
       }

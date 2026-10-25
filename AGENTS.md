@@ -26,7 +26,7 @@ newest `docs/PLAN_*.md` and `docs/BRIEF_*_KICKOFF_*.md`.
    coherent source snapshot.
 3. **Never delete `src/fpga/db/`.** It is the only thing that makes a rebuild take
    ~1 minute instead of ~30.
-4. **`sd_root/Cores/Newsdee.Apple2eStreamVideo/` is the single source of truth**
+4. **`sd_root/Cores/Newsdee.Apple2e/` is the single source of truth**
    for all core manifest JSONs. There are deliberately no copies at the repo root;
    `apf_stream_video_build.bat` **fails the build** if one reappears.
 5. **Do not commit unless asked. Do not start a full Quartus compile unless asked**
@@ -52,7 +52,7 @@ verilog/                      Verilator harnesses
   pocket_boot/                boot smoke harness
 tools/                        probes (ram_repro*, woz_fingerprint.py)
 sd_root/                      EXACT card layout - copy to the Pocket SD root
-  Cores/Newsdee.Apple2eStreamVideo/   all manifests + bitstream.rbf_r
+  Cores/Newsdee.Apple2e/   all manifests + bitstream.rbf_r
   Platforms/apple2e.json
 docs/                         plans, briefs, expert reviews, handovers
 refs/                         reference material: basicassets/, nes-pocket/
@@ -208,14 +208,14 @@ proceeding.
 ### Stage the bitstream
 
 A successful compile writes `output_files_apple2e/apf_stream_video.rbf`, but the
-**card copy is separate**: `sd_root/Cores/Newsdee.Apple2eStreamVideo/bitstream.rbf_r`.
+**card copy is separate**: `sd_root/Cores/Newsdee.Apple2e/bitstream.rbf_r`.
 It is easy to finish a build and leave the card stale. After an accepted build,
 verify the staged file's mtime and size actually moved:
 
 ```bash
 ls -l --time-style=+%m-%d_%H:%M:%S \
   src/fpga/output_files_apple2e/apf_stream_video.rbf \
-  sd_root/Cores/Newsdee.Apple2eStreamVideo/bitstream.rbf_r
+  sd_root/Cores/Newsdee.Apple2e/bitstream.rbf_r
 ```
 
 `apf_stream_video_build.bat` performs the copy and validates the manifests; prefer
@@ -241,7 +241,7 @@ before waiting it out.
 
 ## Core JSON files
 
-All manifests live **only** in `sd_root/Cores/Newsdee.Apple2eStreamVideo/`
+All manifests live **only** in `sd_root/Cores/Newsdee.Apple2e/`
 (`core.json`, `data.json`, `interact.json`, `video.json`, `audio.json`,
 `input.json`, `variants.json`) plus `sd_root/Platforms/apple2e.json`. Root-level
 copies were removed in commit `c40a26d` after they silently drifted (empty

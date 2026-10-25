@@ -63,17 +63,30 @@ module apf_stream_video (
     // HBL rising edge = line start (always inside the ~350-clock HBL).
     wire hbl_rise = ~hbl_r & hbl;
 
-    // HS fires a fixed delay (5 clocks) AFTER the HBL rising edge - still
-    // inside horizontal blanking, so HS never overlaps DE and keeps a
-    // >=3-clock gap after VS (VS sits at the frame-start line boundary).
-    reg [2:0] hs_dly;
+    // HS fires 60 clocks AFTER the HBL rising edge (line start).
+    //
+    // 2026-10-25 (0.2.5): moved from 5 to 60 clocks to satisfy the APF
+    // video contract "HS: one-cycle pulse per line, not until 3 cycles
+    // after VS". Measured in the boot harness (run_vs4.log): the frame
+    // line's VS pulse lands at ~hpos 42-47 (VBL_ALIGN=32 + pipeline
+    // latency), which was AFTER the old hpos-5 HS - a contract violation.
+    // The owner's 0.2.4 hardware test showed the first visible line
+    // replaced by a fixed, content-independent subcarrier rainbow strip
+    // (identical pixels on every colour screen) while lines 1..191 were
+    // correct - consistent with the framework mis-tracking the frame
+    // start on an HS-before-VS line. HS at hpos 60 keeps >= 13 cycles
+    // after the latest observed VS position, stays well inside the
+    // ~350-clock HBL window, and keeps a >= 300-clock gap before DE.
+    // HS/VS never overlap, DE never overlaps HS, and the >=1-clock
+    // DE-fall-to-next-HS gap grows to ~50 clocks.
+    reg [6:0] hs_dly;
     always @(posedge clk or posedge reset) begin
-        if (reset)              hs_dly <= 3'd0;
-        else if (hbl_rise)      hs_dly <= 3'd1;
-        else if (hs_dly < 3'd6) hs_dly <= hs_dly + 3'd1;
-        // else hold at 6
+        if (reset)                hs_dly <= 7'd0;
+        else if (hbl_rise)        hs_dly <= 7'd1;
+        else if (hs_dly < 7'd61)  hs_dly <= hs_dly + 7'd1;
+        // else hold at 61
     end
-    wire hs_pulse = (hs_dly == 3'd5);   // exactly one cycle
+    wire hs_pulse = (hs_dly == 7'd60);   // exactly one cycle
 
     // VBL falling edge = start of visible frame -> 1-cycle VS pulse.
     // Gated to HBL-high so a VS can only ever fire during blanking
@@ -99,11 +112,13 @@ module apf_stream_video (
         else             wcnt <= 10'd0;
     end
 
-    // The window opens 20 clocks after HS (H=25..304): fully inside HBL,
-    // disjoint from the write phase (H=350+). NOTE: a later window (inside
-    // the machine active region) was rejected in expert review - it
-    // overlaps the write phase and breaks the line-ownership guarantee.
-    localparam [8:0] RD_START = 9'd20;   // read window opens 20 clocks after HS
+    // The window opens RD_START clocks after HS (H=70..350 with the 0.2.5
+    // hpos-60 HS): fully inside HBL, disjoint from the write phase (H=352+).
+    // NOTE: RD_START was 20 with the old hpos-5 HS (H=25..304); it shrank to
+    // 10 so the 280-clock window still ends before the HBL window closes at
+    // hpos ~352 (60 + 10 + 280 = 350). DEC2X=1 is NOT the shipping mode
+    // (DEC2X=0 ships); re-verify this window if DEC2X=1 is ever enabled.
+    localparam [8:0] RD_START = 9'd10;   // read window opens RD_START clocks after HS
     localparam [8:0] RD_END   = RD_START + 280;
     reg [8:0]  rw;                      // read window position
     reg [8:0]  rptr;                     // buffer read pointer (0..279)

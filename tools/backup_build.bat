@@ -34,8 +34,8 @@ mkdir "%OUT%"
 
 copy /Y "%ROOT%\src\fpga\output_files_apple2e\apf_stream_video.rbf" "%OUT%\" >nul || goto fail
 for %%f in (bitstream.rbf_r core.json interact.json) do (
-    if not exist "%ROOT%\sd_root\Cores\Newsdee.Apple2eStreamVideo\%%f" goto missing
-    copy /Y "%ROOT%\sd_root\Cores\Newsdee.Apple2eStreamVideo\%%f" "%OUT%\" >nul
+    if not exist "%ROOT%\sd_root\Cores\Newsdee.Apple2e\%%f" goto missing
+    copy /Y "%ROOT%\sd_root\Cores\Newsdee.Apple2e\%%f" "%OUT%\" >nul
 )
 
 echo === archived build %TAG% -> %OUT% ===

@@ -24,7 +24,7 @@ output/
 sd_root/Cores/Newsdee.Apple2e/bitstream.rbf_r
 sd_root/Cores/Developer.Core Template/bitstream.rbf_r
 sd_root/Cores/Newsdee.Apple2eStreamProto/bitstream.rbf_r
-sd_root/Cores/Newsdee.Apple2eStreamVideo/bitstream.rbf_r
+sd_root/Cores/Newsdee.Apple2e/bitstream.rbf_r
 
 # --- Per-card staging, not repo content ---
 # Disk images (several are commercial software - never commit these).
@@ -122,3 +122,9 @@ src/fpga/*.log
 # Verilator harness build logs (generated)
 verilog/obj_dir_*/*.log
 verilog/obj_dir_*.log
+
+# Release packaging workdir (derived from sd_root + tools; regenerated, not source)
+sd_root_release/
+
+# NTSC line-0 diagnostic run log (verilog/tb/tb_ntsc_line0.sv)
+ntsc_line0_run.log

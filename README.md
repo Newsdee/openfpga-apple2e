@@ -32,14 +32,14 @@ this repo so the Quartus project is self-contained.
   pattern prototype core (`Cores/Newsdee.Apple2eStreamProto`).
 - **Phase 2 streaming** — real machine video + full-color OSK via
   `apf_stream_video` (APF-clean HS/DE spacing, no M10K frame buffer).
-  Hardware-verified (`Cores/Newsdee.Apple2eStreamVideo`).
+  Hardware-verified (`Cores/Newsdee.Apple2e`).
 
 ## Cores on the SD card
 
 | Folder | Core | Video path |
 |---|---|---|
 | `Cores/Newsdee.Apple2e` | stable machine core | frame-buffer: 1-bit machine video -> APF 400x512 @ 12.288 MHz |
-| `Cores/Newsdee.Apple2eStreamVideo` | Phase 2 streaming | native 560x192 @ 14.318 MHz RGB -> APF DDR pad, full-color OSK, aspect presets below |
+| `Cores/Newsdee.Apple2e` | Phase 2 streaming | native 560x192 @ 14.318 MHz RGB -> APF DDR pad, full-color OSK, aspect presets below |
 | `Cores/Newsdee.Apple2eStreamProto` | Phase 1 prototype | colour-bar / line-ID pattern on the same streaming path |
 
 **Video modes (streaming cores).** `video.json` declares three scaler
@@ -118,19 +118,19 @@ archive/               retired projects (quartus-legacy: ap_core, apple2e_core,
                        P2a / Phase-1 SD core packages) - see its README
 machine/             byte-identical machine RTL (Apple-II_MiSTer/rtl)
 verilog/             Verilator harnesses (tb/, stubs/, build+run bats)
-sd_root/             SD-card staging: Cores/Newsdee.Apple2eStreamVideo (live),
+sd_root/             SD-card staging: Cores/Newsdee.Apple2e (live),
                      Cores/Developer.Core Template (development), Platforms
 output/              generated bitstream.rbf_r (gitignored)
 tools/rbf2rbf_r.py   .rbf -> .rbf_r (bit-reversal) converter
 apf_stream_video_build.bat   THE build: compile apf_stream_video -> reverse ->
-                            stage into sd_root/Cores/Newsdee.Apple2eStreamVideo
+                            stage into sd_root/Cores/Newsdee.Apple2e
 ```
 
 ## Build (Windows, Quartus 17.0.2 on PATH)
 
 ```bat
 :: The single active build: compile apf_stream_video + reverse + stage
-:: into sd_root\Cores\Newsdee.Apple2eStreamVideo (the only core package).
+:: into sd_root\Cores\Newsdee.Apple2e (the only core package).
 apf_stream_video_build.bat
 
 :: or compile in the Quartus UI:
@@ -148,7 +148,7 @@ bitstream-provenance hazard. Build variants are parameters of
 Streaming-core packaging: reverse the fresh
 `src/fpga/output_files_apple2e/apf_stream_video.rbf` with
 `tools/rbf2rbf_r.py` and copy it to
-`sd_root/Cores/Newsdee.Apple2eStreamVideo/bitstream.rbf_r`.
+`sd_root/Cores/Newsdee.Apple2e/bitstream.rbf_r`.
 
 ## Sim (MSYS2 UCRT64)
 
@@ -167,7 +167,7 @@ check, keyboard-protocol regression, RAM-inference minimal repro in
 ## Core JSON files - single source of truth
 
 **All openFPGA manifest JSONs live ONLY in
-`sd_root/Cores/Newsdee.Apple2eStreamVideo/`** (`core.json`, `data.json`,
+`sd_root/Cores/Newsdee.Apple2e/`** (`core.json`, `data.json`,
 `interact.json`, `video.json`, `audio.json`, `input.json`, `variants.json`),
 plus `sd_root/Platforms/apple2e.json`. That directory IS the card layout - copy
 it to the Pocket SD card root.

@@ -221,6 +221,103 @@ module tb_pocket_boot;
     end
 
     // ------------------------------------------------------------------
+    // HBL-EDGE-PROBE (temporary, 2026-10-25): hardware shows 1st-line
+    // corruption on colour screens. Measure where the MACHINE HBL and the
+    // pipeline HBL_O fall within each of the first 5 machine lines after
+    // video_vs. If line 0 differs from lines 1..3, the real machine's
+    // first-line geometry is a missing stimulus detail; if all lines agree
+    // (and the pipeline TB already showed clean decoding), the corruption
+    // is downstream of the pipeline (adapter/framework).
+    // DE-MAP (same pass): count DE windows per frame, find where the first
+    // DE window starts (line offset from video_vs), and sample sel_vbl /
+    // sel_hbl / ntsc_vbl on the first lines - to test whether the first
+    // active line after VBL is missing its DE window (191 vs 192).
+    // ------------------------------------------------------------------
+    reg        mh_r, nh_r;
+    reg [10:0] hpos_m, hpos_n;
+    reg [3:0]  ln_idx;
+    reg [10:0] m_fall [0:4];
+    reg [10:0] n_fall [0:4];
+    reg [23:0] edge_rgb_n [0:4];
+    // DE map
+    reg        de_r2;
+    reg [10:0] de_len;
+    reg [8:0]  de_lines;      // DE windows this frame
+    reg [4:0]  first_de_ln;   // line offset of first DE window (0xFF = none)
+    reg [15:0] vbl_sample;    // {sel_vbl at line start, ntsc_vbl, sel_hbl, ...} first 4 lines
+    reg [3:0]  line_states;   // per first-4-lines: bit l = DE active at that line's active window
+    integer    de_frames;
+    reg        de_seen;
+    reg [10:0] vs_hpos, hs_hpos;
+    reg [15:0] hs_per_frame;
+    reg [3:0]  hs_dump_idx;
+    always @(posedge video_pclk) begin
+        if (video_vs) $display("SYNC VS t=%0t hpos_m=%0d ln=%0d", $time, hpos_m[10:0], ln_idx);
+        if (video_hs) begin
+            if (hs_dump_idx < 8) $display("SYNC HS t=%0t hpos_m=%0d ln=%0d # %0d", $time, hpos_m[10:0], ln_idx, hs_dump_idx);
+            hs_per_frame <= hs_per_frame + 16'd1;
+            hs_dump_idx <= hs_dump_idx + 4'd1;
+        end
+        if (mh_r && !dut.m_hbl) $display("SYNC MHFALL t=%0t", $time);
+        mh_r <= dut.m_hbl;
+        nh_r <= dut.ntsc_hbl;
+        de_r2 <= video_de;
+        // DE window tracking
+        if (video_de && !de_r2) begin
+            de_len <= 10'd1;
+            if (!de_seen) begin
+                de_seen <= 1'b1;
+                first_de_ln <= ln_idx[4:0];
+            end
+        end else if (video_de) de_len <= de_len + 10'd1;
+        if (!video_de && de_r2) begin
+            if (de_len > 0) de_lines <= de_lines + 1'b1;
+            de_len <= 10'd0;
+        end
+        if (video_vs) begin
+            ln_idx    <= 4'd0;
+            hpos_m    <= 10'd0;
+            hpos_n    <= 10'd0;
+            de_lines  <= 9'd0;
+            de_seen   <= 1'b0;
+            first_de_ln <= 5'd31;
+            line_states <= 4'd0;
+            hs_per_frame <= 16'd0;
+            hs_dump_idx <= 4'd0;
+        end else begin
+            if (!mh_r && dut.m_hbl) begin          // machine line start
+                hpos_m <= 10'd0;
+                if (ln_idx < 4'd15) ln_idx <= ln_idx + 4'd1;
+            end else hpos_m <= (hpos_m == 11'd2047) ? 11'd0 : hpos_m + 11'd1;
+            if (!nh_r && dut.ntsc_hbl) begin       // pipeline line start
+                hpos_n <= 10'd0;
+            end else hpos_n <= (hpos_n == 11'd2047) ? 11'd0 : hpos_n + 11'd1;
+            if (mh_r && !dut.m_hbl && ln_idx < 5) m_fall[ln_idx] <= hpos_m;
+            if (nh_r && !dut.ntsc_hbl && ln_idx < 5) begin
+                n_fall[ln_idx] <= hpos_n;
+                edge_rgb_n[ln_idx] <= dut.ntsc_rgb;
+            end
+            if (ln_idx < 4 && video_de) line_states <= line_states | (1'b1 << ln_idx);
+            if (hpos_m == 10'd600 && ln_idx < 4) begin : st
+                vbl_sample <= {dut.sel_vbl, dut.ntsc_vbl, dut.sel_hbl, dut.ntsc_hbl,
+                               vbl_sample[11:0]};
+            end
+        end
+        if (video_vs && frame_cnt > 4) begin
+            $display("EDGE F%0d m_hbl falls : %0d %0d %0d %0d %0d",
+                     frame_cnt, m_fall[0], m_fall[1], m_fall[2], m_fall[3], m_fall[4]);
+            $display("EDGE F%0d n_hbl falls : %0d %0d %0d %0d %0d",
+                     frame_cnt, n_fall[0], n_fall[1], n_fall[2], n_fall[3], n_fall[4]);
+            $display("EDGE F%0d de_windows=%0d first_de_ln=%0d line_states=%b vbl_sample=%b",
+                     frame_cnt, de_lines, first_de_ln, line_states, vbl_sample);
+            $display("EDGE F%0d vs/hs: (see SYNC lines above; contract: HS >=3 cycles AFTER VS)",
+                     frame_cnt);
+            $display("EDGE F%0d hs_per_frame=%0d", frame_cnt, hs_per_frame);
+            de_frames <= de_frames + 1;
+        end
+    end
+
+    // ------------------------------------------------------------------
     // Diagnostic taps (public for pocket_main.cpp)
     // ------------------------------------------------------------------
     reg  [31:0] e74a /* verilator public */;
