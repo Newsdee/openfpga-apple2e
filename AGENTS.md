@@ -239,6 +239,26 @@ Symptom of the failure mode: a compile that runs for **hours** in the Fitter, no
 minutes. If the Fitter is thrashing, check the register count in `map.summary`
 before waiting it out.
 
+## The Verilog-2001 trap (Quartus 17 `.v` files) — cost a 16:05 compile fail (2026-10-26)
+
+Quartus 17 parses `.v` files as **Verilog-2001**, while Verilator parses the same
+file as SystemVerilog by default. Anything SV-only compiles clean in the sim
+harness and then dies in A&S with `Error (10170) ... near text: "'"`:
+
+- **Size casts `N'(expr)`** — hit on 2026-10-26 (`2'(colour_opt_m[1:0] + 2'd1)`
+  in `apf_stream_video_top.v`, 0.2.6 colour-knob merge). The donor
+  `machine/osk/virtual_keyboard_controller.sv` had 15 of these and was fixed the
+  same way (see the comment above the `virtual_keyboard_controller_q17.sv`
+  port). In new `.v` code: never use `N'(expr)`; write a 2-bit wire and let the
+  self-determined context size the operation.
+- `parameter string`, `logic`/`bit` types, `typedef`, `always_ff/always_comb`,
+  multi-dimensional unpacked array ports.
+
+Verilator passing is NOT evidence of Quartus parseability. Before handing a
+build to the owner, grep the touched `.v` files for `'(` size-cast patterns
+(and the other SV-only forms above). `.sv` files are parsed as SystemVerilog by
+Quartus 17 and may use these; only `.v` is restricted.
+
 ## Core JSON files
 
 All manifests live **only** in `sd_root/Cores/Newsdee.Apple2e/`

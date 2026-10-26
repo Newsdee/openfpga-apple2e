@@ -14,7 +14,7 @@
         "value_off": 0
       },
       {
-        "name": "Display Mode",
+        "name": "Colour Preset",
         "id": 4,
         "type": "list",
         "enabled": true,
@@ -23,26 +23,34 @@
         "defaultval": 0,
         "address": "0x01F00004",
         "options": [
-          { "value": 0, "name": "Colour" },
-          { "value": 1, "name": "Monochrome" },
-          { "value": 2, "name": "Green" },
-          { "value": 3, "name": "Amber" }
-        ]
-      },
-      {
-        "name": "Colour Preset",
-        "id": 5,
-        "type": "list",
-        "enabled": true,
-        "persist": true,
-        "writeonly": true,
-        "defaultval": 0,
-        "address": "0x01F00008",
-        "options": [
-          { "value": 0, "name": "NTSC //e" },
-          { "value": 1, "name": "Old TV" },
-          { "value": 2, "name": "AppleWin" },
-          { "value": 3, "name": "Muted" }
+          {
+            "value": 0,
+            "name": "NTSC //e"
+          },
+          {
+            "value": 1,
+            "name": "Old TV"
+          },
+          {
+            "value": 2,
+            "name": "AppleWin"
+          },
+          {
+            "value": 3,
+            "name": "Muted"
+          },
+          {
+            "value": 4,
+            "name": "Monochrome"
+          },
+          {
+            "value": 5,
+            "name": "Green"
+          },
+          {
+            "value": 6,
+            "name": "Amber"
+          }
         ]
       }
     ],

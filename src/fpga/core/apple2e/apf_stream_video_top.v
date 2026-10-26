@@ -259,45 +259,51 @@ always @(posedge clk_74a)
 // Joystick mode is now hardwired to Absolute at the instance below.
 // The 01F0xxxx read-back wildcard stays in its proven 09:26 form.
 
-// ---- NTSC video option words (2026-10-26, plan §4: exactly two knobs) ----
-// Both interact.json entries are "writeonly": true, so the host NEVER reads
-// these addresses back. That is a deliberate design choice, not a shortcut: it
-// lets the 01F0xxxx read-back wildcard below stay byte-identical to its proven
-// 09:26 form, which is the exact logic whose modification was implicated in the
-// J7/J9 disk-load failures. Only the write side grows, and it grows in the same
-// shape as the cfg_reboot_word latch that has always worked.
-//
-// Bridge-domain (clk_74a) registers, so like cfg_reboot_word they must survive
-// machine_reset - they hold a host preference, not machine state.
-// Defaults match the previously hardwired values exactly (SCREEN_MODE 2'b00
-// Colour, comp_preset 2'd0 Calibrated), so behaviour is unchanged until the user
-// moves an option.
-reg [31:0] cfg_display_word = 32'd0;   // [1:0] = SCREEN_MODE
-reg [31:0] cfg_preset_word  = 32'd0;   // [1:0] = comp_preset
-always @(posedge clk_74a) begin
+// ---- Colour Preset (MERGED) option word (2026-10-26, 0.2.6) ----
+// The former two knobs ("Display Mode" @0x01F00004 + "Colour Preset" @
+// 0x01F00008) are merged into ONE writeonly list (interact.json id 4,
+// 7 options) - saves one of the APF's 16 interact entries:
+//   0 = NTSC //e   (colour, preset 0)     4 = Monochrome
+//   1 = Old TV     (colour, preset 1)     5 = Green
+//   2 = AppleWin   (colour, preset 2)     6 = Amber
+//   3 = Muted      (colour, preset 3)
+// Still writeonly: the host never reads it back, so the 01F0xxxx read-back
+// wildcard stays byte-identical to its proven 09:26 form (the J7/J9
+// constraint). 0x01F00008 is now dead - no latch, reads fall through to
+// the wildcard exactly as before.
+// Bridge-domain (clk_74a) register, so like cfg_reboot_word it must survive
+// machine_reset - it holds a host preference, not machine state.
+// Default 0 = (colour, preset 0) = the previously hardwired picture
+// (SCREEN_MODE 2'b00, comp_preset 2'd0), so behaviour is unchanged until
+// the user moves the option.
+// Decode (machine domain, after CDC): [2] clear -> colour, comp_preset =
+// [1:0], SCREEN_MODE = 0; [2] set -> SCREEN_MODE = [1:0] + 1 (1..3 = the
+// mono variants: 4=Monochrome, 5=Green, 6=Amber), comp_preset = 0
+// (irrelevant off the colour path).
+reg [31:0] cfg_colour_word = 32'd0;    // [2:0] = option value
+always @(posedge clk_74a)
     if (bridge_wr && bridge_addr == 32'h01F00004)
-        cfg_display_word <= bridge_wr_data;
-    if (bridge_wr && bridge_addr == 32'h01F00008)
-        cfg_preset_word  <= bridge_wr_data;
-end
+        cfg_colour_word <= bridge_wr_data;
 
 // bridge(74.25) -> machine(14.318) CDC, same synch_3 pattern as the reboot
-// option above. Per-bit synchronization means a 2-bit value can transiently
-// present a mixed code while it settles (e.g. 3 -> 0 may pass through 1 or 2).
-// For these knobs that is at most one frame of a different picture mode while
-// the user is actively changing the option, which is cosmetically harmless; it
-// is not acceptable for a multi-bit datapath value, and would need a handshake
-// or gray coding if these ever became one.
-wire [1:0] display_mode_m;
-wire [1:0] comp_preset_m;
-synch_3 #(.WIDTH(2)) u_display_mode_sync (
-    .i(cfg_display_word[1:0]), .o(display_mode_m),
+// option above. Per-bit synchronization means the 3-bit value can
+// transiently present a mixed code while it settles (e.g. 3 -> 4 may pass
+// through 5 or 6). For this knob that is at most one frame of a different
+// picture mode while the user is actively changing the option, which is
+// cosmetically harmless; it is not acceptable for a multi-bit datapath
+// value, and would need a handshake or gray coding if these ever became one.
+wire [2:0] colour_opt_m;
+synch_3 #(.WIDTH(3)) u_colour_opt_sync (
+    .i(cfg_colour_word[2:0]), .o(colour_opt_m),
     .clk(clk_core_14318), .rise(), .fall()
 );
-synch_3 #(.WIDTH(2)) u_comp_preset_sync (
-    .i(cfg_preset_word[1:0]), .o(comp_preset_m),
-    .clk(clk_core_14318), .rise(), .fall()
-);
+wire        colour_on_m    = ~colour_opt_m[2];
+// Verilog-2001 safe (no SV size casts - Quartus 17 rejects `N'(expr)` in
+// .v files, Error 10170): the add is 2-bit self-determined, so
+// [1:0]+1 gives 4->1, 5->2, 6->3.
+wire [1:0] mono_mode_sel  = colour_opt_m[1:0] + 2'd1;
+wire [1:0] display_mode_m  = colour_on_m ? 2'b00 : mono_mode_sel;
+wire [1:0] comp_preset_m   = colour_on_m ? colour_opt_m[1:0] : 2'b00;
 
 // cart is unused, so set all level translators accordingly
 // directions are 0:IN, 1:OUT
@@ -737,9 +743,11 @@ wire [23:0] ntsc_rgb;
 wire        ntsc_hbl, ntsc_vbl, ntsc_hs, ntsc_vs;
 wire        ntsc_ioctl_wait;   // must never assert (downloads are tied off)
 
-// Fixed configuration per plan section 4 (owner decisions 2026-10-24):
-// exactly TWO user-facing knobs exist (SCREEN_MODE, comp_preset) and v1 ships
-// both as constants. Everything else is hardwired and must NOT be exposed:
+// Fixed configuration per plan section 4 (owner decisions 2026-10-24),
+// updated 2026-10-26 (0.2.6): the two user-facing knobs (SCREEN_MODE,
+// comp_preset) are MERGED into the single "Colour Preset" option word
+// (cfg_colour_word) - see its comment. Everything else is hardwired and
+// must NOT be exposed:
 //   use_composite=1 (always composite, no RGB-monitor mode)
 //   NTSC_VERTICAL_COMB=1 (comb always on)
 //   LO_RES_TEXT=1, comp_hue_adj=0, bright/sat/contrast offsets 0
@@ -753,7 +761,7 @@ video_pipeline_q17 ntsc_pipe (
     .COLOR_LINE         (m_col_line),
     .TEXT_MODE          (m_text_mode),
     .LO_RES_TEXT        (1'b1),
-    .SCREEN_MODE        (display_mode_m),  // OSD "Display Mode" (writeonly)
+    .SCREEN_MODE        (display_mode_m),  // "Colour Preset" merged option (writeonly)
     .COLOR_PALETTE      (2'd0),
     .RUN_FILL_OK        (m_run_fill_ok),
     .NTSC_VERTICAL_COMB (1'b1),
@@ -776,7 +784,7 @@ video_pipeline_q17 ntsc_pipe (
     .reset              (machine_reset),
     .machine_ce         (1'b1),
     .use_composite      (1'b1),
-    .comp_preset        (comp_preset_m),   // OSD "Colour Preset" (writeonly)
+    .comp_preset        (comp_preset_m),   // "Colour Preset" merged option (writeonly)
     .comp_hue_adj       (5'd0),
     .comp_bright_st     (2'd0),
     .comp_sat_st        (2'd0),
@@ -1334,18 +1342,21 @@ end
 
 // ---- on-screen diagnostic (temporary, M0 only) ----
 wire [23:0] ovl_rgb;
-// J11 (2026-10-25): overlay visibility = OSK visible OR ~4.7 s after each
-// machine reset (2026-10-25 rev2: shortened from ~9.4 s - owner found the
-// longer window "always on" in practice). The boot window covers the
-// disk-load/verify diagnostics (they happen while the keyboard is closed)
-// and re-arms on every reset, including the "Reboot on disk change" cold
-// reboots. Machine-domain only - no bridge read-back (J7/J9 two-line
-// mystery). Keyboard open (Start) shows diagnostics at any time.
+// J11 (2026-10-25): overlay visibility = ~4.7 s after each machine reset
+// (2026-10-25 rev2: shortened from ~9.4 s - owner found the longer window
+// "always on" in practice). The boot window covers the disk-load/verify
+// diagnostics (they happen while the keyboard is closed) and re-arms on
+// every reset, including the "Reboot on disk change" cold reboots.
+// Machine-domain only - no bridge read-back (J7/J9 two-line mystery).
+// 0.2.6: the OSK-visible escape hatch (J11: "keyboard open shows diagnostics
+// at any time") is REMOVED per owner request - while the on-screen keyboard
+// is open the screen belongs to the keyboard; the same diagnostics remain
+// available in the 0xF9xxxxxx bridge debug reads.
 reg  [25:0] dbg_win_cnt = 26'd0;
 always @(posedge clk_core_14318)
     if (machine_reset) dbg_win_cnt <= 26'd0;
     else if (dbg_win_cnt != 26'h3FFFFF) dbg_win_cnt <= dbg_win_cnt + 26'd1;
-wire        ovl_debug_en = osk_visible | (dbg_win_cnt != 26'h3FFFFF);
+wire        ovl_debug_en = (dbg_win_cnt != 26'h3FFFFF);
 
 sdram_status_overlay #(.SHOW_FP(FP_DIAG), .OVL_DBG(OVL_DEBUG)) ovl (
     .clk(clk_core_14318), .reset(machine_reset),

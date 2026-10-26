@@ -1,0 +1,59 @@
+{
+  "interact": {
+    "magic": "APF_VER_1",
+    "variables": [
+      {
+        "name": "Reboot on load",
+        "id": 2,
+        "type": "check",
+        "enabled": true,
+        "persist": true,
+        "defaultval": 1,
+        "address": "0x01F00000",
+        "value": 1,
+        "value_off": 0
+      },
+      {
+        "name": "Colour Preset",
+        "id": 4,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "defaultval": 0,
+        "address": "0x01F00004",
+        "options": [
+          {
+            "value": 0,
+            "name": "NTSC //e"
+          },
+          {
+            "value": 1,
+            "name": "Old TV"
+          },
+          {
+            "value": 2,
+            "name": "AppleWin"
+          },
+          {
+            "value": 3,
+            "name": "Muted"
+          },
+          {
+            "value": 4,
+            "name": "Monochrome"
+          },
+          {
+            "value": 5,
+            "name": "Green"
+          },
+          {
+            "value": 6,
+            "name": "Amber"
+          }
+        ]
+      }
+    ],
+    "messages": []
+  }
+}

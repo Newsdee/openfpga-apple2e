@@ -905,6 +905,91 @@ module tb_pocket_boot;
         $display("TB: interact read-back check done (reboot=1, no joystick option) t=%t", $time);
     end
 
+    // ------------------------------------------------------------------
+    // TEMPORARY 0.2.6 probe (remove after the 0.2.6 hardware build is
+    // verified): merged "Colour Preset" decode + OSK overlay gate.
+    //   1) write 0..6 into 0x01F00004, verify the decoded machine-domain
+    //      (display_mode_m, comp_preset_m):
+    //        v : 0  1  2  3  4  5  6
+    //        dm: 0  0  0  0  1  2  3
+    //        cp: 0  1  2  3  0  0  0
+    //   2) 0x01F00008 must be DEAD after the merge: a write there changes
+    //      nothing (no latch; reads fall into the 01F0xxxx wildcard).
+    //   3) after the 4.7 s boot window closes, pulse START (APF bit 15)
+    //      to open the OSK: while osk_visible=1, ovl_debug_en must be 0.
+    //      (Toggle again to close; the overlay stays hidden - the window
+    //      is closed. Uses pad_key, which the +PDLPROBE run also drives -
+    //      the PDL probe is off in default runs.)
+    // ------------------------------------------------------------------
+    integer co_v;
+    reg [1:0] co_dm_exp, co_cp_exp;
+    initial begin
+        #3_000_000;   // after the 1 ms read-back check, before much matters
+        for (co_v = 0; co_v < 7; co_v = co_v + 1) begin
+            hb_wr(32'h01F00004, 32'(co_v));
+            #100_000;   // CDC settle + margin
+            // expected values from the OPTION SPEC (not the DUT expression):
+            //   v:  0     1     2     3     4     5     6
+            //   dm: 0     0     0     0     1     2     3
+            //   cp: 0     1     2     3     0     0     0
+            case (co_v)
+                3'd0: begin co_dm_exp = 2'd0; co_cp_exp = 2'd0; end
+                3'd1: begin co_dm_exp = 2'd0; co_cp_exp = 2'd1; end
+                3'd2: begin co_dm_exp = 2'd0; co_cp_exp = 2'd2; end
+                3'd3: begin co_dm_exp = 2'd0; co_cp_exp = 2'd3; end
+                3'd4: begin co_dm_exp = 2'd1; co_cp_exp = 2'd0; end
+                3'd5: begin co_dm_exp = 2'd2; co_cp_exp = 2'd0; end
+                default: begin co_dm_exp = 2'd3; co_cp_exp = 2'd0; end
+            endcase
+            if (dut.display_mode_m !== co_dm_exp || dut.comp_preset_m !== co_cp_exp)
+                $fatal(1, "TB: COLOUR v=%0d -> dm=%b cp=%b, expected dm=%b cp=%b",
+                       co_v, dut.display_mode_m, dut.comp_preset_m, co_dm_exp, co_cp_exp);
+            $display("TB: COLOUR v=%0d -> dm=%b cp=%b OK t=%0t", co_v, co_dm_exp, co_cp_exp, $time);
+        end
+        // dead-address check: 0x01F00008 has no latch anymore
+        hb_wr(32'h01F00004, 32'd0);
+        #100_000;
+        hb_rd(32'h01F00008, ib_d);   // wildcard read (informational)
+        $display("TB: COLOUR 0x01F00008 readback = 0x%08h (wildcard, informational) t=%0t", ib_d, $time);
+        hb_wr(32'h01F00008, 32'd5);
+        #100_000;
+        if (dut.display_mode_m !== 2'd0 || dut.comp_preset_m !== 2'd0)
+            $fatal(1, "TB: COLOUR 0x01F00008 write took effect (dm=%b cp=%b) - latch must be GONE",
+                   dut.display_mode_m, dut.comp_preset_m);
+        $display("TB: COLOUR 0x01F00008 is dead (no latch) t=%0t", $time);
+
+        // OSK overlay gate: only meaningful after the boot window closes.
+        // The window re-arms on every machine reset ("Reboot on disk
+        // change"), so wait for a STABLE closed window: closed, still
+        // closed 2 ms later, and no reset in flight.
+        forever begin
+            wait (dut.dbg_win_cnt == 26'h3FFFFF);
+            #2_000_000;
+            if (dut.dbg_win_cnt == 26'h3FFFFF && !dut.machine_reset) break;
+        end
+        #100_000;
+        if (dut.ovl_debug_en !== 1'b0)
+            $fatal(1, "TB: OVL boot window not closed (dbg_win_cnt=%0d)", dut.dbg_win_cnt);
+        pad_key = 32'h8000;      // START (APF bit 15) = OSK visibility toggle
+        #2_000_000;              // > the 1.4 ms OSK debounce
+        pad_key = 32'd0;
+        wait (dut.osk_visible === 1'b1);
+        #100_000;
+        if (dut.ovl_debug_en !== 1'b0)
+            $fatal(1, "TB: OVL overlay visible while OSK open (ovl_debug_en=%b) - must be hidden", dut.ovl_debug_en);
+        $display("TB: OVL overlay hidden while OSK open (osk_visible=1, ovl_debug_en=0) t=%0t", $time);
+        // let the release latch fall (30 ms stable-low) before the 2nd press
+        #40_000_000;
+        pad_key = 32'h8000;
+        #2_000_000;
+        pad_key = 32'd0;
+        wait (dut.osk_visible === 1'b0);
+        #100_000;
+        if (dut.ovl_debug_en !== 1'b0)
+            $fatal(1, "TB: OVL overlay re-appeared after OSK closed (window still closed)");
+        $display("TB: OVL all checks passed t=%0t", $time);
+    end
+
     // auto-boot: fire the host cycle at 2 ms (unless the C++ side poked
     // action_go first)
     initial begin
