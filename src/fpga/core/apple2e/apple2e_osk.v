@@ -67,7 +67,14 @@ module apple2e_osk #(
     output wire        command_reset,
     // OSK visibility (Start toggle) - the top freezes (not zeroes) the
     // joystick/paddle path while the OSK is on screen
-    output wire        osk_visible
+    output wire        osk_visible,
+    // joy2key (2026-10-26, PLAN_JOY2KEY_2026-10-26.md): gamepad -> Apple II
+    // keystrokes. The top's joy_to_key instance drives these; kbd injects
+    // them independently of the OSK/virtual path (the JOY_TO_KEY macro is
+    // defined in the QSF / Verilator build). The top gates the feature's
+    // enable, so this is a straight pass-through.
+    input  wire [6:0]  joy_key_code,
+    input  wire        joy_key_press
 );
 
     // ------------------------------------------------------------------
@@ -268,7 +275,9 @@ module apple2e_osk #(
         .closed_apple(closed_apple),
         .soft_reset(kb_soft_reset),
         .video_toggle(kb_video_toggle),
-        .palette_toggle(kb_palette_toggle)
+        .palette_toggle(kb_palette_toggle),
+        .joy_key_code(joy_key_code),
+        .joy_key_press(joy_key_press)
     );
 
     // ------------------------------------------------------------------

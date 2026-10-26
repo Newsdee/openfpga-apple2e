@@ -83,6 +83,7 @@ verilator_bin --cc --timing -j 4 \
     --Mdir obj_dir \
     -Wno-fatal -Wno-undriven -Wno-unused -Wno-width -Wno-style -Wno-latch \
     -Wno-DECLFILENAME \
+    -DJOY_TO_KEY=1 \
     -CFLAGS "-std=c++17 -O2 -I$SDL_INC -DSDL_MAIN_HANDLED" \
     -LDFLAGS "-lSDL2 -lopengl32 -lgdi32 -limm32" \
     pocket_main.cpp \
@@ -132,6 +133,7 @@ verilator_bin --cc --timing -j 4 \
     "$ROOT/machine/cpu/wdc65c02/cpu_alu.sv" \
     "$ROOT/machine/osk/virtual_keyboard_controller.sv" \
     "$ROOT/machine/osk/virtual_keyboard_overlay.sv" \
+    "$ROOT/machine/osk/joy_to_key.v" \
     "$ROOT/machine/video/video_pipeline_q17.sv" \
     "$ROOT/machine/video/apple_composite_q17.sv" \
     "$ROOT/machine/video/composite_decoder_q17.sv" \

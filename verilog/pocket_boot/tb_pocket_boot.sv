@@ -946,17 +946,14 @@ module tb_pocket_boot;
                        co_v, dut.display_mode_m, dut.comp_preset_m, co_dm_exp, co_cp_exp);
             $display("TB: COLOUR v=%0d -> dm=%b cp=%b OK t=%0t", co_v, co_dm_exp, co_cp_exp, $time);
         end
-        // dead-address check: 0x01F00008 has no latch anymore
-        hb_wr(32'h01F00004, 32'd0);
+        // (0.2.7 note) the old 0x01F00008 dead-address check is REMOVED: that
+        // address is now allocated to the Direction Keys option (id 5), and
+        // its "write 5, expect nothing" probe would corrupt the live preset
+        // register (5 is not a valid preset - the loader maps it to default:
+        // preset 4). See the J2K probe below, which exercises 0x01F00008/0C.
+        hb_wr(32'h01F00004, 32'd0);   // restore colour default (sweep left it at 6)
         #100_000;
-        hb_rd(32'h01F00008, ib_d);   // wildcard read (informational)
-        $display("TB: COLOUR 0x01F00008 readback = 0x%08h (wildcard, informational) t=%0t", ib_d, $time);
-        hb_wr(32'h01F00008, 32'd5);
-        #100_000;
-        if (dut.display_mode_m !== 2'd0 || dut.comp_preset_m !== 2'd0)
-            $fatal(1, "TB: COLOUR 0x01F00008 write took effect (dm=%b cp=%b) - latch must be GONE",
-                   dut.display_mode_m, dut.comp_preset_m);
-        $display("TB: COLOUR 0x01F00008 is dead (no latch) t=%0t", $time);
+        $display("TB: COLOUR checks done t=%0t", $time);
 
         // OSK overlay gate: only meaningful after the boot window closes.
         // The window re-arms on every machine reset ("Reboot on disk
@@ -988,6 +985,237 @@ module tb_pocket_boot;
         if (dut.ovl_debug_en !== 1'b0)
             $fatal(1, "TB: OVL overlay re-appeared after OSK closed (window still closed)");
         $display("TB: OVL all checks passed t=%0t", $time);
+    end
+
+    // ------------------------------------------------------------------
+    // TEMPORARY 0.2.7 probe (remove after joy2key hardware verification).
+    // joy2key = gamepad -> Apple II keystrokes (PLAN_JOY2KEY_2026-10-26.md):
+    // the pinned joy_to_key module, driven by the top's preset map loader.
+    // Runs only after machine reset releases (the WOZ ingest holds reset),
+    // and starts 1.5 s after the OVL probe's window so the two probes never
+    // share pad_key.
+    //   1) default Off/Off: blank table - presses emit nothing
+    //   2) each Direction preset: all 4 directions emit the exact codes
+    //      (spec table below - also the byte-order guard: byte0=right key,
+    //      byte3=up key; the donor's Bug B transposed these and reached
+    //      MiSTer hardware)
+    //   3) each Fire preset: A/B codes, preset 3 with Select held = layer
+    //   4) composition: dir+btn together, each axis reads its own bytes
+    //   5) end-to-end through keyboard.v: kbd.joy_valid + joy_code_latched
+    //      (proves the JOY_TO_KEY macro is compiled IN for this build -
+    //      without it these signals do not exist and the TB would not build)
+    //   Non-vacuity (mutation, done at dev time, NOT in the shipping TB):
+    //   swapping joy_j2k bits 2/3 must make check 2 fail with up/down
+    //   transposed. A bit-order test that passes with the order wrong is
+    //   exactly the donor's Bug B.
+    // ------------------------------------------------------------------
+    reg  [6:0] jk_code;
+    reg        jk_seen;
+    integer    jk_wait;
+    // joy_key_press is a SINGLE machine-clock pulse (~70 ns at 14.318 MHz) -
+    // time-based polling can never catch it (a 50 us poll step is ~700
+    // machine cycles). Latch it synchronously on the module's own clock
+    // (apple2's CLK_14M = clk_core_14318); the task clears the flag before
+    // each press and then just waits for it to be set.
+    reg        jk_pulse_seen = 1'b0;
+    reg  [6:0] jk_pulse_code = 7'd0;
+    always @(posedge dut.d1.CLK_14M) begin
+        if (dut.j2k.joy_key_press) begin
+            jk_pulse_seen <= 1'b1;
+            jk_pulse_code <= dut.j2k.joy_key_code;
+            $display("TB: J2K PULSE t=%0t code=%02h dir_m=%b btn_m=%b en=%b joy=%04b map0=%h map3=%h",
+                     $time, dut.j2k.joy_key_code, dut.j2k_dir_m, dut.j2k_btn_m,
+                     dut.j2k_en, dut.joy_j2k, dut.j2k.joy_map[0], dut.j2k.joy_map[3]);
+        end
+    end
+    task automatic j2k_press(input [31:0] mask, output [6:0] code, output seen);
+        begin
+            while (pad_key !== 32'd0) #100_000;  // another probe owns the pad
+            jk_pulse_seen = 1'b0;
+            pad_key = mask;
+            jk_wait = 0;
+            while (!jk_pulse_seen && jk_wait < 200) begin   // 200 x 50 us = 10 ms
+                #50_000;
+                jk_wait = jk_wait + 1;
+            end
+            pad_key = 32'd0;
+            #200_000;
+            code = jk_pulse_code;
+            seen = jk_pulse_seen;
+        end
+    endtask
+
+    initial begin
+        // The machine must be STABLY out of reset for the whole test: during
+        // the WOZ ingest the reset can pulse briefly (host state changes
+        // trigger reboots) and a bare wait() catches such a pulse - the
+        // module would then be back in reset and every press would be lost.
+        // Gate: released, and still released 2 ms later.
+        forever begin
+            wait (!dut.machine_reset);
+            #2_000_000;
+            if (!dut.machine_reset) break;
+        end
+        #1_500_000;   // after the OVL probe's OSK open/close window
+        #200_000;    // initial map-loader burst (16 machine clocks) + margin
+
+        // (1) default Off/Off: nothing maps to a key
+        $display("TB: J2K DBG pre-OffOff: cfg_dir=%0d cfg_btn=%0d dir_m=%b btn_m=%b loaded=%b/%b busy=%b en=%b osk=%b map0=%h map4=%h",
+                 dut.cfg_j2k_dir_word, dut.cfg_j2k_btn_word, dut.j2k_dir_m, dut.j2k_btn_m,
+                 dut.j2k_loaded_dir, dut.j2k_loaded_btn, dut.j2k_busy,
+                 dut.j2k_en, dut.osk_visible, dut.j2k.joy_map[0], dut.j2k.joy_map[4]);
+        j2k_press(32'd8, jk_code, jk_seen);            // right
+        if (jk_seen !== 1'b0)
+            $fatal(1, "TB: J2K Off/Off right emitted %02h - table must be blank", jk_code);
+        j2k_press(32'h10, jk_code, jk_seen);           // face A
+        if (jk_seen !== 1'b0)
+            $fatal(1, "TB: J2K Off/Off A emitted %02h - table must be blank", jk_code);
+        $display("TB: J2K Off/Off blank table OK t=%0t", $time);
+
+        // (2) Direction presets (writeonly @0x01F00008), spec table
+        //     preset:  right  left   down   up
+        //        1:    $15    $08    $0A    $0B
+        //        2:    $4C    $4A    $4B    $49
+        //        3:    $4B    $4A    $4D    $49
+        //        4:    $15    $08    $5A    $41
+        begin : j2k_dir
+            integer p;
+            reg [31:0] mk;   // right, left, down, up
+            reg [7:0]  ex;   // expected codes, same order
+            for (p = 1; p < 5; p = p + 1) begin
+                hb_wr(32'h01F00008, 32'(p));
+                #100_000;   // CDC + loader burst + margin
+                for (mk = 32'd8; mk != 32'd0; mk = mk >> 1) begin  // 8,4,2,1
+                    case (mk)
+                        32'd8: begin  // right
+                            case (p)
+                                3'd1: ex = 8'h15;
+                                3'd2: ex = 8'h4C;
+                                3'd3: ex = 8'h4B;
+                                default: ex = 8'h15;
+                            endcase
+                        end
+                        32'd4: begin  // left
+                            case (p)
+                                3'd1: ex = 8'h08;
+                                3'd2: ex = 8'h4A;
+                                3'd3: ex = 8'h4A;
+                                default: ex = 8'h08;
+                            endcase
+                        end
+                        32'd2: begin  // down
+                            case (p)
+                                3'd1: ex = 8'h0A;
+                                3'd2: ex = 8'h4B;
+                                3'd3: ex = 8'h4D;
+                                default: ex = 8'h5A;
+                            endcase
+                        end
+                        default: begin  // up
+                            case (p)
+                                3'd1: ex = 8'h0B;
+                                3'd4: ex = 8'h41;
+                                default: ex = 8'h49;
+                            endcase
+                        end
+                    endcase
+                    j2k_press(mk, jk_code, jk_seen);
+                    if (!jk_seen || jk_code !== ex[6:0]) begin
+                        $display("TB: J2K DBG p=%0d mk=%0d: dir_m=%b btn_m=%b loaded=%b/%b busy=%b cnt=%d en=%b osk=%b joy=%04b jdk=%b map0=%h map3=%h press=%b code=%02h",
+                                 p, mk, dut.j2k_dir_m, dut.j2k_btn_m,
+                                 dut.j2k_loaded_dir, dut.j2k_loaded_btn,
+                                 dut.j2k_busy, dut.j2k_cnt, dut.j2k_en,
+                                 dut.osk_visible, dut.joy_j2k, dut.j2k.joy_d,
+                                 dut.j2k.joy_map[0], dut.j2k.joy_map[3],
+                                 dut.j2k.joy_key_press, jk_code);
+                        $fatal(1, "TB: J2K dir p=%0d mk=%0d -> seen=%b code=%02h, expected %02h",
+                               p, mk, jk_seen, jk_code, ex);
+                    end
+                end
+                $display("TB: J2K dir preset %0d OK (last=up %02h) t=%0t",
+                         p, ex, $time);
+            end
+            hb_wr(32'h01F00008, 32'd0);
+            #100_000;
+        end
+
+        // (3) Fire presets (writeonly @0x01F0000C): A=$10, B=$20, Select=$4000
+        //     preset 1: A=U($55) B=O($4F)
+        //     preset 2: A=Space($20) B=Return($0D)
+        //     preset 3: A=U B=O, +Select: A->Space($20) B->Return($0D)
+        begin : j2k_btn
+            integer p;
+            reg [7:0] exA, exB;
+            for (p = 1; p < 4; p = p + 1) begin
+                hb_wr(32'h01F0000C, 32'(p));
+                #100_000;
+                case (p)
+                    3'd1: begin exA = 8'h55; exB = 8'h4F; end   // U / O
+                    3'd2: begin exA = 8'h20; exB = 8'h0D; end   // Space / Return
+                    default: begin exA = 8'h55; exB = 8'h4F; end // U/O + Select layer
+                endcase
+                j2k_press(32'h10, jk_code, jk_seen);   // A
+                if (!jk_seen || jk_code !== exA[6:0])
+                    $fatal(1, "TB: J2K btn p=%0d A -> seen=%b code=%02h, expected %02h",
+                           p, jk_seen, jk_code, exA);
+                j2k_press(32'h20, jk_code, jk_seen);   // B
+                if (!jk_seen || jk_code !== exB[6:0])
+                    $fatal(1, "TB: J2K btn p=%0d B -> seen=%b code=%02h, expected %02h",
+                           p, jk_seen, jk_code, exB);
+                if (p == 3) begin
+                    j2k_press(32'h4010, jk_code, jk_seen);   // A + Select
+                    if (!jk_seen || jk_code !== 7'h20)
+                        $fatal(1, "TB: J2K btn p=3 A+Sel -> seen=%b code=%02h, expected 20",
+                               jk_seen, jk_code);
+                    j2k_press(32'h4020, jk_code, jk_seen);   // B + Select
+                    if (!jk_seen || jk_code !== 7'h0D)
+                        $fatal(1, "TB: J2K btn p=3 B+Sel -> seen=%b code=%02h, expected 0D",
+                               jk_seen, jk_code);
+                end
+                $display("TB: J2K btn preset %0d OK (A=%02h B=%02h) t=%0t", p, exA, exB, $time);
+            end
+            hb_wr(32'h01F0000C, 32'd0);
+            #100_000;
+        end
+
+        // (4) composition: dir=3 + btn=1 - each axis reads its own bytes
+        hb_wr(32'h01F00008, 32'd3);
+        hb_wr(32'h01F0000C, 32'd1);
+        #200_000;
+        j2k_press(32'd1, jk_code, jk_seen);   // up -> I (dir bytes intact)
+        if (!jk_seen || jk_code !== 7'h49)
+            $fatal(1, "TB: J2K composition up -> seen=%b code=%02h, expected 49 (dir bytes)",
+                   jk_seen, jk_code);
+        j2k_press(32'h10, jk_code, jk_seen);  // A -> U (btn bytes intact)
+        if (!jk_seen || jk_code !== 7'h55)
+            $fatal(1, "TB: J2K composition A -> seen=%b code=%02h, expected 55 (btn bytes)",
+                   jk_seen, jk_code);
+        $display("TB: J2K composition (dir+btn independent) OK t=%0t", $time);
+
+        // (5) end-to-end through keyboard.v: the JOY_TO_KEY macro must be ON
+        //     in this build (without it kbd.joy_valid does not exist and this
+        //     file would not compile - the non-vacuity of the macro itself).
+        //     joy_valid is set 1 cycle after the press (no CPU involvement in
+        //     the SET - only in the clear), so a short timeout is enough.
+        j2k_press(32'd1, jk_code, jk_seen);   // up -> I
+        if (!jk_seen || jk_code !== 7'h49)
+            $fatal(1, "TB: J2K e2e up -> seen=%b code=%02h, expected 49", jk_seen, jk_code);
+        jk_wait = 0;
+        while (dut.osk.kbd.joy_valid !== 1'b1 && jk_wait < 1000) begin
+            #10_000;
+            jk_wait = jk_wait + 1;
+        end
+        if (dut.osk.kbd.joy_valid !== 1'b1)
+            $fatal(1, "TB: J2K kbd.joy_valid never set (macro path dead?)");
+        if (dut.osk.kbd.joy_code_latched !== 7'h49)
+            $fatal(1, "TB: J2K kbd.latched = %02h, expected 49 (macro path dead?)",
+                   dut.osk.kbd.joy_code_latched);
+        $display("TB: J2K kbd.joy_valid + latched 49 OK (macro in, end-to-end) t=%0t", $time);
+
+        // restore defaults (Off/Off)
+        hb_wr(32'h01F00008, 32'd0);
+        hb_wr(32'h01F0000C, 32'd0);
+        $display("TB: J2K all checks passed t=%0t", $time);
     end
 
     // auto-boot: fire the host cycle at 2 ms (unless the C++ side poked

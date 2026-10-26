@@ -860,7 +860,9 @@ apple2e_osk #(.RGB_IN(1'b1)) osk (
     .open_apple(osk_open_apple),
     .closed_apple(osk_closed_apple),
     .command_reset(osk_cmd_reset),
-    .osk_visible(osk_visible)
+    .osk_visible(osk_visible),
+    .joy_key_code(j2k_key_code),
+    .joy_key_press(j2k_key_press)
 );
 
 // ---- Joystick/paddle input (2026-10-25, PLAN_JOYSTICK_INPUT; J10) ----
@@ -929,6 +931,175 @@ pdl_timer u_pdl (
     .joy_an(joy_an_pdl),
     .joyx(joyx),
     .joyy(joyy)
+);
+
+// ---- joy2key (2026-10-26, PLAN_JOY2KEY_2026-10-26.md) ----
+// Gamepad -> Apple II keystrokes via the byte-pinned donor joy_to_key
+// (machine/osk/joy_to_key.v; the JOY_TO_KEY macro is defined in the QSF and
+// the Verilator build, so the joy-injection path in the pinned keyboard.v is
+// active - without it the feature would look wired and do nothing).
+//
+// Two writeonly list options (interact.json ids 5/6), both default Off (0):
+//   Direction Keys (0x01F00008): 0=Off 1=Cursor keys 2=IJKL 3=IJMK 4=A/Z
+//   Fire Buttons   (0x01F0000C): 0=Off 1=U/O 2=Space/Return 3=U/O+Select
+// Off is deliberately the default and doubles as the enable: the D-pad
+// already drives the paddles (J10), so enabling a preset makes the same
+// control do both jobs at once ("double duty" - the option help says to
+// enable these only for software that ignores the joystick). Off also makes
+// the illegal state (enabled, no map) unrepresentable.
+// Values cross bridge->machine with the standard synch_3 (same reasoning as
+// the video options: a transient mixed code is at worst one key press while
+// the user is actively changing the option).
+reg  [31:0] cfg_j2k_dir_word = 32'd0;
+reg  [31:0] cfg_j2k_btn_word = 32'd0;
+always @(posedge clk_74a) begin
+    if (bridge_wr && bridge_addr == 32'h01F00008)
+        cfg_j2k_dir_word <= bridge_wr_data;
+    if (bridge_wr && bridge_addr == 32'h01F0000C)
+        cfg_j2k_btn_word <= bridge_wr_data;
+end
+
+wire [2:0] j2k_dir_m, j2k_btn_m;
+synch_3 #(.WIDTH(3)) u_j2k_dir_sync (
+    .i(cfg_j2k_dir_word[2:0]), .o(j2k_dir_m),
+    .clk(clk_core_14318), .rise(), .fall()
+);
+synch_3 #(.WIDTH(3)) u_j2k_btn_sync (
+    .i(cfg_j2k_btn_word[2:0]), .o(j2k_btn_m),
+    .clk(clk_core_14318), .rise(), .fall()
+);
+
+// joy_to_key's bus convention (post-fix MiSTer order). DO NOT feed joy_dig:
+// its bits 2/3 are swapped and X/Y sit in the Start/Select slots - that is
+// the exact bit-order bug that reached MiSTer hardware once (Bug B).
+//   0=right 1=left 2=down 3=up 4=fire1(A) 5=fire2(B) 6=Start 7=Select
+//   8..11 = L,R,X,Y (APF bits 8,9,6,7); 12..15 unused
+wire [15:0] joy_j2k = {
+    4'b0000,                          // [15:12] L3,R3,L2,R2
+    cont1_key_m[7], cont1_key_m[6],   // [11:10] Y, X
+    cont1_key_m[9], cont1_key_m[8],   // [9:8]   R, L
+    cont1_key_m[14], cont1_key_m[15], // [7:6]   Select, Start
+    cont1_key_m[5],  cont1_key_m[4],  // [5:4]   fire2(B), fire1(A)
+    cont1_key_m[0],  cont1_key_m[1],  // [3:2]   up, down
+    cont1_key_m[2],  cont1_key_m[3]   // [1:0]   left, right
+};
+wire j2k_shift = cont1_key_m[14];     // Select = the module's shift input
+
+// Map loader: composes the 16-byte table from both preset values and drives
+// the donor's ioctl arm (16 bytes, one per machine clock) - to the module it
+// is indistinguishable from a host-streamed .a2k, so the donor's byte
+// validation (data>127 -> store 0) and "table survives reset" semantics come
+// for free. A future .a2k slot (plan Phase 2) is a second source for this
+// same arm. Both values are latched at burst start so a CDC settling
+// transition cannot compose one old and one new axis; the 1-cycle stability
+// gate keeps a burst from starting mid-settle; loaded_* make a redundant
+// reload impossible (idempotent - no spurious keystroke). A reset abandons
+// the burst; the 3'd7 loaded_* sentinel forces the first load at reset
+// release (defaults Off/Off = blank table, overwriting the donor's power-up
+// IJKM/UO table - that is what "both presets Off" means).
+reg  [4:0] j2k_cnt;
+reg        j2k_busy;
+reg  [2:0] j2k_ld_dir, j2k_ld_btn;
+reg  [2:0] j2k_loaded_dir = 3'd7;
+reg  [2:0] j2k_loaded_btn = 3'd7;
+reg  [2:0] j2k_dir_d1 = 3'd0;
+reg  [2:0] j2k_btn_d1 = 3'd0;
+
+wire j2k_stable  = (j2k_dir_m == j2k_dir_d1) && (j2k_btn_m == j2k_btn_d1);
+wire j2k_changed = (j2k_dir_d1 != j2k_loaded_dir) || (j2k_btn_d1 != j2k_loaded_btn);
+
+always @(posedge clk_core_14318) begin
+    if (machine_reset) begin
+        j2k_busy       <= 1'b0;
+        j2k_cnt        <= 5'd0;
+        j2k_ld_dir     <= 3'd0;
+        j2k_ld_btn     <= 3'd0;
+        j2k_loaded_dir <= 3'd7;
+        j2k_loaded_btn <= 3'd7;
+        j2k_dir_d1     <= 3'd0;
+        j2k_btn_d1     <= 3'd0;
+    end else begin
+        j2k_dir_d1 <= j2k_dir_m;
+        j2k_btn_d1 <= j2k_btn_m;
+        if (!j2k_busy) begin
+            if (j2k_stable && j2k_changed) begin
+                j2k_busy       <= 1'b1;
+                j2k_cnt        <= 5'd0;
+                j2k_ld_dir     <= j2k_dir_d1;
+                j2k_ld_btn     <= j2k_btn_d1;
+                j2k_loaded_dir <= j2k_dir_d1;
+                j2k_loaded_btn <= j2k_btn_d1;
+            end
+        end else if (j2k_cnt == 5'd15) begin
+            j2k_busy <= 1'b0;
+        end else begin
+            j2k_cnt <= j2k_cnt + 5'd1;
+        end
+    end
+end
+
+// Preset -> byte. Bytes 0-3 are right,left,down,up (that order IS the
+// .a2k byte order - the TB's byte-order guard exists to keep it so); 4-9
+// are A,B,L,R,X,Y unshifted; 10-15 the same with Select held.
+function [7:0] j2k_table_byte;
+    input [2:0] dir;
+    input [2:0] btn;
+    input [3:0] byt;
+    begin
+        if (byt < 4'd4) begin
+            case (dir)
+                3'd0:    j2k_table_byte = 8'h00;
+                3'd1:    j2k_table_byte = (byt == 4'd0) ? 8'h15 :
+                                       (byt == 4'd1) ? 8'h08 :
+                                       (byt == 4'd2) ? 8'h0A : 8'h0B;
+                3'd2:    j2k_table_byte = (byt == 4'd0) ? 8'h4C :
+                                       (byt == 4'd1) ? 8'h4A :
+                                       (byt == 4'd2) ? 8'h4B : 8'h49;
+                3'd3:    j2k_table_byte = (byt == 4'd0) ? 8'h4B :
+                                       (byt == 4'd1) ? 8'h4A :
+                                       (byt == 4'd2) ? 8'h4D : 8'h49;
+                default: j2k_table_byte = (byt == 4'd0) ? 8'h15 :
+                                       (byt == 4'd1) ? 8'h08 :
+                                       (byt == 4'd2) ? 8'h5A : 8'h41;
+            endcase
+        end else begin
+            case (btn)
+                3'd0:    j2k_table_byte = 8'h00;
+                3'd1:    j2k_table_byte = (byt == 4'd4) ? 8'h55 :
+                                       (byt == 4'd5) ? 8'h4F : 8'h00;
+                3'd2:    j2k_table_byte = (byt == 4'd4) ? 8'h20 :
+                                       (byt == 4'd5) ? 8'h0D : 8'h00;
+                default: j2k_table_byte = (byt == 4'd4)  ? 8'h55 :
+                                       (byt == 4'd5)  ? 8'h4F :
+                                       (byt == 4'd10) ? 8'h20 :
+                                       (byt == 4'd11) ? 8'h0D : 8'h00;
+            endcase
+        end
+    end
+endfunction
+
+wire [7:0] j2k_byte = j2k_table_byte(j2k_ld_dir, j2k_ld_btn, j2k_cnt[3:0]);
+
+// Enable: off while the OSK is open (the face buttons are the OSK's then -
+// the same ~osk_visible term the paddle path uses, so the two paths cannot
+// disagree), and off while both presets are Off.
+wire j2k_en = ~osk_visible & ((j2k_dir_m != 3'd0) | (j2k_btn_m != 3'd0));
+
+wire [6:0] j2k_key_code;
+wire       j2k_key_press;
+joy_to_key j2k (
+    .clk(clk_core_14318),
+    .reset(machine_reset),
+    .enable(j2k_en),
+    .joy(joy_j2k),
+    .shift(j2k_shift),
+    .ioctl_download(j2k_busy),
+    .ioctl_wr(j2k_busy),
+    .ioctl_addr({20'd0, j2k_cnt}),
+    .ioctl_data(j2k_byte),
+    .ioctl_index(8'h03),
+    .joy_key_code(j2k_key_code),
+    .joy_key_press(j2k_key_press)
 );
 
 apple2 d1 (

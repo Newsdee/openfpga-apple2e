@@ -29,6 +29,10 @@ check apple2_font_rom.v
 check keyboard.v
 check osk/virtual_keyboard_controller.sv
 check osk/virtual_keyboard_overlay.sv
+# joy2key (2026-10-26, PLAN_JOY2KEY_2026-10-26.md): pure Verilog-2001, imported
+# UNMODIFIED so the donor differential harness stays applicable; the Pocket
+# drives its ioctl arm with the preset map loader in apf_stream_video_top.v.
+check osk/joy_to_key.v
 check cpu/nmos6502/cpu_65c02.sv
 check cpu/nmos6502/cpu_alu.sv
 check cpu/wdc65c02/cpu_65c02.sv
