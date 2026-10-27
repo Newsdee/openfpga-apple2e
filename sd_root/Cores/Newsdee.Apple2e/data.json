@@ -11,6 +11,15 @@
                 "address": "0x00000000",
                 "size_maximum": 4194304,
                 "parameters": 9
+            },
+            {
+                "name": "joy2key profile",
+                "id": 3,
+                "required": false,
+                "extensions": [ "a2k" ],
+                "address": "0x01F10000",
+                "size_maximum": 16,
+                "parameters": 6
             }
         ]
     }

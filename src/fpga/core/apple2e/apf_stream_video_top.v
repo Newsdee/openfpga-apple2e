@@ -480,9 +480,7 @@ end
 // bridge data slot access
 // synchronous to clk_74a
 
-    wire    [9:0]   datatable_addr;
-    wire            datatable_wren;
-    wire    [31:0]  datatable_data;
+    wire    [9:0]   datatable_addr;   // driven by the .a2k poller (74a domain)
     wire    [31:0]  datatable_q;
 
 core_bridge_cmd icb (
@@ -560,8 +558,8 @@ core_bridge_cmd icb (
     .target_buffer_resp_struct  ( target_buffer_resp_struct ),
     
     .datatable_addr         ( datatable_addr ),
-    .datatable_wren         ( datatable_wren ),
-    .datatable_data         ( datatable_data ),
+    .datatable_wren         ( 1'b0 ),   // port A is read-only for us
+    .datatable_data         ( 32'd0 ),
     .datatable_q            ( datatable_q )
 
 );
@@ -960,6 +958,89 @@ always @(posedge clk_74a) begin
         cfg_j2k_btn_word <= bridge_wr_data;
 end
 
+// ---- .a2k profile slot (2026-10-27, joy2key Phase 2) ----
+// data.json id 3: APF clones the disk's base name (parameters bit2, so
+// Jungle Hunt.woz finds Jungle Hunt.a2k) and DMAs the 16-byte file to
+// 0x01F10000 on mount - OUTSIDE the 0x01F0xxxx read wildcard. required
+// false: a missing file is silently skipped (no writes, datatable size 0)
+// and the presets stay in force. bit3 read-only: we never write it back.
+//
+// Presence comes from the APF datatable, not from the writes: 2 words per
+// slot in data.json DECLARATION order (word 2k = id, 2k+1 = size in bytes;
+// layout verified against PCXT's disk_tds.c). The mf_datatable port-A read
+// is registered (1-cycle latency), so the poller samples q one cycle after
+// each address. We declare two slots, so the scan covers entries 0-1.
+//
+// A present file (size exactly 16) REPLACES the whole 16-byte table,
+// overriding the preset options (donor whole-byte semantics). The map has
+// no reset: like the donor's ioctl-loaded table it survives a machine
+// reset; presence drops (and the presets return) when the host clears the
+// size - e.g. remounting a disk that has no profile.
+
+// Byte capture (clk_74a), alongside the cfg latches.
+reg [7:0] a2k_map [0:15];
+always @(posedge clk_74a)
+    if (bridge_wr && bridge_addr[31:4] == 28'h01F1000)   // 0x01F10000..0F
+        a2k_map[bridge_addr[3:0]] <= bridge_wr_data[7:0];
+
+// Datatable poller (clk_74a): the first driver of the port-A wires of
+// core_bridge_cmd (they were undriven before).
+reg  [13:0] a2k_timer = 14'd0;
+reg  [2:0]  a2k_ps = 3'd0;        // 0 idle, 1 id word valid, 2 size word valid
+reg  [1:0]  a2k_k = 2'd0;      // slot entry index
+reg  [31:0] a2k_id_q = 32'd0;
+reg  [31:0] a2k_size_q = 32'd0;
+reg  [9:0]  datatable_addr_r = 10'd0;
+always @(posedge clk_74a) begin
+    if (a2k_timer == 14'hFFFF) begin
+        a2k_timer <= 14'd0;
+        if (a2k_ps == 3'd0) begin
+            datatable_addr_r <= 10'd0;    // word 0 = entry 0 id
+            a2k_k            <= 2'd0;    // restart from the first entry
+            a2k_ps           <= 3'd1;
+        end else if (a2k_ps == 3'd1) begin
+            a2k_id_q           <= datatable_q[15:0];
+            datatable_addr_r   <= {7'd0, {a2k_k, 1'b0} + 3'd1};   // entry k size word = 2k+1
+            a2k_ps             <= 3'd2;
+        end else begin
+            if (a2k_id_q == 16'd3)
+                a2k_size_q <= datatable_q;
+            if (a2k_k == 2'd1)
+                a2k_ps <= 3'd0;
+            else begin
+                a2k_k              <= a2k_k + 2'd1;
+                datatable_addr_r   <= {6'd0, {a2k_k + 2'd1, 1'b0}};   // next id word = 2(k+1)
+                a2k_ps             <= 3'd1;
+            end
+        end
+    end else
+        a2k_timer <= a2k_timer + 14'd1;
+end
+assign datatable_addr = datatable_addr_r;
+
+// Cross bridge->machine like the video options (a transient mixed value is
+// harmless: worst case one extra 16-cycle idempotent reload).
+wire [127:0] a2k_map_p = {a2k_map[15], a2k_map[14], a2k_map[13], a2k_map[12],
+                          a2k_map[11], a2k_map[10], a2k_map[9],  a2k_map[8],
+                          a2k_map[7],  a2k_map[6],  a2k_map[5],  a2k_map[4],
+                          a2k_map[3],  a2k_map[2],  a2k_map[1],  a2k_map[0]};
+wire [128:0] a2k_vec_74 = {a2k_size_q == 32'd16, a2k_map_p};
+wire [128:0] a2k_m;   // synch_3 output: must be a net for Quartus (Error 10663)
+synch_3 #(.WIDTH(129)) u_a2k_sync (
+    .i(a2k_vec_74), .o(a2k_m),
+    .clk(clk_core_14318), .rise(), .fall()
+);
+
+// 1-cycle settle gate in the machine domain (same pattern as the presets' d1
+// pair): bursts and compares only use the stable snapshot.
+reg  [128:0] a2k_d1 = 129'd0, a2k_d2 = 129'd0;
+always @(posedge clk_core_14318) begin
+    a2k_d1 <= a2k_m;
+    a2k_d2 <= a2k_d1;
+end
+wire a2k_stable_m   = (a2k_d1 == a2k_d2);
+wire a2k_present_m  = a2k_d1[128];
+
 wire [2:0] j2k_dir_m, j2k_btn_m;
 synch_3 #(.WIDTH(3)) u_j2k_dir_sync (
     .i(cfg_j2k_dir_word[2:0]), .o(j2k_dir_m),
@@ -1005,31 +1086,49 @@ reg  [2:0] j2k_loaded_dir = 3'd7;
 reg  [2:0] j2k_loaded_btn = 3'd7;
 reg  [2:0] j2k_dir_d1 = 3'd0;
 reg  [2:0] j2k_btn_d1 = 3'd0;
+// .a2k source: a present file replaces the whole table (donor semantics),
+// so the loaded-state tracking extends to the 128-bit map + presence bit.
+reg         j2k_ld_a2k_present = 1'b0;
+reg  [127:0] j2k_ld_a2k = 128'd0;
+reg         j2k_loaded_a2k_present = 1'b0;
+reg  [127:0] j2k_loaded_a2k = 128'd0;
 
 wire j2k_stable  = (j2k_dir_m == j2k_dir_d1) && (j2k_btn_m == j2k_btn_d1);
-wire j2k_changed = (j2k_dir_d1 != j2k_loaded_dir) || (j2k_btn_d1 != j2k_loaded_btn);
+wire j2k_a2k_changed = a2k_stable_m &&
+    ((a2k_d1[128] != j2k_loaded_a2k_present) ||
+     (a2k_d1[127:0] != j2k_loaded_a2k));
+wire j2k_changed = (j2k_dir_d1 != j2k_loaded_dir) || (j2k_btn_d1 != j2k_loaded_btn) ||
+                   j2k_a2k_changed;
 
 always @(posedge clk_core_14318) begin
     if (machine_reset) begin
-        j2k_busy       <= 1'b0;
-        j2k_cnt        <= 5'd0;
-        j2k_ld_dir     <= 3'd0;
-        j2k_ld_btn     <= 3'd0;
-        j2k_loaded_dir <= 3'd7;
-        j2k_loaded_btn <= 3'd7;
-        j2k_dir_d1     <= 3'd0;
-        j2k_btn_d1     <= 3'd0;
+        j2k_busy                 <= 1'b0;
+        j2k_cnt                  <= 5'd0;
+        j2k_ld_dir               <= 3'd0;
+        j2k_ld_btn               <= 3'd0;
+        j2k_loaded_dir           <= 3'd7;
+        j2k_loaded_btn           <= 3'd7;
+        j2k_dir_d1               <= 3'd0;
+        j2k_btn_d1               <= 3'd0;
+        j2k_ld_a2k_present       <= 1'b0;
+        j2k_ld_a2k               <= 128'd0;
+        j2k_loaded_a2k_present   <= 1'b0;
+        j2k_loaded_a2k           <= 128'd0;
     end else begin
         j2k_dir_d1 <= j2k_dir_m;
         j2k_btn_d1 <= j2k_btn_m;
         if (!j2k_busy) begin
             if (j2k_stable && j2k_changed) begin
-                j2k_busy       <= 1'b1;
-                j2k_cnt        <= 5'd0;
-                j2k_ld_dir     <= j2k_dir_d1;
-                j2k_ld_btn     <= j2k_btn_d1;
-                j2k_loaded_dir <= j2k_dir_d1;
-                j2k_loaded_btn <= j2k_btn_d1;
+                j2k_busy                 <= 1'b1;
+                j2k_cnt                  <= 5'd0;
+                j2k_ld_dir               <= j2k_dir_d1;
+                j2k_ld_btn               <= j2k_btn_d1;
+                j2k_loaded_dir           <= j2k_dir_d1;
+                j2k_loaded_btn           <= j2k_btn_d1;
+                j2k_ld_a2k_present       <= a2k_d1[128];
+                j2k_ld_a2k               <= a2k_d1[127:0];
+                j2k_loaded_a2k_present   <= a2k_d1[128];
+                j2k_loaded_a2k           <= a2k_d1[127:0];
             end
         end else if (j2k_cnt == 5'd15) begin
             j2k_busy <= 1'b0;
@@ -1087,12 +1186,40 @@ function [7:0] j2k_table_byte;
     end
 endfunction
 
-wire [7:0] j2k_byte = j2k_table_byte(j2k_ld_dir, j2k_ld_btn, j2k_cnt[3:0]);
+wire [7:0] j2k_preset_byte = j2k_table_byte(j2k_ld_dir, j2k_ld_btn, j2k_cnt[3:0]);
+
+// .a2k source: the latched file bytes, selected by table index.
+// Byte i sits at bits [7i:7i+7] of the packed vector (a2k_map_p packs
+// map[0] in the LEAST-significant byte, map[15] in the most).
+reg [7:0] j2k_a2k_byte;
+always @(*) begin
+    case (j2k_cnt[3:0])
+        4'd0:  j2k_a2k_byte = j2k_ld_a2k[7:0];
+        4'd1:  j2k_a2k_byte = j2k_ld_a2k[15:8];
+        4'd2:  j2k_a2k_byte = j2k_ld_a2k[23:16];
+        4'd3:  j2k_a2k_byte = j2k_ld_a2k[31:24];
+        4'd4:  j2k_a2k_byte = j2k_ld_a2k[39:32];
+        4'd5:  j2k_a2k_byte = j2k_ld_a2k[47:40];
+        4'd6:  j2k_a2k_byte = j2k_ld_a2k[55:48];
+        4'd7:  j2k_a2k_byte = j2k_ld_a2k[63:56];
+        4'd8:  j2k_a2k_byte = j2k_ld_a2k[71:64];
+        4'd9:  j2k_a2k_byte = j2k_ld_a2k[79:72];
+        4'd10: j2k_a2k_byte = j2k_ld_a2k[87:80];
+        4'd11: j2k_a2k_byte = j2k_ld_a2k[95:88];
+        4'd12: j2k_a2k_byte = j2k_ld_a2k[103:96];
+        4'd13: j2k_a2k_byte = j2k_ld_a2k[111:104];
+        4'd14: j2k_a2k_byte = j2k_ld_a2k[119:112];
+        default: j2k_a2k_byte = j2k_ld_a2k[127:120];
+    endcase
+end
+wire [7:0] j2k_byte = j2k_ld_a2k_present ? j2k_a2k_byte : j2k_preset_byte;
 
 // Enable: off while the OSK is open (the face buttons are the OSK's then -
 // the same ~osk_visible term the paddle path uses, so the two paths cannot
-// disagree), and off while both presets are Off.
-wire j2k_en = ~osk_visible & ((j2k_dir_m != 3'd0) | (j2k_btn_m != 3'd0));
+// disagree), and off while both presets are Off AND no .a2k file is
+// present. A present file is itself the enable.
+wire j2k_en = ~osk_visible & ((j2k_dir_m != 3'd0) | (j2k_btn_m != 3'd0) |
+                              a2k_present_m);
 
 wire [6:0] j2k_key_code;
 wire       j2k_key_press;

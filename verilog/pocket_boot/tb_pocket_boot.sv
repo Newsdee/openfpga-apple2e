@@ -1227,6 +1227,82 @@ module tb_pocket_boot;
                    dut.osk.kbd.joy_code_latched);
         $display("TB: J2K kbd.joy_valid + latched 49 OK (macro in, end-to-end) t=%0t", $time);
 
+        // (6) .a2k profile slot (data.json id 3 @0x01F10000, Phase 2):
+        //     the file REPLACES the whole 16-byte table, overriding the
+        //     presets; size->0 (remount without file) drops back to presets.
+        //     Datatable words (declaration order): 0/1 = disk slot,
+        //     2/3 = a2k slot (id / size in bytes); bridge 0xF8xx2xxx.
+        begin : j2k_a2k
+            // fallback presets while the file is absent:
+            //   dir=2 (IJKL: up=49), btn=2 (Space/Return: A=20, +Sel A=59)
+            hb_wr(32'h01F00008, 32'd2);
+            hb_wr(32'h01F0000C, 32'd2);
+            // file bytes: dir C/D/E/F, A/B = S/T, +Sel A/B = W/X
+            hb_wr(32'h01F1_0000, 32'h43);
+            hb_wr(32'h01F1_0001, 32'h44);
+            hb_wr(32'h01F1_0002, 32'h45);
+            hb_wr(32'h01F1_0003, 32'h46);
+            hb_wr(32'h01F1_0004, 32'h53);
+            hb_wr(32'h01F1_0005, 32'h54);
+            hb_wr(32'h01F1_000A, 32'h57);
+            hb_wr(32'h01F1_000B, 32'h58);
+            // declare the slot (id 3, size 16) - the poller picks this up
+            // at the entry-1 size sample = the LAST tick of a full scan
+            // (4 ticks x 221us = 884us period), then CDC + burst. Wait a
+            // full scan plus margin so the latch cannot miss the write.
+            hb_wr(32'hF800_2008, 32'd3);
+            hb_wr(32'hF800_200C, 32'd16);
+            #2_000_000;
+            j2k_press(32'd1, jk_code, jk_seen);     // up
+            if (!jk_seen || jk_code !== 7'h46)
+                $fatal(1, "TB: J2K a2k up -> seen=%b code=%02h, expected 46 (file byte, not preset 49)",
+                       jk_seen, jk_code);
+            j2k_press(32'h10, jk_code, jk_seen);    // A
+            if (!jk_seen || jk_code !== 7'h53)
+                $fatal(1, "TB: J2K a2k A -> seen=%b code=%02h, expected 53 (file byte, not preset 20)",
+                       jk_seen, jk_code);
+            j2k_press(32'h4010, jk_code, jk_seen);  // A + Select
+            if (!jk_seen || jk_code !== 7'h57)
+                $fatal(1, "TB: J2K a2k A+Sel -> seen=%b code=%02h, expected 57 (file layer, not preset 59)",
+                       jk_seen, jk_code);
+            $display("TB: J2K a2k file overrides preset OK (46/53/57) t=%0t", $time);
+            // reload on byte change (the a2k_changed path): up -> G
+            hb_wr(32'h01F1_0003, 32'h47);
+            #300_000;
+            j2k_press(32'd1, jk_code, jk_seen);
+            if (!jk_seen || jk_code !== 7'h47)
+                $fatal(1, "TB: J2K a2k reload -> seen=%b code=%02h, expected 47", jk_seen, jk_code);
+            $display("TB: J2K a2k byte-change reload OK (47) t=%0t", $time);
+            // size -> 0: remount without a file, presets return.
+            // Presence latches once per entry-1 size sample = one full
+            // datatable scan = 4 ticks x 221us = 884us, so wait a full
+            // scan plus margin before expecting the preset burst.
+            hb_wr(32'hF800_200C, 32'd0);
+            // read the size word back through the bridge to prove the write
+            // landed in the datatable RAM before trusting the latch.
+            begin : a2k_rb
+                reg [31:0] rb;
+                bridge_rd   = 1'b1;
+                bridge_addr = 32'hF800_200C;
+                repeat (8) @(negedge clk_74a);
+                bridge_rd   = 1'b0;
+                rb = bridge_rd_data;
+                if (rb !== 32'd0)
+                    $fatal(1, "TB: J2K a2k size readback -> word3=%0d, expected 0 (write did not land)", rb);
+                $display("TB: J2K a2k size word readback 0 OK t=%0t", $time);
+            end
+            #2_000_000;
+            j2k_press(32'd1, jk_code, jk_seen);
+            if (!jk_seen || jk_code !== 7'h49)
+                $fatal(1, "TB: J2K a2k absent -> seen=%b code=%02h, expected 49 (preset IJKL up)",
+                       jk_seen, jk_code);
+            j2k_press(32'h10, jk_code, jk_seen);
+            if (!jk_seen || jk_code !== 7'h20)
+                $fatal(1, "TB: J2K a2k absent A -> seen=%b code=%02h, expected 20 (preset Space)",
+                       jk_seen, jk_code);
+            $display("TB: J2K a2k absent -> presets restored OK (49/20) t=%0t", $time);
+        end
+
         // restore defaults (Off/Off)
         hb_wr(32'h01F00008, 32'd0);
         hb_wr(32'h01F0000C, 32'd0);
