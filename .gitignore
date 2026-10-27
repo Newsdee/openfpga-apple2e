@@ -128,3 +128,6 @@ sd_root_release/
 
 # NTSC line-0 diagnostic run log (verilog/tb/tb_ntsc_line0.sv)
 ntsc_line0_run.log
+
+# --- hdd_equivalence generated artifacts (run_equivalence.ps1) ---
+verilog/hdd_equivalence/build/
