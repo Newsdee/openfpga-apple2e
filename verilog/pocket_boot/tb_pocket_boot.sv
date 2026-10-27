@@ -1237,15 +1237,14 @@ module tb_pocket_boot;
             //   dir=2 (IJKL: up=49), btn=2 (Space/Return: A=20, +Sel A=59)
             hb_wr(32'h01F00008, 32'd2);
             hb_wr(32'h01F0000C, 32'd2);
-            // file bytes: dir C/D/E/F, A/B = S/T, +Sel A/B = W/X
-            hb_wr(32'h01F1_0000, 32'h43);
-            hb_wr(32'h01F1_0001, 32'h44);
-            hb_wr(32'h01F1_0002, 32'h45);
-            hb_wr(32'h01F1_0003, 32'h46);
-            hb_wr(32'h01F1_0004, 32'h53);
-            hb_wr(32'h01F1_0005, 32'h54);
-            hb_wr(32'h01F1_000A, 32'h57);
-            hb_wr(32'h01F1_000B, 32'h58);
+            // File bytes: dir C/D/E/F, A/B = S/T, +Sel A/B = W/X.
+            // The host DMAs with 32-bit LITTLE-ENDIAN word writes (file byte i
+            // in data[8*(i%4)]), so model the real write stream - byte-wise
+            // writes would hide the low-byte-only capture bug (2026-10-27).
+            hb_wr(32'h01F1_0000, 32'h46454443);  // bytes 0-3:  C D E F
+            hb_wr(32'h01F1_0004, 32'h00005453);  // bytes 4-7:  S T . .
+            hb_wr(32'h01F1_0008, 32'h58570000);  // bytes 8-11: . . W X
+            hb_wr(32'h01F1_000C, 32'h00000000);  // bytes 12-15: . . . .
             // declare the slot (id 3, size 16) - the poller picks this up
             // at the entry-1 size sample = the LAST tick of a full scan
             // (4 ticks x 221us = 884us period), then CDC + burst. Wait a
@@ -1253,6 +1252,26 @@ module tb_pocket_boot;
             hb_wr(32'hF800_2008, 32'd3);
             hb_wr(32'hF800_200C, 32'd16);
             #2_000_000;
+            // Non-vacuity guard: the module's whole 16-byte table must equal
+            // the file. The 2026-10-27 hardware bug captured only byte 0 of
+            // each DMA word - up/left/down (bytes 1-3) were dead while right
+            // (byte 0) worked. This check fails if that returns.
+            begin : a2k_table_check
+                reg [7:0] a2k_exp [0:15];
+                integer ti;
+                a2k_exp[0]  = 8'h43; a2k_exp[1]  = 8'h44;
+                a2k_exp[2]  = 8'h45; a2k_exp[3]  = 8'h46;
+                a2k_exp[4]  = 8'h53; a2k_exp[5]  = 8'h54;
+                a2k_exp[6]  = 8'h00; a2k_exp[7]  = 8'h00;
+                a2k_exp[8]  = 8'h00; a2k_exp[9]  = 8'h00;
+                a2k_exp[10] = 8'h57; a2k_exp[11] = 8'h58;
+                a2k_exp[12] = 8'h00; a2k_exp[13] = 8'h00;
+                a2k_exp[14] = 8'h00; a2k_exp[15] = 8'h00;
+                for (ti = 0; ti < 16; ti = ti + 1)
+                    if (dut.j2k.joy_map[ti] !== a2k_exp[ti])
+                        $fatal(1, "TB: J2K a2k table byte %0d = %02h, expected %02h (word-capture regression?)",
+                               ti, dut.j2k.joy_map[ti], a2k_exp[ti]);
+            end
             j2k_press(32'd1, jk_code, jk_seen);     // up
             if (!jk_seen || jk_code !== 7'h46)
                 $fatal(1, "TB: J2K a2k up -> seen=%b code=%02h, expected 46 (file byte, not preset 49)",
@@ -1266,8 +1285,9 @@ module tb_pocket_boot;
                 $fatal(1, "TB: J2K a2k A+Sel -> seen=%b code=%02h, expected 57 (file layer, not preset 59)",
                        jk_seen, jk_code);
             $display("TB: J2K a2k file overrides preset OK (46/53/57) t=%0t", $time);
-            // reload on byte change (the a2k_changed path): up -> G
-            hb_wr(32'h01F1_0003, 32'h47);
+            // reload on byte change (the a2k_changed path): up -> G.
+            // The host re-DMAs the whole file, so rewrite word 0.
+            hb_wr(32'h01F1_0000, 32'h47454443);
             #300_000;
             j2k_press(32'd1, jk_code, jk_seen);
             if (!jk_seen || jk_code !== 7'h47)

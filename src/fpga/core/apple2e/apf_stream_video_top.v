@@ -986,9 +986,20 @@ end
 
 // Byte capture (clk_74a), alongside the cfg latches.
 reg [7:0] a2k_map [0:15];
-always @(posedge clk_74a)
-    if (bridge_wr && bridge_addr[31:4] == 28'h01F1000)   // 0x01F10000..0F
-        a2k_map[bridge_addr[3:0]] <= bridge_wr_data[7:0];
+// The host DMAs the slot with 32-bit LITTLE-ENDIAN word writes: file byte i
+// sits in word[i/4] at data[8*(i%4)+7 : 8*(i%4)]. All four bytes of every
+// word must be latched - a low-byte-only capture silently drops bytes
+// 1-3/5-7/9-11/13-15 (hardware bug 2026-10-27: only the right-dpad byte
+// of the IJKL profile survived, so only DPad-right typed a key).
+wire [4:0] a2k_wi = {1'b0, bridge_addr[3:0]};   // 0, 4, 8 or 12 for word writes
+always @(posedge clk_74a) begin
+    if (bridge_wr && bridge_addr[31:4] == 28'h01F1000) begin  // 0x01F10000..0C
+        a2k_map[a2k_wi + 5'd0] <= bridge_wr_data[7:0];
+        a2k_map[a2k_wi + 5'd1] <= bridge_wr_data[15:8];
+        a2k_map[a2k_wi + 5'd2] <= bridge_wr_data[23:16];
+        a2k_map[a2k_wi + 5'd3] <= bridge_wr_data[31:24];
+    end
+end
 
 // Datatable poller (clk_74a): the first driver of the port-A wires of
 // core_bridge_cmd (they were undriven before).
