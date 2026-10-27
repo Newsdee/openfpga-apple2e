@@ -131,3 +131,8 @@ ntsc_line0_run.log
 
 # --- hdd_equivalence generated artifacts (run_equivalence.ps1) ---
 verilog/hdd_equivalence/build/
+
+# --- hdv_bridge harness generated artifacts (run_hdv_bridge.sh) ---
+verilog/hdv_bridge/obj_dir/
+verilog/hdv_bridge/rtl/
+verilog/hdv_bridge/probe/

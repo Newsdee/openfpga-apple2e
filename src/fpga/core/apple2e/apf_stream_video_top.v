@@ -392,6 +392,11 @@ always @(*) begin
         // M0 SDRAM storage diagnostics (see sdram_storage.v)
         bridge_rd_data <= stor_diag_rd;
     end
+    32'h01F01xxx: begin
+        // HDV sector buffer (deferload slot 2): the 0x0184 DMA reads it
+        // here; written by host 0x0180 DMA + the machine-domain walker.
+        bridge_rd_data <= hdv_ram_word;
+    end
     32'h01F0xxxx: begin
         // TEMP DISK-BISECT (2026-10-25): exact 09:26 wildcard (pre-fix).
         // The fixed build decodes 0x01F00000/0x01F00004 individually (the
@@ -1005,29 +1010,34 @@ end
 // core_bridge_cmd (they were undriven before).
 reg  [13:0] a2k_timer = 14'd0;
 reg  [2:0]  a2k_ps = 3'd0;        // 0 idle, 1 id word valid, 2 size word valid
-reg  [1:0]  a2k_k = 2'd0;      // slot entry index
+reg  [2:0]  a2k_k = 3'd0;      // slot entry index (entries 0..2)
 reg  [31:0] a2k_id_q = 32'd0;
 reg  [31:0] a2k_size_q = 32'd0;
+reg  [31:0] hdv_size_q = 32'd0;  // HDV slot (id 2) size; 0 = not mounted
 reg  [9:0]  datatable_addr_r = 10'd0;
 always @(posedge clk_74a) begin
     if (a2k_timer == 14'hFFFF) begin
         a2k_timer <= 14'd0;
         if (a2k_ps == 3'd0) begin
             datatable_addr_r <= 10'd0;    // word 0 = entry 0 id
-            a2k_k            <= 2'd0;    // restart from the first entry
+            a2k_k            <= 3'd0;    // restart from the first entry
             a2k_ps           <= 3'd1;
         end else if (a2k_ps == 3'd1) begin
             a2k_id_q           <= datatable_q[15:0];
-            datatable_addr_r   <= {7'd0, {a2k_k, 1'b0} + 3'd1};   // entry k size word = 2k+1
+            datatable_addr_r   <= {6'd0, {a2k_k, 1'b0} + 4'd1};   // entry k size word = 2k+1
             a2k_ps             <= 3'd2;
         end else begin
             if (a2k_id_q == 16'd3)
                 a2k_size_q <= datatable_q;
-            if (a2k_k == 2'd1)
+            // HDV (deferload slot, id 2): the datatable carries its size
+            // even though it is not loaded into SDRAM
+            if (a2k_id_q == 16'd2)
+                hdv_size_q <= datatable_q;
+            if (a2k_k == 3'd2)
                 a2k_ps <= 3'd0;
             else begin
-                a2k_k              <= a2k_k + 2'd1;
-                datatable_addr_r   <= {6'd0, {a2k_k + 2'd1, 1'b0}};   // next id word = 2(k+1)
+                a2k_k              <= a2k_k + 3'd1;
+                datatable_addr_r   <= {5'd0, {a2k_k + 3'd1, 1'b0}};   // next id word = 2(k+1)
                 a2k_ps             <= 3'd1;
             end
         end
@@ -1035,6 +1045,19 @@ always @(posedge clk_74a) begin
         a2k_timer <= a2k_timer + 14'd1;
 end
 assign datatable_addr = datatable_addr_r;
+
+// 0x008A "Data slot update" (deferload slots report (re)mounts this way)
+always @(posedge clk_74a) begin
+    if (dataslot_update && dataslot_update_id == 16'd2)
+        hdv_size_q <= dataslot_update_size;
+end
+
+// HDV mounted state: 74a -> machine (the hdd instance lives in the 14M domain)
+wire        hdv_mounted_74 = (hdv_size_q != 32'd0);
+wire        hdv_mounted_m;
+synch_3 #(.WIDTH(1)) u_hdv_mounted_sync (
+    .i(hdv_mounted_74), .o(hdv_mounted_m), .clk(clk_core_14318), .rise(), .fall()
+);
 
 // Cross bridge->machine like the video options (a transient mixed value is
 // harmless: worst case one extra 16-cycle idempotent reload).
@@ -1258,7 +1281,7 @@ joy_to_key j2k (
 
 apple2 d1 (
     .CLK_14M(clk_core_14318), .CLK_2M(m_clk2m),
-    .PALMODE(1'b0), .ROMSWITCH(1'b0), .CPU_WAIT(1'b0),
+    .PALMODE(1'b0), .ROMSWITCH(1'b0), .CPU_WAIT(cpu_wait_hdd_m),
     .PHASE_ZERO(m_pz), .PHASE_ZERO_R(m_pzr), .PHASE_ZERO_F(m_pzf),
     .FLASH_CLK(blink_div[22]),
     .reset(machine_reset), .cpu(1'b1),
@@ -1577,7 +1600,11 @@ reboot_ctl woz_reboot (
 // slot-qualified PD mux (C9): the disk slot is $C0E0-$C0EF (device select)
 // plus the Disk II ROM at $C600-$C6FF (IO select); D_OUT is already gated
 // internally (rom vs data register) - the mux only selects the slot.
-wire [7:0]  m_pd_mux = (m_dev_sel[6] | m_io_sel[6]) ? woz_dout : 8'h00;
+// The HDV (slot 7: $C700-$C7FF ROM + $C0F0-$C0FF registers, the AppleWin
+// HDD interface layout used by MiSTer) takes priority - its address
+// ranges never overlap the disk slot's, so the ordering is only for form.
+wire [7:0]  m_pd_mux = (m_dev_sel[7] | m_io_sel[7]) ? hdd_dout :
+                       (m_dev_sel[6] | m_io_sel[6]) ? woz_dout : 8'h00;
 
 disk_ii_woz woz (
     .CLK_14M         ( clk_core_14318 ),
@@ -1652,6 +1679,83 @@ woz_mount_ctl woz_mc (
     .img_size        ( mc_img_size ),
     .img_readonly    ( ),
     .mount_state_m   ( mc_state )
+);
+
+// ----------------------------------------------------------------------
+// HDV (read-only HD, PLAN_HDV_READONLY): hdd controller + bridge transfer
+// ----------------------------------------------------------------------
+// hdd (14M domain): the AppleWin ProDOS HDD interface, cycle-exact port of
+// Apple-II_MiSTer rtl/hdd.vhd (differential proof: verilog/hdd_equivalence).
+// Slot 7 per the machine decoder: $C0F0-$C0FF registers (devselect[7]) +
+// $C700-$C7FF ROM (ioselect[7]) - the same layout MiSTer uses.
+//
+// hdv_bridge (74a + 14M domains): the hardwired sector mover (PLAN §4c).
+// hdd pulses hdd_read/hdd_write on C0F0 execute; the bridge FSM arms
+// 0x0180/0x0184 against the deferload HDV slot (id 2), stalls the 6502 via
+// CPU_WAIT for the whole transfer, and walks the 512-byte sector buffer.
+// Read-only milestone: hdd_protect=1, so hdd_write never fires (C0F0
+// WRITE returns 0x2B PROTECT) and the 0x0184 arm stays inert.
+wire        hdd_read, hdd_write, hdd_dout_w;
+wire [15:0] hdd_sector;
+wire [8:0]  hdd_ram_addr;
+wire [7:0]  hdd_ram_di, hdd_ram_do;
+wire        hdd_ram_we;
+wire        cpu_wait_hdd;
+wire [31:0] hdv_ram_word;   // bridge readback window 0x01F01000-00F
+
+hdd u_hdd (
+    .CLK_14M        ( clk_core_14318 ),
+    .IO_SELECT      ( m_io_sel[7] ),
+    .DEVICE_SELECT  ( m_dev_sel[7] ),
+    .RESET          ( machine_reset ),
+    .A              ( m_addr ),
+    .RD             ( ~m_cpu_we ),
+    .D_IN           ( m_ram_di ),
+    .D_OUT          ( hdd_dout_w ),
+    .sector         ( hdd_sector ),
+    .hdd_read       ( hdd_read ),
+    .hdd_write      ( hdd_write ),
+    .hdd_mounted    ( hdv_mounted_m ),
+    .hdd_protect    ( 1'b1 ),
+    .ram_addr       ( hdd_ram_addr ),
+    .ram_di         ( hdd_ram_di ),
+    .ram_do         ( hdd_ram_do ),
+    .ram_we         ( hdd_ram_we )
+);
+wire [7:0] hdd_dout = hdd_dout_w;
+
+hdv_bridge u_hdv_bridge (
+    .clk_74a        ( clk_74a ),
+    .clk_14a        ( clk_core_14318 ),
+    .reset_n        ( reset_n ),
+    .bridge_wr      ( bridge_wr ),
+    .bridge_addr    ( bridge_addr ),
+    .bridge_wr_data ( bridge_wr_data ),
+    .hdv_ram_word   ( hdv_ram_word ),
+    .target_dataslot_read   ( target_dataslot_read ),
+    .target_dataslot_write  ( target_dataslot_write ),
+    .target_dataslot_done   ( target_dataslot_done ),
+    .target_dataslot_err    ( target_dataslot_err ),
+    .target_dataslot_id         ( target_dataslot_id ),
+    .target_dataslot_slotoffset ( target_dataslot_slotoffset ),
+    .target_dataslot_bridgeaddr ( target_dataslot_bridgeaddr ),
+    .target_dataslot_length     ( target_dataslot_length ),
+    .hdv_mounted    ( hdv_mounted_74 ),
+    .hdv_protect    ( 1'b1 ),
+    .hdd_ram_addr   ( hdd_ram_addr ),
+    .hdd_ram_di     ( hdd_ram_di ),
+    .hdd_ram_do     ( hdd_ram_do ),
+    .hdd_ram_we     ( hdd_ram_we ),
+    .hdd_read       ( hdd_read ),
+    .hdd_write      ( hdd_write ),
+    .hdd_sector     ( hdd_sector ),
+    .cpu_wait_hdd   ( cpu_wait_hdd )
+);
+
+// CPU_WAIT (active-high = stall the 6502) for the whole HDV transfer
+wire        cpu_wait_hdd_m;
+synch_3 #(.WIDTH(1)) u_hdd_wait_sync (
+    .i(cpu_wait_hdd), .o(cpu_wait_hdd_m), .clk(clk_core_14318), .rise(), .fall()
 );
 
 // ---- drive-activity diagnostics (M1 no-boot: where is it stuck?) ----

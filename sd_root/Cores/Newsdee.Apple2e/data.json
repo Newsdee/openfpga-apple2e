@@ -20,6 +20,15 @@
                 "address": "0x01F10000",
                 "size_maximum": 16,
                 "parameters": 5
+            },
+            {
+                "name": "hard disk",
+                "id": 2,
+                "required": false,
+                "deferload": true,
+                "extensions": [ "hdv", "po", "2mg" ],
+                "size_maximum": "0x80000000",
+                "parameters": 1
             }
         ]
     }

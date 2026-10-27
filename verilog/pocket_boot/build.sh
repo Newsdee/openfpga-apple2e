@@ -59,6 +59,9 @@ zbad=$(grep -cv '^00$' "$ZIMG" || true)
 [ "$zbad" = "0" ] || { echo "FATAL: ram_zero_64k.hex has $zbad non-zero/invalid lines"; exit 1; }
 cp -f "$ZIMG" rtl/roms/
 
+# HDV ROM (the top's hdd_rom instance: $readmemh rtl/roms/hddrom.hex)
+cp -f "$ROOT/src/fpga/rtl/roms/hddrom.hex" rtl/roms/
+
 # APF templates mf_pllbase.v (core/) and mf_datatable.v (apf/) declare
 # `timescale 1ps/1ps`; a ps-timescale file poisons Verilator's
 # mixed-timescale delay handling for the whole model (ns delays in the other
@@ -110,6 +113,9 @@ verilator_bin --cc --timing -j 4 \
     "$ROOT/src/fpga/core/apple2e/sdram_status_overlay.v" \
     "$ROOT/src/fpga/core/apple2e/speaker_i2s.v" \
     "$ROOT/src/fpga/core/woz/disk_ii_rom.v" \
+    "$ROOT/src/fpga/core/hdd.v" \
+    "$ROOT/src/fpga/core/hdd_rom.v" \
+    "$ROOT/src/fpga/core/hdv_bridge.sv" \
     "$ROOT/src/fpga/core/woz/disk_ii_woz.sv" \
     "$ROOT/src/fpga/core/woz/flux_drive.v" \
     "$ROOT/src/fpga/core/woz/woz_bram.sv" \
