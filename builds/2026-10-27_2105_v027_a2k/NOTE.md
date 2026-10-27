@@ -54,12 +54,13 @@ pocket_boot `--smoke`: exit 0, smokePass=1, all j2k checks pass:
    motion simultaneously.
 4. (0.2.7) Fire Keys = U O: A/U, B/O; and the +Select layer.
 5. (0.2.7) Any preset on: keys stop while the on-screen keyboard is open.
-6. (.a2k) Put `Jungle Hunt.woz` + `Jungle Hunt.a2k` on the SD card, mount
-   the disk: DPad up -> F, A -> S, A+Select -> W (file bytes, not the
-   preset keys).
-7. (.a2k) Remount the same disk (or mount a disk with no `.a2k`): keys
-   revert to the active preset options.
-8. (.a2k) No `.a2k` anywhere: preset behavior identical to pre-0.2.8
-   expectations (regression guard for the loader extension).
+6. (.a2k, out of the box) The card ships `disk.a2k` (= IJKL_layout) next to
+   `disk.woz` in `Assets/apple2e/common/`. Boot with DPad/Fire presets Off:
+   DPad types L/J/K/I, A=U, B=O, +Select A=Space, +Select B=Return (file
+   beats the Off preset). With a preset option set: the file STILL wins.
+7. (.a2k) Delete/rename `disk.a2k` off the card, remount: keys revert to
+   the active preset options (absent -> fallback path).
+8. (.a2k) Copy `Joy2key\QAOP_layout.a2k` over `disk.a2k`, remount: keys
+   change to the QAOP mapping (reload path, same filename).
 9. (0.2.6 regression) disk boot, colour presets, diagnostics hidden while
    OSK open, 555 audio, Reboot option.

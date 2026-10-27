@@ -959,11 +959,18 @@ always @(posedge clk_74a) begin
 end
 
 // ---- .a2k profile slot (2026-10-27, joy2key Phase 2) ----
-// data.json id 3: APF clones the disk's base name (parameters bit2, so
-// Jungle Hunt.woz finds Jungle Hunt.a2k) and DMAs the 16-byte file to
-// 0x01F10000 on mount - OUTSIDE the 0x01F0xxxx read wildcard. required
-// false: a missing file is silently skipped (no writes, datatable size 0)
-// and the presets stay in force. bit3 read-only: we never write it back.
+// data.json id 3: parameters 4 = bit2 (nonvolatile filename cloned from
+// slot 0 - the disk slot - with this slot's extension). Slot 0 has a FIXED
+// filename "disk", so at boot the host loads disk.woz and looks for
+// disk.a2k; if the user re-picks the disk by name through the interact
+// browser (slot 0 is user-reloadable), the clone follows the picked base
+// name (JungleHunt.woz -> JungleHunt.a2k). bit1 (core-specific) is CLEARED,
+// so the file lives in the platform-common Assets folder next to the disk.
+// APF DMAs the 16-byte file to 0x01F10000 on mount - OUTSIDE the
+// 0x01F0xxxx read wildcard. required false: a missing file is silently
+// skipped (no writes, datatable size 0) and the presets stay in force.
+// The slot is a plain volatile read: never written back (not nonvolatile),
+// so no read-only bit is needed.
 //
 // Presence comes from the APF datatable, not from the writes: 2 words per
 // slot in data.json DECLARATION order (word 2k = id, 2k+1 = size in bytes;

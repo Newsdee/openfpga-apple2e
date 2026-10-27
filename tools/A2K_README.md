@@ -9,23 +9,34 @@ Bytes > 127 are blanked, matching the module's `ioctl_data > 127 -> 0` rule.
 
 ## Pocket workflow (differs from the MiSTer "Load Joy Map" OSD item)
 
-The Pocket has no file-load OSD option. Instead the profile is **auto-loaded by
-game name**: the core declares an `a2k` data slot (`data.json` id 3,
-`parameters` bit2 = filename cloned from the disk slot, read-only,
-`required: false`, max 16 bytes). So:
+The Pocket has no file-load OSD option. Instead the profile is **auto-loaded
+from the SD card**: the core declares an `a2k` data slot (`data.json` id 3,
+`parameters` bit 2 = filename cloned from the disk slot, `required: false`,
+max 16 bytes, platform-common Assets location). The host DMAs the file to
+bridge address `0x01F10000` on mount; the core captures the bytes and the
+joy2key loader pushes the table through the donor's ioctl arm.
 
-1. Pick a disk, e.g. `Jungle Hunt.woz`.
-2. In the editor, set the mappings, Save, and name the file
-   `Jungle Hunt.a2k` (same base name as the disk).
-3. Put both files on the Pocket SD card (same directory). Mounting
-   `Jungle Hunt.woz` makes APF look for `Jungle Hunt.a2k` and DMA its 16
-   bytes to bridge address `0x01F10000`; the core captures them and the
-   loader pushes the table through the donor's ioctl arm.
-4. A present `.a2k` (exactly 16 bytes) **replaces the whole table**,
+**The disk slot has a FIXED filename: the host loads `disk.woz` and therefore
+looks for `disk.a2k`** (in `Assets/apple2e/common/`, next to the disk).
+The game-name clone only applies when you re-pick the disk *by name* through
+the interact browser (the disk slot is user-reloadable): loading
+`JungleHunt.woz` that way makes the host look for `JungleHunt.a2k`.
+
+So the practical steps are:
+
+1. Make or pick a profile. Ship spares live in
+   `Assets/apple2e/common/Joy2key/` (byte-identical copies of
+   `Apple-II_MiSTer/Joy2key/`: IJKL_layout, QAOP_layout,
+   cursor_space_enter, AlienTyphoon, CastleWolfenstein, ThunderbirdsGX).
+   Or open `a2k_editor.html` in a browser, set the mappings, and Save.
+2. **Name it `disk.a2k`** and put it next to `disk.woz` (boot path), or
+   `<DiskName>.a2k` if you load that disk by name via the browser.
+3. Boot/mount: the present 16-byte `.a2k` **replaces the whole table**,
    overriding the DPad Keys / Fire Keys preset options. Missing (or not
-   16 bytes) -> the presets stay in force. A machine reset keeps the last
-   loaded table (donor "table survives reset" semantics); remounting a disk
-   without a profile drops back to the presets.
+   exactly 16 bytes) -> the presets stay in force.
+4. To revert: delete (or rename away) the `.a2k` and remount. A machine
+   reset keeps the last loaded table (donor "table survives reset"
+   semantics); the host re-DMAs on the next mount.
 
 No other SD card or core changes are needed. The editor's help line about
 "OSD -> System & BIOS -> Load Joy Map" describes the MiSTer path; ignore it

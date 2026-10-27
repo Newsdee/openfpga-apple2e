@@ -19,7 +19,7 @@
                 "extensions": [ "a2k" ],
                 "address": "0x01F10000",
                 "size_maximum": 16,
-                "parameters": 6
+                "parameters": 4
             }
         ]
     }
