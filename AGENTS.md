@@ -34,6 +34,29 @@ newest `docs/PLAN_*.md` and `docs/BRIEF_*_KICKOFF_*.md`.
 6. **Preserve unrelated uncommitted work.** Multiple agents have worked this tree
    concurrently. Before finishing, re-check `git status` and confirm you did not
    clobber someone else's edits.
+7. **No soft CPU / no PicoRV32 in this core** (owner decision 2026-10-27). Media
+   transfer for HDV, floppy write-back and save states is a **hardwired FSM in the
+   bridge domain**, using APF target commands `0x0180`/`0x0184` against `deferload`
+   data slots. This is how MiSTer already does it: `Apple-II_MiSTer/Apple-II.sv:887-919`
+   is a ~40-line FSM (`hdd_read`/`hdd_write` pending latches -> `sd_rd[1]`/`sd_wr[1]`
+   -> wait `sd_ack[1]`, with `cpu_wait_hdd` stalling the 6502). Some other Pocket
+   cores (openfpga-PCXT, myc64-pocket, OpenFPGA_ZX-Spectrum) do use a PicoRV32 -
+   **do not copy that here**: their softcore exists mainly for the on-screen
+   keyboard, settings UI and key binding (1,516 of PCXT's 3,230 firmware lines;
+   all non-disk-service firmware is 2,268, and the disk mover we would actually
+   reuse is only 962),
+   which this core gets from `interact.json`, `input.json` and the RTL OSK in
+   `machine/osk/`. Borrowing the "spare" CPU from the 6502/65C02 switch is also
+   rejected: both CPUs live inside the byte-pinned `machine/apple2.v`, `cpu` is a
+   runtime user switch so neither is statically free, they share one bus with the
+   video generator, both are gated by the `machine_ce` that save states stall, and
+   a ~1 MHz 8-bit/64 KB core is a poor fit for 32-bit bridge registers.
+   Adopt from those cores the *protocol*, not the CPU: `deferload` slots, per-512-byte
+   sector transfers, write-through with no cache (so no `0x0188` flush dependency),
+   and their data-slot datatable gotchas. Revisit only if we ever need a write-back
+   cache with dirty-bitmap tracking, multi-sector blocking, or save-state streaming
+   that an FSM genuinely cannot express - and if throughput ever proves inadequate,
+   the first fix is multi-sector blocking in the FSM, not a CPU.
 
 ## Repository map
 
