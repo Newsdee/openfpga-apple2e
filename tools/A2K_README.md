@@ -22,6 +22,13 @@ The game-name clone only applies when you re-pick the disk *by name* through
 the interact browser (the disk slot is user-reloadable): loading
 `JungleHunt.woz` that way makes the host look for `JungleHunt.a2k`.
 
+The profile slot is also **user-reloadable** (`parameters` bit 0): the core UI
+shows a **"joy2key profile"** media option next to the disk. Picking any
+`.a2k` there (the spares in `Joy2key\` included) overrides the table for the
+current session — the choice does NOT persist (bit 9 unset), so the next
+boot returns to the cloned name (`disk.a2k`). If you swap the disk via its
+browser, re-pick the profile to match.
+
 So the practical steps are:
 
 1. Make or pick a profile. Ship spares live in
