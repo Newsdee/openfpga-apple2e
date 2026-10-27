@@ -800,6 +800,16 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../../machine/video/apple_composi
 set_global_assignment -name SYSTEMVERILOG_FILE ../../machine/video/composite_decoder_q17.sv
 set_global_assignment -name VERILOG_FILE ../../machine/video/vga_controller.v
 set_global_assignment -name VERILOG_FILE core/core_bridge_cmd.v
+# HDV (2026-10-28, PLAN_HDV_READONLY_2026-10-26.md, H1+H2). hdd/hdd_rom are the
+# differential-equivalence-verified Verilog ports of the donor hdd.vhd/
+# hdd_rom.vhd (verilog/hdd_equivalence/, see commit 603fe1a); hdv_bridge is
+# the new hardwired 74a/14M sector-transfer FSM. All three are pure
+# Verilog-2001 (no logic/always_ff) so VERILOG_FILE is correct. The ROM hex
+# needs no registration: hdd_rom.v's $readmemh("rtl/roms/hddrom.hex") resolves
+# from the project root (src/fpga/), where the file lives.
+set_global_assignment -name VERILOG_FILE core/hdd.v
+set_global_assignment -name VERILOG_FILE core/hdd_rom.v
+set_global_assignment -name VERILOG_FILE core/hdv_bridge.sv
 set_global_assignment -name SDC_FILE core/apple2e/apple2e_core_constraints.sdc
 set_global_assignment -name SIGNALTAP_FILE core/stp1.stp
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_1wire
