@@ -14,7 +14,7 @@
         "value_off": 0
       },
       {
-        "name": "Colour Preset",
+        "name": "Color Preset",
         "id": 4,
         "type": "list",
         "enabled": true,
@@ -37,7 +37,7 @@
           },
           {
             "value": 3,
-            "name": "Muted"
+            "name": "Muted Sharp"
           },
           {
             "value": 4,
@@ -54,7 +54,7 @@
         ]
       },
       {
-        "name": "Direction Keys",
+        "name": "DPad Keys",
         "id": 5,
         "type": "list",
         "enabled": true,
@@ -81,12 +81,12 @@
           },
           {
             "value": 4,
-            "name": "A / Z"
+            "name": "A/Z/left/right"
           }
         ]
       },
       {
-        "name": "Fire Buttons",
+        "name": "Fire Keys",
         "id": 6,
         "type": "list",
         "enabled": true,
@@ -106,10 +106,6 @@
           {
             "value": 2,
             "name": "Space / Return"
-          },
-          {
-            "value": 3,
-            "name": "U / O + Select"
           }
         ]
       }

@@ -4,11 +4,11 @@
         "metadata": {
             "platform_ids": ["apple2e"],
             "shortname": "Apple2e",
-            "description": "Apple IIe (native 560x192 streaming raster, no frame buffer; WOZ floppy drive via Pocket SDRAM, on-screen keyboard; NTSC colour, hardwired defaults; APF sync contract fix; merged Colour Preset option; diagnostics hidden while keyboard is open)",
+            "description": "Apple IIe (native 560x192 streaming raster, no frame buffer; WOZ floppy drive via Pocket SDRAM, on-screen keyboard; NTSC color; APF sync contract fix; merged Color Preset option; diagnostics hidden while keyboard is open; joy2key gamepad-to-keystroke presets)",
             "author": "Newsdee",
             "url": "https://github.com/Newsdee",
-            "version": "0.2.6",
-            "date_release": "2026-10-26"
+            "version": "0.2.7",
+            "date_release": "2026-10-27"
         },
         "framework": {
             "target_product": "Analogue Pocket",

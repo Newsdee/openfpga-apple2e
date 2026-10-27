@@ -1140,19 +1140,25 @@ module tb_pocket_boot;
         end
 
         // (3) Fire presets (writeonly @0x01F0000C): A=$10, B=$20, Select=$4000
-        //     preset 1: A=U($55) B=O($4F)
-        //     preset 2: A=Space($20) B=Return($0D)
-        //     preset 3: A=U B=O, +Select: A->Space($20) B->Return($0D)
+        //     preset 1: A=U($55) B=O($4F); +Select: A->Space($20) B->Return($0D)
+        //     preset 2: A=Space($20) B=Return($0D); +Select: A->Y($59) B->N($4E)
+        //     value 3: DEAD (old "U/O + Select" was absorbed into preset 1)
+        //               - writes there must leave the table blank
         begin : j2k_btn
             integer p;
-            reg [7:0] exA, exB;
-            for (p = 1; p < 4; p = p + 1) begin
+            reg [7:0] exA, exB, exAs, exBs;
+            for (p = 1; p < 3; p = p + 1) begin
                 hb_wr(32'h01F0000C, 32'(p));
                 #100_000;
                 case (p)
-                    3'd1: begin exA = 8'h55; exB = 8'h4F; end   // U / O
-                    3'd2: begin exA = 8'h20; exB = 8'h0D; end   // Space / Return
-                    default: begin exA = 8'h55; exB = 8'h4F; end // U/O + Select layer
+                    3'd1: begin
+                        exA = 8'h55; exB = 8'h4F;   // U / O
+                        exAs = 8'h20; exBs = 8'h0D; // Space / Return
+                    end
+                    default: begin
+                        exA = 8'h20; exB = 8'h0D;   // Space / Return
+                        exAs = 8'h59; exBs = 8'h4E; // Y / N
+                    end
                 endcase
                 j2k_press(32'h10, jk_code, jk_seen);   // A
                 if (!jk_seen || jk_code !== exA[6:0])
@@ -1162,18 +1168,27 @@ module tb_pocket_boot;
                 if (!jk_seen || jk_code !== exB[6:0])
                     $fatal(1, "TB: J2K btn p=%0d B -> seen=%b code=%02h, expected %02h",
                            p, jk_seen, jk_code, exB);
-                if (p == 3) begin
-                    j2k_press(32'h4010, jk_code, jk_seen);   // A + Select
-                    if (!jk_seen || jk_code !== 7'h20)
-                        $fatal(1, "TB: J2K btn p=3 A+Sel -> seen=%b code=%02h, expected 20",
-                               jk_seen, jk_code);
-                    j2k_press(32'h4020, jk_code, jk_seen);   // B + Select
-                    if (!jk_seen || jk_code !== 7'h0D)
-                        $fatal(1, "TB: J2K btn p=3 B+Sel -> seen=%b code=%02h, expected 0D",
-                               jk_seen, jk_code);
-                end
-                $display("TB: J2K btn preset %0d OK (A=%02h B=%02h) t=%0t", p, exA, exB, $time);
+                j2k_press(32'h4010, jk_code, jk_seen);   // A + Select
+                if (!jk_seen || jk_code !== exAs[6:0])
+                    $fatal(1, "TB: J2K btn p=%0d A+Sel -> seen=%b code=%02h, expected %02h",
+                           p, jk_seen, jk_code, exAs);
+                j2k_press(32'h4020, jk_code, jk_seen);   // B + Select
+                if (!jk_seen || jk_code !== exBs[6:0])
+                    $fatal(1, "TB: J2K btn p=%0d B+Sel -> seen=%b code=%02h, expected %02h",
+                           p, jk_seen, jk_code, exBs);
+                $display("TB: J2K btn preset %0d OK (A=%02h B=%02h SelA=%02h SelB=%02h) t=%0t",
+                         p, exA, exB, exAs, exBs, $time);
             end
+            // old value 3 must be dead now (loader default = blank table)
+            hb_wr(32'h01F0000C, 32'd3);
+            #100_000;
+            j2k_press(32'h10, jk_code, jk_seen);   // A
+            if (jk_seen !== 1'b0)
+                $fatal(1, "TB: J2K btn value 3 emitted %02h - must be dead", jk_code);
+            j2k_press(32'h20, jk_code, jk_seen);   // B
+            if (jk_seen !== 1'b0)
+                $fatal(1, "TB: J2K btn value 3 B emitted %02h - must be dead", jk_code);
+            $display("TB: J2K btn value 3 is dead (blank) t=%0t", $time);
             hb_wr(32'h01F0000C, 32'd0);
             #100_000;
         end

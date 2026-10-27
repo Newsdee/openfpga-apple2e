@@ -940,8 +940,9 @@ pdl_timer u_pdl (
 // active - without it the feature would look wired and do nothing).
 //
 // Two writeonly list options (interact.json ids 5/6), both default Off (0):
-//   Direction Keys (0x01F00008): 0=Off 1=Cursor keys 2=IJKL 3=IJMK 4=A/Z
-//   Fire Buttons   (0x01F0000C): 0=Off 1=U/O 2=Space/Return 3=U/O+Select
+//   DPad Keys (0x01F00008): 0=Off 1=Cursor keys 2=IJKL 3=IJMK 4=A/Z/left/right
+//   Fire Keys (0x01F0000C): 0=Off 1=U/O 2=Space/Return (each with a
+//     Select-hold layer: U/O->Space/Return, Space/Return->Y/N)
 // Off is deliberately the default and doubles as the enable: the D-pad
 // already drives the paddles (J10), so enabling a preset makes the same
 // control do both jobs at once ("double duty" - the option help says to
@@ -1063,16 +1064,24 @@ function [7:0] j2k_table_byte;
                                        (byt == 4'd2) ? 8'h5A : 8'h41;
             endcase
         end else begin
+            // Both presets carry a Select layer (2026-10-27): holding
+            // Select switches A/B to the secondary pair -
+            //   preset 1: A/B = U/O,  +Select = Space/Return
+            //   preset 2: A/B = Space/Return, +Select = Y/N
+            // The old preset 3 ("U/O + Select") was absorbed into preset 1
+            // and is gone from the option list; out-of-range values (3-7)
+            // stay blank.
             case (btn)
                 3'd0:    j2k_table_byte = 8'h00;
-                3'd1:    j2k_table_byte = (byt == 4'd4) ? 8'h55 :
-                                       (byt == 4'd5) ? 8'h4F : 8'h00;
-                3'd2:    j2k_table_byte = (byt == 4'd4) ? 8'h20 :
-                                       (byt == 4'd5) ? 8'h0D : 8'h00;
-                default: j2k_table_byte = (byt == 4'd4)  ? 8'h55 :
+                3'd1:    j2k_table_byte = (byt == 4'd4)  ? 8'h55 :
                                        (byt == 4'd5)  ? 8'h4F :
                                        (byt == 4'd10) ? 8'h20 :
                                        (byt == 4'd11) ? 8'h0D : 8'h00;
+                3'd2:    j2k_table_byte = (byt == 4'd4)  ? 8'h20 :
+                                       (byt == 4'd5)  ? 8'h0D :
+                                       (byt == 4'd10) ? 8'h59 :
+                                       (byt == 4'd11) ? 8'h4E : 8'h00;
+                default: j2k_table_byte = 8'h00;
             endcase
         end
     end
