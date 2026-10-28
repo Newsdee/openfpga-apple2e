@@ -395,12 +395,19 @@ always @(*) begin
     32'h01F01xxx: begin
         // HDV sector buffer (deferload slot 2): the 0x0184 DMA reads it
         // here; written by host 0x0180 DMA + the machine-domain walker.
+        // Window 0x01F01000-0x01F01FFF (HDV uses the first 512 B).
         bridge_rd_data <= hdv_ram_word;
     end
-    32'h01F0xxxx: begin
-        // TEMP DISK-BISECT (2026-10-25): exact 09:26 wildcard (pre-fix).
-        // The fixed build decodes 0x01F00000/0x01F00004 individually (the
-        // wildcard clobbered the Joystick persist entry on every quit).
+    32'h01F00xxx: begin
+        // Reboot-on-disk-change persist word. Written ONLY at
+        // 0x01F00000 (above); the host reads it back at the same address.
+        // DISK-BISECT history (2026-10-25): this arm was the 0x01F0xxxx
+        // wildcard ("proven 09:26 form"). When the HDV window took
+        // 0x01F01xxx it overlapped that wildcard (Quartus warning 10935);
+        // the arms are now a disjoint partition - 01F00xxx keeps every
+        // address the host ever touches (0x01F00000, and 0x01F00004,
+        // the retired Joystick persist entry) on the proven cfg_reboot_word
+        // path, while 0x01F02xxx-0x01F0Fxxx fall to default: 0.
         bridge_rd_data <= cfg_reboot_word;
     end
     endcase
@@ -464,20 +471,28 @@ end
 
 // bridge target commands
 // synchronous to clk_74a
+//
+// The request/param nets are WIRES: hdv_bridge drives them as module
+// OUTPUTS (H2, PLAN_HDV_READONLY). Quartus Error 10663 rejects a module
+// output port connected to a `reg`-declared identifier ("must be
+// connected to a structural net expression"); Verilator tolerates it,
+// which is why the template's `reg` declarations survived the sim-only
+// bring-up. core_bridge_cmd takes them as inputs; single driver =
+// hdv_bridge.
 
-    reg             target_dataslot_read;       
-    reg             target_dataslot_write;
+    wire            target_dataslot_read;
+    wire            target_dataslot_write;
     reg             target_dataslot_getfile;    // require additional param/resp structs to be mapped
     reg             target_dataslot_openfile;   // require additional param/resp structs to be mapped
-    
-    wire            target_dataslot_ack;        
+
+    wire            target_dataslot_ack;
     wire            target_dataslot_done;
     wire    [2:0]   target_dataslot_err;
 
-    reg     [15:0]  target_dataslot_id;
-    reg     [31:0]  target_dataslot_slotoffset;
-    reg     [31:0]  target_dataslot_bridgeaddr;
-    reg     [31:0]  target_dataslot_length;
+    wire    [15:0]  target_dataslot_id;
+    wire    [31:0]  target_dataslot_slotoffset;
+    wire    [31:0]  target_dataslot_bridgeaddr;
+    wire    [31:0]  target_dataslot_length;
     
     wire    [31:0]  target_buffer_param_struct; // to be mapped/implemented when using some Target commands
     wire    [31:0]  target_buffer_resp_struct;  // to be mapped/implemented when using some Target commands
@@ -1043,14 +1058,17 @@ always @(posedge clk_74a) begin
         end
     end else
         a2k_timer <= a2k_timer + 14'd1;
-end
-assign datatable_addr = datatable_addr_r;
 
-// 0x008A "Data slot update" (deferload slots report (re)mounts this way)
-always @(posedge clk_74a) begin
+    // 0x008A "Data slot update" (deferload slots report (re)mounts this
+    // way). MUST live in this same always block: hdv_size_q needs exactly
+    // one driver (Quartus Error 10028 "multiple constant drivers" - Verilator
+    // silently merges two always blocks, which is a sim/hardware divergence).
+    // Placed last so an update pulse wins over a coincident poller latch;
+    // the next poller scan re-reads the datatable within ~884us either way.
     if (dataslot_update && dataslot_update_id == 16'd2)
         hdv_size_q <= dataslot_update_size;
 end
+assign datatable_addr = datatable_addr_r;
 
 // HDV mounted state: 74a -> machine (the hdd instance lives in the 14M domain)
 wire        hdv_mounted_74 = (hdv_size_q != 32'd0);

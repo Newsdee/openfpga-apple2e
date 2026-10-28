@@ -166,7 +166,9 @@ module hdd (
                         4'h6: reg_block_l <= D_IN;
                         4'h7: reg_block_h <= D_IN;
                         4'h8: begin
-                            sector_buf[sec_addr] <= D_IN;
+                            // The C0F8 WRITE itself is in the sector_buf
+                            // writer block below (Verilog allows one driver
+                            // per array; see the note there).
                             increment_sec_addr <= 1'b1;
                         end
                         default: ;
@@ -186,9 +188,17 @@ module hdd (
         end
     end
 
-    // Sector buffer: dual-port, one clock. Port A = CPU (C0F8), port B =
-    // bridge (ram_*). ram_we wins a same-address same-cycle collision -
-    // unreachable in-system (machine stalled during the bridge walk).
+    // Sector buffer: the ONLY writer block for sector_buf (Verilog allows
+    // one driver per array - Quartus Error 10028 on the donor's two
+    // same-clock processes writing this array; VHDL allowed it, which is
+    // why the differential golden had to merge them too, see
+    // verilog/hdd_equivalence/golden/hdd.vhd change #2). Port A = CPU
+    // (C0F8, from the donor's cpu_interface), port B = bridge (ram_*).
+    // Same clock, nonblocking, same-cycle as the donor; a same-address
+    // same-cycle collision is unreachable in-system (the machine is
+    // stalled by cpu_wait_hdd during the bridge walk), and in this block
+    // ram_we wins by code order. The C0F8 READ above samples the pre-write
+    // value in either layout (NBA read semantics).
     always @(posedge CLK_14M) begin
         if (DEVICE_SELECT && !RD && (A[3:0] == 4'h8))
             sector_buf[sec_addr] <= D_IN;

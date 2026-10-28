@@ -101,22 +101,15 @@ module hdv_bridge (
     reg  [8:0]  wo_addr;
     reg  [7:0]  wo_data;
 
-    always @(posedge clk_74a or negedge reset_n) begin
-        if (!reset_n) begin
-            wo_wen  <= 1'b0;
-            wo_addr <= 9'd0;
-            wo_data <= 8'd0;
-        end else begin
-            // (wo_* updated in the CDC block below; writes happen here)
-            if (host_wr_en) begin
-                hdv_ram[host_byte0        ] <= bridge_wr_data[7:0];
-                hdv_ram[host_byte0 + 9'd1] <= bridge_wr_data[15:8];
-                hdv_ram[host_byte0 + 9'd2] <= bridge_wr_data[23:16];
-                hdv_ram[host_byte0 + 9'd3] <= bridge_wr_data[31:24];
-            end
-            if (wo_wen)
-                hdv_ram[wo_addr] <= wo_data;
+    always @(posedge clk_74a) begin
+        if (host_wr_en) begin
+            hdv_ram[host_byte0        ] <= bridge_wr_data[7:0];
+            hdv_ram[host_byte0 + 9'd1] <= bridge_wr_data[15:8];
+            hdv_ram[host_byte0 + 9'd2] <= bridge_wr_data[23:16];
+            hdv_ram[host_byte0 + 9'd3] <= bridge_wr_data[31:24];
         end
+        if (wo_wen)
+            hdv_ram[wo_addr] <= wo_data;
     end
 
     // host read port (74a, combinational): LE word for 0x0184 DMA reads
