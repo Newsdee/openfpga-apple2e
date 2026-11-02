@@ -826,9 +826,65 @@ module sdram_status_overlay (
     wire st_act = (col >= 10'd554) && (col <= 10'd555) && (row <= 8'd1) && !hbl && !vbl;
     wire st_mot = (col >= 10'd554) && (col <= 10'd555) && (row >= 8'd3) && (row <= 8'd4) && !hbl && !vbl;
     wire st_io  = (col >= 10'd554) && (col <= 10'd555) && (row >= 8'd6) && (row <= 8'd7) && !hbl && !vbl;
-    wire led_act = st_act && drv_active;
-    wire led_mot = st_mot && drv_motor;
-    wire led_io  = st_io  && drv_ack;
+    // J12 (2026-11-02): the HDV shares these lamps with the floppy. Decoded
+    // from hd_dbg_m, which already carries the bridge FSM state, so no new
+    // ports are needed. hd_dbg_m = {mounted, fault, state[2:0], err[2:0],
+    // fetch_cnt[7:0]}; hdv_bridge.sv states: 0 IDLE, 1 FETCH, 2 WALK_IN,
+    // 3 WALK_OUT, 4 ARM_WRITE, 5 WRITE.
+    //   green = floppy active  OR an HD read in flight  (FETCH/WALK_IN/WALK_OUT)
+    //   red   = floppy motor   OR an HD write in flight (ARM_WRITE/WRITE)
+    //   white = floppy sector IO OR an HD block completed (fetch_cnt changed)
+    // NOTE: the core is currently read-only end to end (IMG_READONLY=1,
+    // hdd_protect=1), so the red lamp stays dark until write-back lands.
+    wire [2:0] hd_state_m = hd_dbg_m[13:11];
+    wire       hd_rd_act  = (hd_state_m == 3'd1) || (hd_state_m == 3'd2) ||
+                            (hd_state_m == 3'd3);
+    wire       hd_wr_act  = (hd_state_m == 3'd4) || (hd_state_m == 3'd5);
+    reg  [7:0] hd_cnt_d;
+    reg        hd_cnt_d2;
+    always @(posedge clk) begin
+        hd_cnt_d  <= hd_dbg_m[7:0];
+        hd_cnt_d2 <= (hd_dbg_m[7:0] != hd_cnt_d);
+    end
+    wire       hd_io      = hd_cnt_d2;   // one machine-cycle-ish blink per block
+
+    // (2026-11-02) Monostable lamp holds: the HD fetch states are very short
+    // (~36us per block walk) and the raster beam crosses the lamp pixels only
+    // once per ~16.7ms frame, so an instantaneous lamp almost never coincides
+    // with the beam and looks dead; the floppy green survives only because its
+    // motor level lasts seconds. Hold each lamp lit for ~140ms after its
+    // activity so short HD bursts are actually visible.
+    // Reassigned (owner request) to distinguish media: RED = floppy
+    // (bright = read, dark = spin), GREEN = HD read, WHITE = HD block
+    // completed. Previously green/white mixed floppy+HD so the two media
+    // could not be told apart.
+    localparam [23:0] LAMP_HOLD = 24'd20000000;   // ~140ms @ 143.18 MHz
+    reg  [23:0] hold_flr, hold_fls, hold_hd, hold_io;
+    reg         act_flr, act_fls, act_hd, act_io;
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            act_flr <= 1'b0; act_fls <= 1'b0; act_hd <= 1'b0; act_io <= 1'b0;
+            hold_flr <= 24'd0; hold_fls <= 24'd0; hold_hd <= 24'd0; hold_io <= 24'd0;
+        end else begin
+            if (drv_ack) begin act_flr <= 1'b1; hold_flr <= 24'd0; end
+            else if (act_flr && hold_flr == LAMP_HOLD) act_flr <= 1'b0;
+            else if (act_flr) hold_flr <= hold_flr + 24'd1;
+            if (drv_active || drv_motor) begin act_fls <= 1'b1; hold_fls <= 24'd0; end
+            else if (act_fls && hold_fls == LAMP_HOLD) act_fls <= 1'b0;
+            else if (act_fls) hold_fls <= hold_fls + 24'd1;
+            if (hd_rd_act) begin act_hd <= 1'b1; hold_hd <= 24'd0; end
+            else if (act_hd && hold_hd == LAMP_HOLD) act_hd <= 1'b0;
+            else if (act_hd) hold_hd <= hold_hd + 24'd1;
+            if (hd_io) begin act_io <= 1'b1; hold_io <= 24'd0; end
+            else if (act_io && hold_io == LAMP_HOLD) act_io <= 1'b0;
+            else if (act_io) hold_io <= hold_io + 24'd1;
+        end
+    end
+
+    wire led_act = st_act && act_hd;   // green = HD read
+    wire led_mot_red  = st_mot && act_flr;   // bright red = floppy READ (sd_ack)
+    wire led_mot_dark = st_mot && act_fls;   // dark   red = floppy SPIN (active/motor)
+    wire led_io  = st_io  && act_io;   // white = HD block completed
 
     wire ovl_px = mpx || px1 || px2 || px3 || px4 || px5 || px6 || px7 ||
                   px8 || pxh || pxpc || pxda || px9 || px10 || px11 || dbg_px;
@@ -837,7 +893,8 @@ module sdram_status_overlay (
     // on-screen keyboard is up. J9: the drive LEDs always override in.
     assign rgb_out = (OVL_DBG && debug_en && ovl_px) ? 24'hFFFFFF :
                      led_act ? 24'h00FF00 :
-                     led_mot ? 24'hFF0000 :
+                     led_mot_red  ? 24'hFF0000 :   // bright red = floppy read
+                     led_mot_dark ? 24'h800000 :   // dark   red = floppy spin
                      led_io  ? 24'hFFFFFF : rgb_in;
 
 

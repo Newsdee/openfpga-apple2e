@@ -13,15 +13,6 @@
                 "parameters": 9
             },
             {
-                "name": "joy2key profile",
-                "id": 3,
-                "required": false,
-                "extensions": [ "a2k" ],
-                "address": "0x01F10000",
-                "size_maximum": 16,
-                "parameters": 5
-            },
-            {
                 "name": "hard disk",
                 "id": 2,
                 "required": false,
@@ -29,6 +20,15 @@
                 "extensions": [ "hdv" ],
                 "size_maximum": "0x80000000",
                 "parameters": 1
+            },
+            {
+                "name": "joy2key profile",
+                "id": 3,
+                "required": false,
+                "extensions": [ "a2k" ],
+                "address": "0x01F10000",
+                "size_maximum": 16,
+                "parameters": 5
             }
         ]
     }

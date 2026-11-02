@@ -1511,15 +1511,14 @@ wire f9_rd = bridge_rd && (bridge_addr[31:16] == 16'hF900);
 // CRCs (PC oracle: tools/woz_fingerprint.py).
 parameter FP_DIAG = 1'b0;
 
-// Full debug-overlay gate: 0 = shipping build (the status overlay is a
-// pixel pass-through - no MO/ACK/ST lines, show window, marker, or
-// fingerprint rows). 1 = hardware-debug build. Separate from FP_DIAG so a
-// build can carry the verifier fp logic without drawing anything.
-// TEMP DISK-BISECT (2026-10-25): forced 1 so the failing bitstream's load
-// chain is readable on the Pocket screen (badge + MT/RD/AC/MO). Draw-only
-// (video chain; no disk-path logic) so the bisect verdict stands. Replaced
-// by the runtime "Debug" interact option in the follow-up compile (J9).
-parameter OVL_DEBUG = 1'b1;
+// Full debug-overlay gate: 0 = shipping build (no MO/ACK/ST/HD=PC=DA= lines;
+// the drive lamps remain - they are a shipping feature not gated here).
+// 1 = hardware-debug build. Separate from FP_DIAG so a build can carry the
+// verifier fp logic without drawing anything.
+// 2026-11-02: set to 0 for the 0.3.0 shipping build - HDV bring-up is done
+// (auto boot + lamps verified), so the post-reset diagnostics are off.
+// Restore to 1 for a hardware-debug build (draws the boot-window lines).
+parameter OVL_DEBUG = 1'b0;
 
 // Debug-line visibility window in machine clocks (14.318 MHz). The debug
 // lines (MT=/RD=, AC=/MO=, ST=/A=/F=, RQ=) are drawn only while this window
@@ -1644,11 +1643,69 @@ synch_3 #(.WIDTH(1)) u_reboot_opt_sync (
 reg [1:0] osk_reset_s;
 always @(posedge clk_core_14318) osk_reset_s <= {osk_reset_s[0], osk_cmd_reset};
 wire osk_cold_req = ~osk_reset_s[0] & osk_reset_s[1];   // synchronized falling edge
+
+// ---- HDV mount -> cold reboot, DEFERRED until the host has finished ----
+// (2026-11-02, restored) Selecting an HDV in the picker only updates the
+// 0x008A dataslot (hdv_size_q -> hdv_mounted_m); it does NOT reset the 6502, so
+// the ROM never re-scans and the HDV won't boot until a machine reset. OSK
+// Reset does exactly that reset and reliably boots the HDV - so we reproduce it
+// here on the HDV mount edge. The first attempt (1917) fired on the raw edge,
+// MID-way through the host's select handshake, and left a black idle screen;
+// the fix is to wait HDV_REBOOT_SETTLE after the edge so the host completes
+// arming the HD first, then run the same cold reset OSK Reset uses.
+reg  hdv_mounted_d;
+always @(posedge clk_core_14318)
+    hdv_mounted_d <= hdv_mounted_m;
+wire hdv_mount_rise = hdv_mounted_m && !hdv_mounted_d;
+
+// Settle: latch the mount edge, count HDV_REBOOT_SETTLE, then emit one pulse.
+localparam [23:0] HDV_REBOOT_SETTLE = 24'd29000000;   // ~203 ms @ 143.18 MHz
+reg  [23:0] hdv_settle_cnt;
+reg         hdv_settle_pend;
+always @(posedge clk_core_14318 or posedge machine_reset_base) begin
+    if (machine_reset_base) begin
+        hdv_settle_cnt  <= 24'd0;
+        hdv_settle_pend <= 1'b0;
+    end else if (hdv_mount_rise && !hdv_settle_pend) begin
+        hdv_settle_pend <= 1'b1;
+        hdv_settle_cnt  <= 24'd0;
+    end else if (hdv_settle_pend) begin
+        if (hdv_settle_cnt == (HDV_REBOOT_SETTLE - 24'd1))
+            hdv_settle_pend <= 1'b0;   // -> next cycle hdv_reboot_req pulses
+        else
+            hdv_settle_cnt <= hdv_settle_cnt + 24'd1;
+    end
+end
+wire hdv_reboot_req = hdv_settle_pend && (hdv_settle_cnt == (HDV_REBOOT_SETTLE - 24'd1));
+
+// Power-on blanking: ignore every mount edge inside a short window after reset
+// release (the framework's initial WOZ + HDV load), and pre-arm reboot_ctl's
+// `ever` with a synthetic one-cycle rise at the window start (inert - reboot_ctl
+// excludes first_rise from rebooting). So the FIRST REAL change after the window
+// still reboots, but the power-on double-mount does not.
+localparam [24:0] MOUNT_BLANK_MAX = 25'd25000000;    // ~175 ms @ 143.18 MHz
+reg [24:0] blank_cnt;
+reg        blank_done;
+always @(posedge clk_core_14318 or posedge machine_reset_base) begin
+    if (machine_reset_base) begin          // active-HIGH (see :621)
+        blank_cnt  <= 25'd0;
+        blank_done <= 1'b0;
+    end else if (!blank_done) begin
+        if (blank_cnt == (MOUNT_BLANK_MAX - 25'd1))
+            blank_done <= 1'b1;
+        else
+            blank_cnt <= blank_cnt + 25'd1;
+    end
+end
+wire        blank_arm     = !blank_done && (blank_cnt == 25'd0);
+wire        mount_rise_any = blank_arm |
+                             (((mc_mount_rise | hdv_reboot_req) & blank_done));
+
 reboot_ctl woz_reboot (
     .clk         ( clk_core_14318 ),
     .rst         ( machine_reset_base ),
     .reboot_opt  ( reboot_opt_m ),
-    .mount_rise  ( mc_mount_rise ),
+    .mount_rise  ( mount_rise_any ),   // WOZ immediate, HDV deferred, post-blanking
     .clr_done    ( swp_done ),
     .osk_cold_req( osk_cold_req ),
     .cold_reset  ( cold_reset_m ),
