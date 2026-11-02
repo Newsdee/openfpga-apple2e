@@ -103,6 +103,10 @@ module sdram_status_overlay (
                                       //  last host err[2:0], fetch count[7:0]}
     , input  wire [15:0] pc_dbg       // 6502 PC snapshot (PHASE_ZERO-gated m_addr)
     , input  wire [15:0] da_dbg       // 6502 data-address snapshot (!PHASE_ZERO m_addr)
+    // Step 0 stick-liveness probe (BRIEF_JOY_RELATIVE_MODE): raw synced stick bytes.
+    , input  wire [7:0]  joy_x_dbg    // left stick X byte (cont1_joy[7:0])
+    , input  wire [7:0]  joy_y_dbg    // left stick Y byte (cont1_joy[15:8])
+    , input  wire        joy_ever     // stick ever left centre (OR-tree latch)
     );
 
     // Show-window length in machine clocks (default = 5 s @ 14.318 MHz;
@@ -682,6 +686,46 @@ module sdram_status_overlay (
     assign pxda = !hbl && !vbl && in_xda && in_lda && cidxda_w < 10'd7 &&
                   cida_w < 10'd5 && rdbits[3'd4 - cida_w[2:0]];
 
+    // line JOY (Step 0 stick-liveness probe, BRIEF_JOY_RELATIVE_MODE): 13 chars at
+    //   X0=424, rows 96..102: "A=XX B=YY E=E". A = left stick X byte (joy_x_dbg),
+    //   B = left stick Y byte (joy_y_dbg), E = stick-ever-moved OR-tree (0/1).
+    //   The font has no X/Y/J glyphs, so A/B/E are the labels. Burn-in: power on,
+    //   wiggle the stick - A/B should sweep ~0x00..0xFF (signed -128..+127), centre
+    //   ~0x00, and E should flip 0->1 the first time the stick moves. If A/B stay
+    //   0x00 with E stuck 0, the Pocket is not feeding live stick bytes on this board.
+    wire [4:0] joy [0:12];
+    assign joy[0]  = 5'd11;   // 'A' (X byte label)
+    assign joy[1]  = GL_EQ;
+    assign joy[2]  = hexg(joy_x_dbg[7:4]);
+    assign joy[3]  = hexg(joy_x_dbg[3:0]);
+    assign joy[4]  = GL_SP;
+    assign joy[5]  = 5'd12;   // 'B' (Y byte label)
+    assign joy[6]  = GL_EQ;
+    assign joy[7]  = hexg(joy_y_dbg[7:4]);
+    assign joy[8]  = hexg(joy_y_dbg[3:0]);
+    assign joy[9]  = GL_SP;
+    assign joy[10] = 5'd15;   // 'E' (ever-moved label)
+    assign joy[11] = GL_EQ;
+    assign joy[12] = joy_ever ? 5'd1 : 5'd0;   // '1' or '0'
+    wire        in_xjoy, in_ljoy;
+    wire [9:0]  cpxjoy, cidxjoy_w, cinyoy_w;
+    wire [7:0]  rjoy_w;
+    wire [4:0]  gjoy;
+    wire [34:0] gjoy_bits;
+    wire [4:0]  rjoybits;
+    wire        pxjoy;
+    assign in_xjoy   = (col >= 10'd424) && (col < 10'd502);
+    assign cpxjoy    = in_xjoy ? (col - 10'd424) : 10'd0;
+    assign cidxjoy_w = cpxjoy / 10'd6;
+    assign cinyoy_w  = cpxjoy % 10'd6;
+    assign in_ljoy   = (row >= 8'd96) && (row < 8'd103);
+    assign rjoy_w    = in_ljoy ? (row - 8'd96) : 8'd0;
+    assign gjoy      = (in_ljoy && cidxjoy_w < 10'd13) ? joy[cidxjoy_w[3:0]] : 5'd0;
+    assign gjoy_bits = gf(gjoy);
+    assign rjoybits  = gjoy_bits[34 - {2'b00, rjoy_w[2:0]} * 5'd5 -: 5];
+    assign pxjoy = !hbl && !vbl && in_xjoy && in_ljoy && cidxjoy_w < 10'd13 &&
+                  cinyoy_w < 10'd5 && rjoybits[3'd4 - cinyoy_w[2:0]];
+
     // ---- image fingerprint readout (SHOW_FP-gated, M1 hardware-load diagnostic) ----
     // line 8:  24 chars at X0=406, rows 65..71: "W0=XXXXXXXX W1=XXXXXXXX"
     // line 9:  24 chars at X0=406, rows 73..79: "W2=XXXXXXXX W3=XXXXXXXX"
@@ -887,7 +931,7 @@ module sdram_status_overlay (
     wire led_io  = st_io  && act_io;   // white = HD block completed
 
     wire ovl_px = mpx || px1 || px2 || px3 || px4 || px5 || px6 || px7 ||
-                  px8 || pxh || pxpc || pxda || px9 || px10 || px11 || dbg_px;
+                  px8 || pxh || pxpc || pxda || px9 || px10 || px11 || dbg_px || pxjoy;
     // J11 (2026-10-25): drawing is additionally gated by debug_en - clean
     // screen during gameplay, diagnostics visible at boot and while the
     // on-screen keyboard is up. J9: the drive LEDs always override in.

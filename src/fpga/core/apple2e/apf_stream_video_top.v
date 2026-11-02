@@ -898,6 +898,20 @@ wire [31:0] cont1_key_m;
 synch_3 #(.WIDTH(32)) s_joy_key (
     .i(cont1_key), .o(cont1_key_m), .clk(clk_core_14318)
 );
+// Step 0 stick-liveness probe (BRIEF_JOY_RELATIVE_MODE): sync the analog-stick
+// word into the machine domain. cont1_joy layout: [7:0]=lstick_x [15:8]=lstick_y
+// [23:16]=rstick_x [31:24]=rstick_y. The 3-FF sync of a multi-bit bus is
+// formally skew-unsafe, but a mixed sample is one frame of paddle jitter in the
+// worst case and both stick bytes update together on the pad side (brief §3).
+wire [31:0] cont1_joy_m;
+synch_3 #(.WIDTH(32)) s_joy_analog (
+    .i(cont1_joy), .o(cont1_joy_m), .clk(clk_core_14318)
+);
+// Probe "stick ever moved" OR-tree: latches 1 the first time the left stick
+// (x or y) leaves centre; stays 1 (no clear) for the rest of the session.
+reg joy_ever_m = 1'b0;
+always @(posedge clk_core_14318)
+    if (cont1_joy_m[15:0] != 16'd0) joy_ever_m <= 1'b1;
 wire        joy_enable = ~osk_visible;
 wire        joy_clk    = clk_core_14318 & joy_enable;   // Absolute: full clock, OSK-gated
 // APF d-pad/face bits -> donor digital convention
@@ -1517,8 +1531,11 @@ parameter FP_DIAG = 1'b0;
 // verifier fp logic without drawing anything.
 // 2026-11-02: set to 0 for the 0.3.0 shipping build - HDV bring-up is done
 // (auto boot + lamps verified), so the post-reset diagnostics are off.
-// Restore to 1 for a hardware-debug build (draws the boot-window lines).
-parameter OVL_DEBUG = 1'b0;
+// 2026-11-03: set to 1 for the Step 0 stick-liveness probe (BRIEF_JOY_RELATIVE
+// _MODE): the debug text (HD/PC/DA + the new JOY line) is visible so the owner
+// can wiggle the stick and read the raw bytes. Revert to 1'b0 once the probe
+// verdict is in (feature build) or for the shipping build.
+parameter OVL_DEBUG = 1'b1;
 
 // Debug-line visibility window in machine clocks (14.318 MHz). The debug
 // lines (MT=/RD=, AC=/MO=, ST=/A=/F=, RQ=) are drawn only while this window
@@ -1992,7 +2009,11 @@ sdram_status_overlay #(.SHOW_FP(FP_DIAG), .OVL_DBG(OVL_DEBUG)) ovl (
     .drv_rdreq(woz_sd_rd),
     .hd_dbg_m(hd_dbg_m),
     .pc_dbg(pc_snap_m),
-    .da_dbg(da_snap_m)
+    .da_dbg(da_snap_m),
+    // Step 0 stick-liveness probe: raw synced left-stick bytes + ever-moved latch
+    .joy_x_dbg(cont1_joy_m[7:0]),
+    .joy_y_dbg(cont1_joy_m[15:8]),
+    .joy_ever(joy_ever_m)
 );
 
 
