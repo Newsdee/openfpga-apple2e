@@ -1,0 +1,115 @@
+{
+  "interact": {
+    "magic": "APF_VER_1",
+    "variables": [
+      {
+        "name": "Reboot on load",
+        "id": 2,
+        "type": "check",
+        "enabled": true,
+        "persist": true,
+        "defaultval": 1,
+        "address": "0x01F00000",
+        "value": 1,
+        "value_off": 0
+      },
+      {
+        "name": "Color Preset",
+        "id": 4,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "defaultval": 0,
+        "address": "0x01F00004",
+        "options": [
+          {
+            "value": 0,
+            "name": "NTSC //e"
+          },
+          {
+            "value": 1,
+            "name": "Old TV"
+          },
+          {
+            "value": 2,
+            "name": "AppleWin"
+          },
+          {
+            "value": 3,
+            "name": "Muted Sharp"
+          },
+          {
+            "value": 4,
+            "name": "Monochrome"
+          },
+          {
+            "value": 5,
+            "name": "Green"
+          },
+          {
+            "value": 6,
+            "name": "Amber"
+          }
+        ]
+      },
+      {
+        "name": "DPad Keys",
+        "id": 5,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "defaultval": 0,
+        "address": "0x01F00008",
+        "options": [
+          {
+            "value": 0,
+            "name": "Off"
+          },
+          {
+            "value": 1,
+            "name": "Cursor keys"
+          },
+          {
+            "value": 2,
+            "name": "IJKL"
+          },
+          {
+            "value": 3,
+            "name": "IJMK"
+          },
+          {
+            "value": 4,
+            "name": "A/Z/left/right"
+          }
+        ]
+      },
+      {
+        "name": "Fire Keys",
+        "id": 6,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "defaultval": 0,
+        "address": "0x01F0000C",
+        "options": [
+          {
+            "value": 0,
+            "name": "Off"
+          },
+          {
+            "value": 1,
+            "name": "U / O"
+          },
+          {
+            "value": 2,
+            "name": "Space / Return"
+          }
+        ]
+      }
+    ],
+    "messages": []
+  }
+}

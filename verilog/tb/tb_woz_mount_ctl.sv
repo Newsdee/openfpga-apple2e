@@ -41,6 +41,7 @@ module tb_woz_mount_ctl;
     reg  [1:0]  res_code_m;
     reg  [31:0] res_nbytes_m;
     reg         transport_fault;
+    reg         eject_req;
     wire        img_mounted;
     wire [63:0] img_size;
     wire        img_readonly;
@@ -52,7 +53,9 @@ module tb_woz_mount_ctl;
         .res_valid_m     ( res_valid_m ),
         .res_code_m      ( res_code_m ),
         .res_nbytes_m    ( res_nbytes_m ),
+        .new_load_m      ( 1'b0 ),
         .transport_fault ( transport_fault ),
+        .eject_req       ( eject_req ),
         .img_mounted     ( img_mounted ),
         .img_size        ( img_size ),
         .img_readonly    ( img_readonly ),
@@ -139,6 +142,7 @@ module tb_woz_mount_ctl;
         por_n = 1'b0;
         res_valid_m = 1'b0; res_code_m = 2'd0; res_nbytes_m = 32'd0;
         transport_fault = 1'b0;
+        eject_req = 1'b0;
         dd_reset_tb = 1'b0; scan_failed_tb = 1'b0;
 
         // ---- T9 (at power-on): NOFILE, then OK ----
@@ -247,6 +251,29 @@ module tb_woz_mount_ctl;
         chk("T8 newest (OK) wins mid-eject: remounted 500000",
                (img_mounted == 1'b1) && (img_size == 64'd500000) &&
                (e_mount == 1'b1) && e_disk_mounted);
+
+        // ---- T10: explicit user eject (eject_req) ----
+        // Drive is mounted at 500000 from T8.
+        begin : t10
+            reg [32:0] pc_before;
+            pc_before = e_pulse_cnt;
+            eject_req = 1'b1;
+            repeat (14) @(posedge clk);
+            chk("T10a eject_req: unmounted (zero-rise clears engine)",
+                   (img_mounted == 1'b0) && (img_size == 64'd0) &&
+                   (e_mount == 1'b0) && (!e_disk_mounted));
+            // Hold eject; a fresh OK result must NOT re-mount.
+            give_result(2'd0, 32'd600000);
+            repeat (14) @(posedge clk);
+            chk("T10b eject held: fresh OK stays unmounted",
+                   (img_mounted == 1'b0) && (e_mount == 1'b0));
+            // Release eject: re-mount the still-loaded image (no reload).
+            eject_req = 1'b0;
+            repeat (14) @(posedge clk);
+            chk("T10c eject released: re-mounted 600000",
+                   (img_mounted == 1'b1) && (img_size == 64'd600000) &&
+                   (e_mount == 1'b1) && e_disk_mounted);
+        end
 
         // ---- final ----
         if (nfail) begin

@@ -252,13 +252,13 @@ module tb_pocket_boot;
     reg [15:0] hs_per_frame;
     reg [3:0]  hs_dump_idx;
     always @(posedge video_pclk) begin
-        if (video_vs) $display("SYNC VS t=%0t hpos_m=%0d ln=%0d", $time, hpos_m[10:0], ln_idx);
+        if (video_vs) $display("SYNC VS t_ms=%0.3f hpos_m=%0d ln=%0d", $time/1e6, hpos_m[10:0], ln_idx);
         if (video_hs) begin
-            if (hs_dump_idx < 8) $display("SYNC HS t=%0t hpos_m=%0d ln=%0d # %0d", $time, hpos_m[10:0], ln_idx, hs_dump_idx);
+            if (hs_dump_idx < 8) $display("SYNC HS t_ms=%0.3f hpos_m=%0d ln=%0d # %0d", $time/1e6, hpos_m[10:0], ln_idx, hs_dump_idx);
             hs_per_frame <= hs_per_frame + 16'd1;
             hs_dump_idx <= hs_dump_idx + 4'd1;
         end
-        if (mh_r && !dut.m_hbl) $display("SYNC MHFALL t=%0t", $time);
+        if (mh_r && !dut.m_hbl) $display("SYNC MHFALL t_ms=%0.3f", $time/1e6);
         mh_r <= dut.m_hbl;
         nh_r <= dut.ntsc_hbl;
         de_r2 <= video_de;
@@ -477,28 +477,28 @@ module tb_pocket_boot;
         dbg_mstate_r <= dbg_mstate;
         dbg_rv_d     <= dbg_rv;
         if (dbg_mstate != dbg_mstate_r)
-            $display("TB: mount_ctl state %0d->%0d rv=%b rc=%b pendv=%b pcode=%b nv=%b t=%t",
+            $display("TB: mount_ctl state %0d->%0d rv=%b rc=%b pendv=%b pcode=%b nv=%b t_ms=%0.3f",
                      dbg_mstate_r, dbg_mstate, dbg_rv, dbg_rc,
-                     dbg_pendv, dbg_pendcode, dbg_nv, $time);
+                     dbg_pendv, dbg_pendcode, dbg_nv, $time/1e6);
         if (dbg_rv && !dbg_rv_d)
-            $display("TB: RES RISE seen by ctl: rc=%b nbytes=%0d mstate=%0d t=%t",
-                     dbg_rc, dut.stor_res_nbytes_m, dbg_mstate, $time);
+            $display("TB: RES RISE seen by ctl: rc=%b nbytes=%0d mstate=%0d t_ms=%0.3f",
+                     dbg_rc, dut.stor_res_nbytes_m, dbg_mstate, $time/1e6);
         if (dbg_h_rv != dbg_h_rv_s || dbg_h_rc != dbg_h_rc_s || dbg_h_co != dbg_h_co_s)
-            $display("TB: HOST rv %b->%b rc %b->%b rf=%b co %b->%b t=%t",
+            $display("TB: HOST rv %b->%b rc %b->%b rf=%b co %b->%b t_ms=%0.3f",
                      dbg_h_rv_s, dbg_h_rv, dbg_h_rc_s, dbg_h_rc,
-                     dbg_h_rf, dbg_h_co_s, dbg_h_co, $time);
+                     dbg_h_rf, dbg_h_co_s, dbg_h_co, $time/1e6);
         dbg_h_rv_s <= dbg_h_rv;
         dbg_h_rc_s <= dbg_h_rc;
         dbg_h_co_s <= dbg_h_co;
         if (dbg_tfail != dbg_tfail_s)
-            $display("TB: transport_fault %b->%b wr=%b oor=%b faultpend=%b mstate=%0d t=%t",
+            $display("TB: transport_fault %b->%b wr=%b oor=%b faultpend=%b mstate=%0d t_ms=%0.3f",
                      dbg_tfail_s, dbg_tfail, dbg_wrfault, dbg_oorfault,
-                     dbg_faultp, dbg_mstate, $time);
+                     dbg_faultp, dbg_mstate, $time/1e6);
         dbg_tfail_s <= dbg_tfail;
         if (dbg_pkey != dbg_pkey_s)
-            $display("TB: WZPAR ver=%0d inf=%b tmap=%b trks=%b flx=%b done=%b valid=%b fail=%b blk=%0d lba=%0d t=%t",
+            $display("TB: WZPAR ver=%0d inf=%b tmap=%b trks=%b flx=%b done=%b valid=%b fail=%b blk=%0d lba=%0d t_ms=%0.3f",
                      dbg_pver, dbg_pinfo, dbg_ptmap, dbg_ptrks, dbg_pflux,
-                     dbg_pdone, dbg_pwvalid, dbg_pfail, dbg_pblocks, dbg_plba, $time);
+                     dbg_pdone, dbg_pwvalid, dbg_pfail, dbg_pblocks, dbg_plba, $time/1e6);
         dbg_pkey_s <= dbg_pkey;
         par_cnt <= par_cnt + 1'b1;
     end
@@ -519,22 +519,22 @@ module tb_pocket_boot;
     end
     always @(posedge dram_clk) begin
         if (cedge_cnt < 7'd8)
-            $display("TB: EDGE chip t=%t", $time);
+            $display("TB: EDGE chip t_ms=%0.3f", $time/1e6);
         if (cedge_cnt < 7'd8) cedge_cnt = cedge_cnt + 7'd1;
         dqlog_rq_d <= {dqlog_rq_d[0], dut.stor.fetch0.fc_req};
         if (dqlog_rq_d[0] && !dqlog_rq_d[1] && dqlog_cnt == 7'd0)
             dqlog_cnt = 7'd1;
         if (dqlog_cnt > 7'd0 && dqlog_cnt < 7'd40) begin
-            $display("TB: DQLOG c=%0d tick=%0d e4=%b e5=%b wq=%h rdv=%b ccmd=%b a=%0d dq=%h t=%t",
+            $display("TB: DQLOG c=%0d tick=%0d e4=%b e5=%b wq=%h rdv=%b ccmd=%b a=%0d dq=%h t_ms=%0.3f",
                      dqlog_cnt, m0.tick, dut.stor.isr0.enable_dq_read_4,
                      dut.stor.isr0.enable_dq_read_5, dut.stor.isr0.word_q,
-                     dut.stor.isr0.word_rd_valid, m0.c_cmd, m0.c_a, dram_dq, $time);
+                     dut.stor.isr0.word_rd_valid, m0.c_cmd, m0.c_a, dram_dq, $time/1e6);
             dqlog_cnt = dqlog_cnt + 7'd1;
         end
     end
     always @(posedge bnd_ctrlclk) begin
         if (eedge_cnt < 7'd8)
-            $display("TB: EDGE ctrl t=%t", $time);
+            $display("TB: EDGE ctrl t_ms=%0.3f", $time/1e6);
         if (eedge_cnt < 7'd8) eedge_cnt = eedge_cnt + 7'd1;
     end
 
@@ -598,12 +598,12 @@ module tb_pocket_boot;
     initial begin tr_st_h = 3'd0; tr_rd_h = 1'b0; tr_lba_h = 16'd0; tr_evt_n = 0; end
     always @(posedge bnd_clk) begin
         if (tr_evt_n < 80 && (tr_st_m !== tr_st_h || bnd_rd !== tr_rd_h || bnd_lba[15:0] !== tr_lba_h)) begin
-            $display("TB: TREVT#%0d st=%0d(%s) trlba=%0d erd=%b elba=%0d ready=%b busy=%b slba=%0d t=%t",
+            $display("TB: TREVT#%0d st=%0d(%s) trlba=%0d erd=%b elba=%0d ready=%b busy=%b slba=%0d t_ms=%0.3f",
                      tr_evt_n, tr_st_m,
                      (tr_st_m == 3'd0) ? "IDLE" : (tr_st_m == 3'd1) ? "REQ" : (tr_st_m == 3'd2) ? "DATA" : (tr_st_m == 3'd3) ? "HOLD" : (tr_st_m == 3'd4) ? "REL" : "??",
                      dut.woz_tr.lba_l, bnd_rd, bnd_lba[15:0],
                      dut.woz_tr.sector_ready, dut.woz_tr.fetch_busy,
-                     dut.woz_tr.sector_lba, $time);
+                     dut.woz_tr.sector_lba, $time/1e6);
             tr_evt_n = tr_evt_n + 1;
         end
         tr_st_h  <= tr_st_m;
@@ -622,7 +622,7 @@ module tb_pocket_boot;
             par_t <= 25'd0;
             if (par_n >= 200 && par_n < 500 && par_n < 320) begin
                 par_n <= par_n + 1;
-                $display("TB: PAR#%0d st=%0d chunk=%0d hdrpos=%0d sizeacc=%0d left=%0d cidx=%0d info=%b tmap=%b trks=%b flux=%b needflux=%b blocks=%0d rd=%b ack=%b done=%b trst=%0d t=%t",
+                $display("TB: PAR#%0d st=%0d chunk=%0d hdrpos=%0d sizeacc=%0d left=%0d cidx=%0d info=%b tmap=%b trks=%b flux=%b needflux=%b blocks=%0d rd=%b ack=%b done=%b trst=%0d t_ms=%0.3f",
                          par_n,
                          dut.woz.drive_g[0].ctrl.state,
                          dut.woz.drive_g[0].ctrl.chunk_id,
@@ -639,7 +639,7 @@ module tb_pocket_boot;
                          dut.woz.drive_g[0].ctrl.sd_rd,
                          dut.woz.drive_g[0].ctrl.sd_ack,
                          dut.woz.drive_g[0].ctrl.parser_done,
-                         dut.woz_tr.state, $time);
+                         dut.woz_tr.state, $time/1e6);
             end else if (par_n < 200) begin
                 par_n <= par_n + 1;
             end
@@ -654,8 +654,8 @@ module tb_pocket_boot;
     initial begin bnd_rd_hist = 1'b0; bnd_lba_hist = 32'd0; bnd_req_n = 0; end
     always @(posedge bnd_clk) begin
         if (bnd_req_n < 60 && (bnd_lba !== bnd_lba_hist || bnd_rd !== bnd_rd_hist)) begin
-            $display("TB: REQ#%0d rd=%b lba=%0d t=%t",
-                     bnd_req_n, bnd_rd, bnd_lba, $time);
+            $display("TB: REQ#%0d rd=%b lba=%0d t_ms=%0.3f",
+                     bnd_req_n, bnd_rd, bnd_lba, $time/1e6);
             bnd_req_n = bnd_req_n + 1;
         end
         bnd_rd_hist <= bnd_rd;
@@ -683,8 +683,8 @@ module tb_pocket_boot;
         end
         if (cb_ms >= 222 && cb_ms < 232) begin
             if (cb_n < 300 && (cpu_a !== cb_a_h || cpu_we !== cb_we_h)) begin
-                $display("TB: CB#%0d a=%04h we=%b pd=%02h t=%t",
-                         cb_n, cpu_a, cpu_we, cpu_pd, $time);
+                $display("TB: CB#%0d a=%04h we=%b pd=%02h t_ms=%0.3f",
+                         cb_n, cpu_a, cpu_we, cpu_pd, $time/1e6);
                 cb_n = cb_n + 1;
             end
             if (cb_tick_n < 12 && cb_ms_t == 25'd0) begin
@@ -748,37 +748,37 @@ module tb_pocket_boot;
     always @(posedge bnd_clk) begin
         bnd_rd_d <= bnd_rd;
         if (bnd_rd && !bnd_rd_d && bnd_lba >= 32'd458)
-            $display("TB: WZBOUND OOR READ request lba=%0d (image ends at 457) t=%t",
-                     bnd_lba, $time);
+            $display("TB: WZBOUND OOR READ request lba=%0d (image ends at 457) t_ms=%0.3f",
+                     bnd_lba, $time/1e6);
         if (bnd_ack && bnd_wr) begin
             if (bnd_exp_addr == 9'd0) begin
                 bnd_lba_cur <= bnd_lba[15:0];
             end
             if (bnd_addr !== bnd_exp_addr)
-                $fatal(1, "TB: WZBOUND addr out-of-order lba=%0d got=%0d exp=%0d t=%t",
-                       bnd_lba_cur, bnd_addr, bnd_exp_addr, $time);
+                $fatal(1, "TB: WZBOUND addr out-of-order lba=%0d got=%0d exp=%0d t_ms=%0.3f",
+                       bnd_lba_cur, bnd_addr, bnd_exp_addr, $time/1e6);
             if (bnd_dout !== bnd_expected) begin
                 wzb_miss_cnt = wzb_miss_cnt + 1;
                 if (!bnd_snap_done) begin
                     bnd_snap_done = 1'b1;
-                    $display("TB: WZBOUND SNAPSHOT engine(lba=%0d addr=%0d got=%02x exp=%02x) | transport(bcnt=%0d taddr=%0d) | fetch(faddr=%0d fdata=%02x fcdata=%h fcval=%b fcaddr=%0d sbuf0=%h sbuf1=%h) t=%t",
+                    $display("TB: WZBOUND SNAPSHOT engine(lba=%0d addr=%0d got=%02x exp=%02x) | transport(bcnt=%0d taddr=%0d) | fetch(faddr=%0d fdata=%02x fcdata=%h fcval=%b fcaddr=%0d sbuf0=%h sbuf1=%h) t_ms=%0.3f",
                              bnd_lba_eff, bnd_exp_addr, bnd_dout, bnd_expected,
                              bnd_bcnt, bnd_taddr, bnd_faddr, bnd_fdata,
                              bnd_fcdata, bnd_fcval, bnd_fcaddr,
-                             bnd_fbuf0, bnd_fbuf1, $time);
+                             bnd_fbuf0, bnd_fbuf1, $time/1e6);
                 end
                 if (wzb_fatal)
-                    $fatal(1, "TB: WZBOUND byte mismatch lba=%0d addr=%0d got=%02x exp=%02x (word=%0d) t=%t",
-                           bnd_lba_cur, bnd_exp_addr, bnd_dout, bnd_expected, bnd_wordidx, $time);
+                    $fatal(1, "TB: WZBOUND byte mismatch lba=%0d addr=%0d got=%02x exp=%02x (word=%0d) t_ms=%0.3f",
+                           bnd_lba_cur, bnd_exp_addr, bnd_dout, bnd_expected, bnd_wordidx, $time/1e6);
                 else if (wzb_miss_cnt <= 8)
-                    $display("TB: WZBOUND mismatch #%0d lba=%0d addr=%0d got=%02x exp=%02x t=%t",
-                             wzb_miss_cnt, bnd_lba_cur, bnd_exp_addr, bnd_dout, bnd_expected, $time);
+                    $display("TB: WZBOUND mismatch #%0d lba=%0d addr=%0d got=%02x exp=%02x t_ms=%0.3f",
+                             wzb_miss_cnt, bnd_lba_cur, bnd_exp_addr, bnd_dout, bnd_expected, $time/1e6);
             end
             bnd_exp_addr <= bnd_exp_addr + 9'd1;
             if (bnd_exp_addr == 9'd511) begin
                 bnd_blocks = bnd_blocks + 1;
-                $display("TB: WZBOUND block %0d complete (lba=%0d) t=%t",
-                         bnd_blocks, bnd_lba_cur, $time);
+                $display("TB: WZBOUND block %0d complete (lba=%0d) t_ms=%0.3f",
+                         bnd_blocks, bnd_lba_cur, $time/1e6);
             end
         end
     end
@@ -850,6 +850,381 @@ module tb_pocket_boot;
     endtask
 
     // ------------------------------------------------------------------
+    // HDV host responder (2026-11-01, NO FILE diagnosis; expert review
+    // 2026-11-01 processed): emulates the openFPGA framework side of the
+    // target_0 command channel (core_bridge_cmd, 0xF8001000/0x20-2C).
+    // Enabled with +HDV_EN=1:
+    //   1. MOUNTS the HD the way hardware does for a deferload slot: host
+    //      command 0x008A (host_20 = id, host_24 = size, then
+    //      {16'h434D,0x008A} to 0xF8000000) -> core_bridge_cmd pulses
+    //      dataslot_update -> top latches hdv_size_q. (Review change 1:
+    //      the datatable path is NOT how hardware mounts a deferload
+    //      slot; +HDV_DT adds it, +HDV_NO008A suppresses 0x008A - the
+    //      datatable-only variant proves both converge.)
+    //      +HDV_MOUNT_MS=N delays the mount (review change 2: a late
+    //      mount after the ROM slot-scan is a real hardware sequence).
+    //   2. polls target_0 through the bridge bus - the host's exact
+    //      view, same timing as the proven hb_rd/hb_wr tasks - answers
+    //      0x0140 (ready-to-run) with 'ok', and for 0x0180 (dataslot
+    //      read) DMAs one 512-byte block from pocket_boot.hdv.hex into
+    //      the core SDRAM at the requested bridgeaddr, then reports
+    //      'ok'. Every command is logged (HDVTGT) so a dead or wrong
+    //      channel is visible from the first cycle (review Q2).
+    //   3. fault injection (review change 3): +HDV_FAIL_AT=N makes
+    //      fetch N answer 'ok' with err=1; +HDV_STALL_AT=N delays fetch
+    //      N's answer by +HDV_STALL_MS (default 200 ms; set >3600 to
+    //      outlast the bridge FETCH_TO timeout and test the timeout +
+    //      recovery path).
+    //   4. +HDV_GAP=N idle 74a cycles between DMA words (review Q7: the
+    //      real framework's BRIDGE writes have spacing the healthy model
+    //      lacks).
+    // Verdict logic: HDVFETCH/HDVTGT log + final screen. Milestones:
+    // blocks 41904 (launcher) and 41907 (catalog) must appear in the
+    // fetch log for "sim reached the same place as hardware" (review Q6).
+    // ------------------------------------------------------------------
+    localparam HDV_MAXW = 8388480;   // 65535 blocks x 128 words (32 MiB)
+    reg  [31:0] hdv_img [0:HDV_MAXW-1];
+    reg         hdv_en;
+    reg         hdv_008a;
+    reg         hdv_nomount;
+    reg         hdv_dt;
+    reg  [31:0] hdv_nbytes;
+    reg  [31:0] hdv_blocks;
+    reg  [31:0] hdv_mount_ms;
+    reg  [31:0] hdv_fail_at;
+    reg  [31:0] hdv_stall_at;
+    reg  [31:0] hdv_stall_ms;
+    reg  [31:0] hdv_gap;
+    reg  [15:0] hdv_fetch_cnt    /* verilator public */;
+    reg  [15:0] hdv_err_cnt      /* verilator public */;
+    reg        hdv_mile_launcher /* verilator public */;  // block 41904 fetched
+    reg        hdv_mile_catalog  /* verilator public */;  // block 41907 fetched
+
+    initial begin
+        hdv_en          = 1'b0;
+        hdv_008a        = 1'b1;
+        hdv_nomount     = 1'b0;
+        hdv_dt          = 1'b0;
+        hdv_nbytes      = 32'd0;
+        hdv_blocks      = 32'd0;
+        hdv_mount_ms    = 32'd0;
+        hdv_fail_at     = 32'd0;
+        hdv_stall_at    = 32'd0;
+        hdv_stall_ms    = 32'd200;
+        hdv_gap         = 32'd0;
+        hdv_fetch_cnt   = 16'd0;
+        hdv_err_cnt     = 16'd0;
+        hdv_mile_launcher = 1'b0;
+        hdv_mile_catalog  = 1'b0;
+        if ($test$plusargs("HDV_EN")) begin
+            hdv_en = 1'b1;
+            if (!$value$plusargs("HDV_SIZE=%d", hdv_nbytes))
+                $display("TB: ERROR +HDV_SIZE=<nbytes> missing");
+            hdv_blocks = hdv_nbytes >> 9;
+            if ($test$plusargs("HDV_NO008A")) hdv_008a = 1'b0;
+            if ($test$plusargs("HDV_NOMOUNT")) hdv_nomount = 1'b1;
+            if ($test$plusargs("HDV_DT"))     hdv_dt     = 1'b1;
+            if (!$value$plusargs("HDV_MOUNT_MS=%d", hdv_mount_ms))
+                hdv_mount_ms = 32'd0;
+            if (!$value$plusargs("HDV_FAIL_AT=%d", hdv_fail_at))
+                hdv_fail_at = 32'd0;
+            if (!$value$plusargs("HDV_STALL_AT=%d", hdv_stall_at))
+                hdv_stall_at = 32'd0;
+            if (!$value$plusargs("HDV_STALL_MS=%d", hdv_stall_ms))
+                hdv_stall_ms = 32'd200;
+            if (!$value$plusargs("HDV_GAP=%d", hdv_gap))
+                hdv_gap = 32'd0;
+            $readmemh("pocket_boot.hdv.hex", hdv_img);
+            $display("TB: HDV image %0d bytes (%0d blocks) 008A=%0d dt=%0d mount_ms=%0d fail_at=%0d stall_at=%0d stall_ms=%0d gap=%0d",
+                     hdv_nbytes, hdv_blocks, hdv_008a, hdv_dt,
+                     hdv_mount_ms, hdv_fail_at, hdv_stall_at,
+                     hdv_stall_ms, hdv_gap);
+        end
+    end
+
+    // Mount (review changes 1+2, timing fixed 2026-11-01 after run 1;
+    // review 2026-11-01 processed): hardware-faithful anchor = machine-reset
+    // release. The framework mounts the selected core's media before the
+    // machine boots; the ROM slot scan runs a few ms after release - so the
+    // default mount (no delay) lands BEFORE the scan (v1), +HDV_MOUNT_MS=25
+    // is the near-miss (review Q4), =120 lands AFTER the scan (v2), and
+    // +HDV_NOMOUNT never mounts (v8: ROM must fall back to $C600, not hang).
+    // This also keeps the 0x008A command clear of the WOZ load cycle's
+    // bridge traffic (in hardware the core answers host commands when idle).
+    // REVIEW 2026-11-01 (Q2): wait on the LIVE TB mirror wires, not the
+    // hierarchical dut.machine_reset - that reference read a frozen 0 in
+    // this --binary --timing build (mount fired at t~0 instead of the ~7 ms
+    // release). d_reset_n=1 && d_pll_lock=1 <=> machine-reset released.
+    initial begin
+        if (hdv_en && hdv_nomount) begin
+            $display("TB: HDV +HDV_NOMOUNT - never mounting; ROM must fall back to $C600 (no hang, no fetches)");
+        end else if (hdv_en) begin
+            while (!(d_reset_n && d_pll_lock)) @(negedge clk_74a);
+            // REVIEW 2026-11-01 (Q2): ASSERT (not assume) the other two
+            // machine_reset terms are 0 in this harness.
+            if (dut.osk_cmd_reset !== 1'b0 || dut.cold_reset_m !== 1'b0)
+                $fatal(1, "TB: HDV mount: osk_cmd_reset=%b cold_reset_m=%b - harness assumption broken",
+                       dut.osk_cmd_reset, dut.cold_reset_m);
+            // keep for ONE confirming run, then remove (review 2026-11-01)
+            $display("DBG: HDV mount at release: dut.machine_reset=%b d_machine_reset=%b reset_n=%b pll=%b t_ms=%0.3f",
+                     dut.machine_reset, d_machine_reset, d_reset_n, d_pll_lock, $time/1e6);
+            #50_000;                            // 50 us settle after release
+            if (hdv_mount_ms != 32'd0)          // +HDV_MOUNT_MS -> ms delay
+                #(hdv_mount_ms * 32'd1_000_000);
+            if (hdv_008a) begin
+                reg [15:0] mres;
+                hb_wr(32'hF8000020, 32'h0002);   // host_20: id 2
+                hb_wr(32'hF8000024, hdv_nbytes); // host_24: size
+                hb_cmd(16'h008A, mres);          // 'CM' 0x008A + poll 'OK'
+                $display("TB: HDV 0x008A mount id=2 size=%0d res=%0d t_ms=%0.3f",
+                         hdv_nbytes, mres, $time/1e6);
+            end
+            if (hdv_dt) begin
+                hb_wr(32'hF8002010, 32'h0002);   // datatable word 4: id 2
+                hb_wr(32'hF8002014, hdv_nbytes); // datatable word 5: size
+                $display("TB: HDV datatable written id=2 size=%0d t_ms=%0.3f",
+                         hdv_nbytes, $time/1e6);
+            end
+            if (!hdv_008a && !hdv_dt)
+                $display("TB: ERROR: HDV_EN but neither 0x008A nor datatable");
+        end
+    end
+
+    // ---- HDV IOTRACE (harness-only, 2026-11-01, rev2) ------------------
+    // After HDV v1 fetched block 0 the machine ended in the monitor.
+    // hddrvr has two fallbacks after the read: `bcs BootSlot6` (error bit
+    // from C0F1) and `bit $C061 / bmi BootSlot6` ("button 0" - but bit7 of
+    // a gameport read is a LIVE VIDEO DATA LINE, a firmware race).
+    // rev1 probed dut.d1.A / dut.d1.D_IN clocked by dut.clk_core_14318 -
+    // an internal wire that read frozen, so it never fired. rev2 uses
+    // LIVE PORTS only: ADDR (m_addr, CPU address), PD (m_pd_mux - the HD
+    // driver ports C0F0/C0F1 are PD-path reads), IO_SELECT/CPU_WE, and
+    // dut.d1.CLK_14M (proven live via the joy2key self-test).
+    // rev2b (2026-11-01): rev2 gated on m_io_sel - but machine/apple2.v
+    // drives IO_SELECT=ioselect ONLY for C1xx/C3xx slot I/O; the C090-
+    // C0FF card ports (C0F0/C0F1/C0F8) set devselect[6:4] instead
+    // (DEVICE_SELECT = m_dev_sel). And C061 (gameport) sets neither -
+    // only the internal GAMEPORT_SELECT - so it is detected by
+    // address+read-strobe alone. The PC path after the C061 read shows
+    // the branch: 0801 = boot continues; C6xx = BMI branch to slot 6.
+    wire [15:0] iot_A  = dut.m_addr;
+    wire [7:0]  iot_D  = dut.m_pd_mux;
+    wire        iot_dev_rd = (dut.m_dev_sel != 8'h00) && !dut.m_cpu_we;
+    wire        iot_c061   = (iot_A == 16'hC061) && !dut.m_cpu_we;
+    wire        iot_c0f8   = iot_dev_rd && (iot_A == 16'hC0F8);
+    integer     iot_seq;
+    reg  [15:0] iot_seqA;
+    integer     pcp_n;
+    reg  [15:0] pcp_a;
+    reg         iot_snap;
+    // rev5: clean bounded C0F8 byte capture (exact bytes the CPU reads,
+    // value-change de-duplicated) + one-shot dump of the host's intended
+    // words (hdv_img). Diffing these against HDV block 0 pins the exact
+    // transformation in the host->window->sector_buf->C0F8 path.
+    integer     iot_f8n;
+    reg  [7:0]  iot_f8last;
+    reg         iot_f8dump;
+    reg         hdvimg_dumped;
+    reg         c0f8_prev;
+    reg  [7:0]  c0f8_val;
+    string      f8buf;
+    initial begin iot_seq = 0; iot_seqA = 16'hFFFF; pcp_n = 0; pcp_a = 16'hFFFF; iot_snap = 1'b0;
+                  iot_f8n = 0; iot_f8last = 8'h00; iot_f8dump = 1'b0; hdvimg_dumped = 1'b0;
+                  c0f8_prev = 1'b0; c0f8_val = 8'h00; f8buf = ""; end
+    always @(posedge dut.d1.CLK_14M) begin
+        if (!iot_snap && ($time/1e6) > 135.0) begin
+            iot_snap = 1'b1;
+            $display("IOTSNAP t_ms=%0.3f dev_sel=%h io_sel=%h we=%b A=%h D=%h",
+                     $time/1e6, dut.m_dev_sel, dut.m_io_sel, dut.m_cpu_we, iot_A, iot_D);
+        end
+        // rev4: PURE PC trace - gate on PHASE_ZERO (m_pz) so only FETCH
+        // cycles (opcode/operand addresses = the PC) are captured; data
+        // accesses are excluded. rev3's all-address trace was ambiguous
+        // (fetches and data reads interleaved); rev4 shows the true
+        // instruction boundaries - either matching the HDV block-0
+        // disassembly (code = block 0) or revealing where the PC really
+        // is (ROM / monitor / other RAM).
+        if (($time/1e6) > 140.0 && ($time/1e6) < 300.0) begin
+            if (pcp_n == 0 && dut.m_pz && iot_A == 16'h0801) begin
+                pcp_n = 80;
+                pcp_a = 16'hFFFF;
+                $display("PCP: entry fetch A=0801 t_ms=%0.3f", $time/1e6);
+            end
+            if (pcp_n > 0 && dut.m_pz && iot_A !== pcp_a) begin
+                pcp_a = iot_A;
+                $display("PCP t_ms=%0.3f n=%0d A=%04h", $time/1e6, pcp_n, pcp_a);
+                pcp_n = pcp_n - 1;
+            end
+        end
+        if (($time/1e6) > 130.0 && ($time/1e6) < 160.0) begin
+            if (iot_dev_rd &&
+                (iot_A == 16'hC0F0 || iot_A == 16'hC0F1))
+                $display("IOTRACE t_ms=%0.3f A=%h D=%h", $time/1e6, iot_A, iot_D);
+            // rev5b: one byte per ACTUAL 6502 C0F8 read - captured on the
+            // falling edge of the C0F8-present condition (the sread loop
+            // re-presents C0F8 once per byte, so each falling edge = one
+            // byte). Latched value (stable during the read), no value-dedup
+            // (consecutive identical bytes are preserved), atomic single
+            // $display (no SYNC telemetry tearing). 512 bytes = one block.
+            if (iot_c0f8) c0f8_val = iot_D;   // latch only while C0F8 present
+            if (c0f8_prev && !iot_c0f8 && !iot_f8dump && iot_f8n < 512) begin
+                iot_f8n = iot_f8n + 1;
+                f8buf = $sformatf("%s%02h ", f8buf, c0f8_val);
+                if (iot_f8n == 512) begin
+                    $display("F8ALL %0d bytes: %s", iot_f8n, f8buf);
+                    iot_f8dump = 1'b1;
+                end
+            end
+            c0f8_prev = iot_c0f8;
+            if (iot_c061)
+                $display("IOTRACE t_ms=%0.3f A=c061 (gameport read)", $time/1e6);
+            if (iot_c061) begin
+                iot_seq  = 12;
+                iot_seqA = 16'hFFFF;
+            end else if (iot_seq > 0) begin
+                if (iot_A !== iot_seqA) begin
+                    iot_seqA = iot_A;
+                    $display("PCPATH t_ms=%0.3f n=%0d A=%h iord=%b",
+                             $time/1e6, iot_seq, iot_A, iot_dev_rd);
+                    iot_seq = iot_seq - 1;
+                end
+            end
+        end
+    end
+
+    localparam [2:0] H_IDLE  = 3'd0,
+                     H_POLL  = 3'd1,
+                     H_RP    = 3'd2,
+                     H_DMA   = 3'd3,
+                     H_OK    = 3'd4,
+                     H_STALL = 3'd5;
+    reg  [2:0]  hst;
+    reg  [31:0] ht0;
+    reg  [15:0] hcmd;
+    reg  [31:0] hf_tmp;
+    reg  [15:0] hf_id;
+    reg  [31:0] hf_off;
+    reg  [31:0] hf_addr;
+    reg  [31:0] hf_len;
+    reg  [9:0]  hf_i;
+    reg  [31:0] hf_blk;
+    reg  [31:0] hf_word;
+    reg  [15:0] hf_cnt;       // fetch sequence number (1-based)
+    reg  [31:0] hstall_cnt;
+    reg  [31:0] hgap_cnt;
+    reg  [7:0]  hpoll;
+    reg  [2:0]  hfc;
+
+    always @(negedge clk_74a) begin
+        if (!hdv_en || host_busy) begin
+            hst = H_IDLE;
+        end else begin
+            case (hst)
+            H_IDLE: begin
+                hpoll = 8'd0;
+                hst   = H_POLL;
+            end
+            H_POLL: begin
+                if (hpoll == 8'd63) begin
+                    hpoll = 8'd0;
+                    hb_rd(32'hF8001000, ht0);
+                    if (ht0[31:16] == 16'h636D) begin
+                        hcmd = ht0[15:0];
+                        $display("HDVTGT cmd=%04h t_ms=%0.3f", hcmd, $time/1e6);
+                        if (hcmd == 16'h0180) begin
+                            hfc = 3'd0;
+                            hst = H_RP;
+                        end else begin
+                            // 0x0140 ready-to-run (and any other op the
+                            // read-only core does not issue: 0184/0190/0192)
+                            hst = H_OK;
+                        end
+                    end
+                    // else: stay polling
+                end else
+                    hpoll = hpoll + 8'd1;
+            end
+            H_RP: begin
+                case (hfc)
+                3'd0: begin
+                    hfc = 3'd1;
+                    hb_rd(32'hF8001020, hf_tmp);  hf_id  = hf_tmp[15:0];
+                end
+                3'd1: begin
+                    hfc = 3'd2;
+                    hb_rd(32'hF8001024, hf_off);
+                end
+                3'd2: begin
+                    hfc = 3'd3;
+                    hb_rd(32'hF8001028, hf_addr);
+                end
+                default: begin
+                    hfc = 3'd0;
+                    hb_rd(32'hF800102C, hf_len);
+                    hf_blk = hf_off >> 9;
+                    hf_cnt = hf_cnt + 16'd1;
+                    hdv_fetch_cnt = hdv_fetch_cnt + 16'd1;
+                    if (hf_blk == 32'd41904) hdv_mile_launcher = 1'b1;
+                    if (hf_blk == 32'd41907) hdv_mile_catalog  = 1'b1;
+                    if (hf_blk >= hdv_blocks)
+                        $display("HDVFETCH #%0d blk=%0d PAST-EOF (zero-fill; real host behavior unspecified) off=%0d addr=%h len=%0d id=%0d t_ms=%0.3f",
+                                 hf_cnt, hf_blk, hf_off, hf_addr, hf_len,
+                                 hf_id, $time/1e6);
+                    else
+                        $display("HDVFETCH #%0d blk=%0d off=%0d addr=%h len=%0d id=%0d t_ms=%0.3f",
+                                 hf_cnt, hf_blk, hf_off, hf_addr, hf_len,
+                                 hf_id, $time/1e6);
+                    if (hf_cnt == hdv_stall_at) begin
+                        hstall_cnt = 32'd0;
+                        hst = H_STALL;
+                    end else
+                        hst = H_DMA;
+                end
+                endcase
+            end
+            H_STALL: begin
+                // review change 3: late answer (or no answer within
+                // FETCH_TO=3.6 s when +HDV_STALL_MS > 3600)
+                if (hstall_cnt >= hdv_stall_ms * 32'd74250) begin
+                    hstall_cnt = 32'd0;
+                    hst = H_OK;
+                end else
+                    hstall_cnt = hstall_cnt + 32'd1;
+            end
+            H_DMA: begin
+                if (hgap_cnt > 32'd0) begin
+                    hgap_cnt = hgap_cnt - 32'd1;
+                end else begin
+                    if (hf_blk < hdv_blocks)
+                        hf_word = hdv_img[hf_blk * 32'd128 + hf_i];
+                    else
+                        hf_word = 32'd0;   // past EOF: loud-logged in H_RP
+                    hb_wr(hf_addr + {hf_i, 2'b00}, hf_word);
+                    if (hf_i == 10'd127) begin
+                        hf_i = 10'd0;
+                        hst  = H_OK;
+                    end else begin
+                        hf_i   = hf_i + 10'd1;
+                        hgap_cnt = hdv_gap;  // +HDV_GAP idle cycles (Q7)
+                    end
+                end
+            end
+            H_OK: begin
+                if (hcmd == 16'h0180 && hf_cnt == hdv_fail_at) begin
+                    hb_wr(32'hF8001000, 32'h6F6B0001);   // 'ok', err = 1
+                    hdv_err_cnt = hdv_err_cnt + 16'd1;
+                    $display("HDVFAIL fetch #%0d blk=%0d answered err=1 t_ms=%0.3f",
+                             hf_cnt, hf_blk, $time/1e6);
+                end else begin
+                    hb_wr(32'hF8001000, 32'h6F6B0000);   // 'ok', err = 0
+                end
+                hst = H_POLL;
+            end
+            endcase
+        end
+    end
+
+    // ------------------------------------------------------------------
     // Host control (pocket_main.cpp: F9=action_go, F10=seq_mode_req)
     // ------------------------------------------------------------------
     reg  [1:0] seq_mode      /* verilator public */;
@@ -902,7 +1277,7 @@ module tb_pocket_boot;
         if (ib_d !== 32'd0)
             $fatal(1, "TB: interact read-back 0x01F00000 = %0d, expected 0 (reboot word)", ib_d);
         hb_wr(32'h01F00000, 32'd1);   // restore Reboot = ON (shipping default)
-        $display("TB: interact read-back check done (reboot=1, no joystick option) t=%t", $time);
+        $display("TB: interact read-back check done (reboot=1, no joystick option) t_ms=%0.3f", $time/1e6);
     end
 
     // ------------------------------------------------------------------
@@ -944,7 +1319,7 @@ module tb_pocket_boot;
             if (dut.display_mode_m !== co_dm_exp || dut.comp_preset_m !== co_cp_exp)
                 $fatal(1, "TB: COLOUR v=%0d -> dm=%b cp=%b, expected dm=%b cp=%b",
                        co_v, dut.display_mode_m, dut.comp_preset_m, co_dm_exp, co_cp_exp);
-            $display("TB: COLOUR v=%0d -> dm=%b cp=%b OK t=%0t", co_v, co_dm_exp, co_cp_exp, $time);
+            $display("TB: COLOUR v=%0d -> dm=%b cp=%b OK t_ms=%0.3f", co_v, co_dm_exp, co_cp_exp, $time/1e6);
         end
         // (0.2.7 note) the old 0x01F00008 dead-address check is REMOVED: that
         // address is now allocated to the Direction Keys option (id 5), and
@@ -953,7 +1328,7 @@ module tb_pocket_boot;
         // preset 4). See the J2K probe below, which exercises 0x01F00008/0C.
         hb_wr(32'h01F00004, 32'd0);   // restore colour default (sweep left it at 6)
         #100_000;
-        $display("TB: COLOUR checks done t=%0t", $time);
+        $display("TB: COLOUR checks done t_ms=%0.3f", $time/1e6);
 
         // OSK overlay gate: only meaningful after the boot window closes.
         // The window re-arms on every machine reset ("Reboot on disk
@@ -974,7 +1349,7 @@ module tb_pocket_boot;
         #100_000;
         if (dut.ovl_debug_en !== 1'b0)
             $fatal(1, "TB: OVL overlay visible while OSK open (ovl_debug_en=%b) - must be hidden", dut.ovl_debug_en);
-        $display("TB: OVL overlay hidden while OSK open (osk_visible=1, ovl_debug_en=0) t=%0t", $time);
+        $display("TB: OVL overlay hidden while OSK open (osk_visible=1, ovl_debug_en=0) t_ms=%0.3f", $time/1e6);
         // let the release latch fall (30 ms stable-low) before the 2nd press
         #40_000_000;
         pad_key = 32'h8000;
@@ -984,7 +1359,7 @@ module tb_pocket_boot;
         #100_000;
         if (dut.ovl_debug_en !== 1'b0)
             $fatal(1, "TB: OVL overlay re-appeared after OSK closed (window still closed)");
-        $display("TB: OVL all checks passed t=%0t", $time);
+        $display("TB: OVL all checks passed t_ms=%0.3f", $time/1e6);
     end
 
     // ------------------------------------------------------------------
@@ -1023,8 +1398,8 @@ module tb_pocket_boot;
         if (dut.j2k.joy_key_press) begin
             jk_pulse_seen <= 1'b1;
             jk_pulse_code <= dut.j2k.joy_key_code;
-            $display("TB: J2K PULSE t=%0t code=%02h dir_m=%b btn_m=%b en=%b joy=%04b map0=%h map3=%h",
-                     $time, dut.j2k.joy_key_code, dut.j2k_dir_m, dut.j2k_btn_m,
+            $display("TB: J2K PULSE t_ms=%0.3f code=%02h dir_m=%b btn_m=%b en=%b joy=%04b map0=%h map3=%h",
+                     $time/1e6, dut.j2k.joy_key_code, dut.j2k_dir_m, dut.j2k_btn_m,
                      dut.j2k_en, dut.joy_j2k, dut.j2k.joy_map[0], dut.j2k.joy_map[3]);
         end
     end
@@ -1070,7 +1445,7 @@ module tb_pocket_boot;
         j2k_press(32'h10, jk_code, jk_seen);           // face A
         if (jk_seen !== 1'b0)
             $fatal(1, "TB: J2K Off/Off A emitted %02h - table must be blank", jk_code);
-        $display("TB: J2K Off/Off blank table OK t=%0t", $time);
+        $display("TB: J2K Off/Off blank table OK t_ms=%0.3f", $time/1e6);
 
         // (2) Direction presets (writeonly @0x01F00008), spec table
         //     preset:  right  left   down   up
@@ -1133,7 +1508,7 @@ module tb_pocket_boot;
                     end
                 end
                 $display("TB: J2K dir preset %0d OK (last=up %02h) t=%0t",
-                         p, ex, $time);
+                         p, ex, $time/1e6);
             end
             hb_wr(32'h01F00008, 32'd0);
             #100_000;
@@ -1177,7 +1552,7 @@ module tb_pocket_boot;
                     $fatal(1, "TB: J2K btn p=%0d B+Sel -> seen=%b code=%02h, expected %02h",
                            p, jk_seen, jk_code, exBs);
                 $display("TB: J2K btn preset %0d OK (A=%02h B=%02h SelA=%02h SelB=%02h) t=%0t",
-                         p, exA, exB, exAs, exBs, $time);
+                         p, exA, exB, exAs, exBs, $time/1e6);
             end
             // old value 3 must be dead now (loader default = blank table)
             hb_wr(32'h01F0000C, 32'd3);
@@ -1188,7 +1563,7 @@ module tb_pocket_boot;
             j2k_press(32'h20, jk_code, jk_seen);   // B
             if (jk_seen !== 1'b0)
                 $fatal(1, "TB: J2K btn value 3 B emitted %02h - must be dead", jk_code);
-            $display("TB: J2K btn value 3 is dead (blank) t=%0t", $time);
+            $display("TB: J2K btn value 3 is dead (blank) t_ms=%0.3f", $time/1e6);
             hb_wr(32'h01F0000C, 32'd0);
             #100_000;
         end
@@ -1205,7 +1580,7 @@ module tb_pocket_boot;
         if (!jk_seen || jk_code !== 7'h55)
             $fatal(1, "TB: J2K composition A -> seen=%b code=%02h, expected 55 (btn bytes)",
                    jk_seen, jk_code);
-        $display("TB: J2K composition (dir+btn independent) OK t=%0t", $time);
+        $display("TB: J2K composition (dir+btn independent) OK t_ms=%0.3f", $time/1e6);
 
         // (5) end-to-end through keyboard.v: the JOY_TO_KEY macro must be ON
         //     in this build (without it kbd.joy_valid does not exist and this
@@ -1225,7 +1600,7 @@ module tb_pocket_boot;
         if (dut.osk.kbd.joy_code_latched !== 7'h49)
             $fatal(1, "TB: J2K kbd.latched = %02h, expected 49 (macro path dead?)",
                    dut.osk.kbd.joy_code_latched);
-        $display("TB: J2K kbd.joy_valid + latched 49 OK (macro in, end-to-end) t=%0t", $time);
+        $display("TB: J2K kbd.joy_valid + latched 49 OK (macro in, end-to-end) t_ms=%0.3f", $time/1e6);
 
         // (6) .a2k profile slot (data.json id 3 @0x01F10000, Phase 2):
         //     the file REPLACES the whole 16-byte table, overriding the
@@ -1284,7 +1659,7 @@ module tb_pocket_boot;
             if (!jk_seen || jk_code !== 7'h57)
                 $fatal(1, "TB: J2K a2k A+Sel -> seen=%b code=%02h, expected 57 (file layer, not preset 59)",
                        jk_seen, jk_code);
-            $display("TB: J2K a2k file overrides preset OK (46/53/57) t=%0t", $time);
+            $display("TB: J2K a2k file overrides preset OK (46/53/57) t_ms=%0.3f", $time/1e6);
             // reload on byte change (the a2k_changed path): up -> G.
             // The host re-DMAs the whole file, so rewrite word 0.
             hb_wr(32'h01F1_0000, 32'h47454443);
@@ -1292,7 +1667,7 @@ module tb_pocket_boot;
             j2k_press(32'd1, jk_code, jk_seen);
             if (!jk_seen || jk_code !== 7'h47)
                 $fatal(1, "TB: J2K a2k reload -> seen=%b code=%02h, expected 47", jk_seen, jk_code);
-            $display("TB: J2K a2k byte-change reload OK (47) t=%0t", $time);
+            $display("TB: J2K a2k byte-change reload OK (47) t_ms=%0.3f", $time/1e6);
             // size -> 0: remount without a file, presets return.
             // Presence latches once per entry-1 size sample = one full
             // datatable scan = 4 ticks x 221us = 884us, so wait a full
@@ -1309,7 +1684,7 @@ module tb_pocket_boot;
                 rb = bridge_rd_data;
                 if (rb !== 32'd0)
                     $fatal(1, "TB: J2K a2k size readback -> word3=%0d, expected 0 (write did not land)", rb);
-                $display("TB: J2K a2k size word readback 0 OK t=%0t", $time);
+                $display("TB: J2K a2k size word readback 0 OK t_ms=%0.3f", $time/1e6);
             end
             #2_000_000;
             j2k_press(32'd1, jk_code, jk_seen);
@@ -1320,13 +1695,13 @@ module tb_pocket_boot;
             if (!jk_seen || jk_code !== 7'h20)
                 $fatal(1, "TB: J2K a2k absent A -> seen=%b code=%02h, expected 20 (preset Space)",
                        jk_seen, jk_code);
-            $display("TB: J2K a2k absent -> presets restored OK (49/20) t=%0t", $time);
+            $display("TB: J2K a2k absent -> presets restored OK (49/20) t_ms=%0.3f", $time/1e6);
         end
 
         // restore defaults (Off/Off)
         hb_wr(32'h01F00008, 32'd0);
         hb_wr(32'h01F0000C, 32'd0);
-        $display("TB: J2K all checks passed t=%0t", $time);
+        $display("TB: J2K all checks passed t_ms=%0.3f", $time/1e6);
     end
 
     // auto-boot: fire the host cycle at 2 ms (unless the C++ side poked
@@ -1356,8 +1731,8 @@ module tb_pocket_boot;
     initial begin
         #50_000_000;
         if (frame_cnt == 0)
-            $display("TB: WARNING no video frames yet (t=%0t, machine_reset=%b reset_n=%b pll=%b init=%b)",
-                     $time, d_machine_reset, d_reset_n, d_pll_lock, d_init_done);
+            $display("TB: WARNING no video frames yet (t_ms=%0.3f, machine_reset=%b reset_n=%b pll=%b init=%b)",
+                     $time/1e6, d_machine_reset, d_reset_n, d_pll_lock, d_init_done);
     end
 
     // ------------------------------------------------------------------
@@ -1376,11 +1751,21 @@ module tb_pocket_boot;
             host_busy = 1'b1;
 
             if (seq_mode == 2'd0) begin
-                // init/reset command, then the load starts while the
-                // machine reset is still pending (release mid-load)
-                host_state = 3'd1;
-                hb_cmd(16'h0010, r82);
-                #20_000_000;   // 20 ms: let the load start before release
+                if (hdv_en) begin
+                    // HDV fast path (2026-11-01): matches hardware Boot
+                    // Media=HDD - the WOZ floppy is ejected, so there is no
+                    // WOZ image to load (that 60 s cycle is pure overhead
+                    // for the HDV verdict). Init, short settle, release.
+                    host_state = 3'd1;
+                    hb_cmd(16'h0010, r82);
+                    #5_000_000;
+                end else begin
+                    // init/reset command, then the load starts while the
+                    // machine reset is still pending (release mid-load)
+                    host_state = 3'd1;
+                    hb_cmd(16'h0010, r82);
+                    #20_000_000;   // 20 ms: let the load start before release
+                end
             end else if (seq_mode == 2'd1) begin
                 host_state = 3'd1;
                 wait (d_reset_n);
@@ -1388,7 +1773,7 @@ module tb_pocket_boot;
             end
             // seq_mode 2: load immediately (during reset)
 
-            if (seq_mode != 2'd3) begin
+            if (seq_mode != 2'd3 && !hdv_en) begin
                 host_state = 3'd2;
                 load_words = (woz_nbytes + 32'd3) / 32'd4;
                 // WOZ load: id -> 0xF8000020, size -> 0xF8000024, cmd 0x82
@@ -1404,7 +1789,7 @@ module tb_pocket_boot;
                 hb_cmd(16'h008f, r8f);
                 load_res8f = r8f;
                 $display("TB: WOZ load complete: res82=%h res8f=%h words=%0d t=%0t",
-                         r82, r8f, load_words, $time);
+                         r82, r8f, load_words, $time/1e6);
             end
 
             if (seq_mode == 2'd2) begin
@@ -1415,7 +1800,7 @@ module tb_pocket_boot;
             hb_cmd(16'h0011, r82);
             host_state = 3'd4;
             host_busy = 1'b0;
-            $display("TB: cycle done (mode=%0d) t=%0t", seq_mode, $time);
+            $display("TB: cycle done (mode=%0d) t_ms=%0.3f", seq_mode, $time/1e6);
 
             #200_000_000;   // 200 ms between cycles
             action_go = 1'b0;   // cycle consumed; F9 re-arms

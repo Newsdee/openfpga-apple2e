@@ -57,6 +57,15 @@ module woz_mount_ctl (
     // ---- Unit-3 transport fault (latched in the transport) ----
     input  wire        transport_fault,
 
+    // ---- Explicit user eject (machine domain, level) ----
+    // "Floppy Eject" interact option (write-only, 0x01F00010). While high the
+    // drive is held unmounted so the machine's ROM boot skips the floppy
+    // (falls through to BASIC/monitor). On the falling edge the drive
+    // re-mounts the still-loaded image (no host reload needed), so toggling
+    // the option back restores the normal boot. Held across machine resets
+    // (the option word is bridge-domain). See apf_stream_video_top.v.
+    input  wire        eject_req,
+
     // ---- WOZ engine mount interface ----
     output reg         img_mounted,
     output reg  [63:0] img_size,
@@ -79,15 +88,23 @@ module woz_mount_ctl (
     reg [31:0] pend_size;
     reg        pend_valid;      // a result is waiting for the mount decision
     reg        fault_pend;      // a transport fault is waiting for eject
+    reg        eject_req_d;
 
     wire res_rise  = res_valid_m && !res_v_d;
     wire fault_rise = transport_fault && !tf_d;
+    wire eject_fall = !eject_req && eject_req_d;   // user released the eject
+    // On release, re-mount the still-loaded image directly from the live
+    // M0 result level (the captured pend_valid was consumed at the eject
+    // resolve, so the level - not the edge - is what re-mounts).
+    wire remount_now = (state == ST_UNMOUNTED) && eject_fall && res_valid_m
+                       && (res_code_m == 2'd0) && (res_nbytes_m != 32'd0);
     wire newload_rise = new_load_m && !newload_d;
 
     // Resolve points (pre-NBA): the pending result/fault is consumed when
     // the mount decision is made. A capture (res_rise / fault_rise) on the
     // SAME cycle wins over the consume (newest generation is authoritative).
-    wire do_mount  = (state == ST_UNMOUNTED) && pend_valid && (pend_code == 2'd0);
+    wire do_mount  = (state == ST_UNMOUNTED) && !eject_req && pend_valid
+                     && (pend_code == 2'd0);
     wire resolve   = do_mount || (state == ST_EJ3);
 
     assign img_readonly  = 1'b1;   // read-only service (parser ignores; WP via D1_WP/D2_WP)
@@ -105,11 +122,13 @@ module woz_mount_ctl (
             pend_size  <= 32'd0;
             pend_valid <= 1'b0;
             fault_pend <= 1'b0;
+            eject_req_d <= 1'b0;
             mount_state_m <= 3'd0;
         end else begin
             res_v_d <= res_valid_m;
             tf_d    <= transport_fault;
             newload_d <= new_load_m;
+            eject_req_d <= eject_req;
 
             // Capture the newest result / fault (edge); else consume at the
             // resolve point. Capture wins on a same-cycle collision.
@@ -133,15 +152,20 @@ module woz_mount_ctl (
                     // OK result: mount (next cycle is the rising edge).
                     size_l <= pend_size;
                     state  <= ST_MOUNTED;
+                end else if (remount_now) begin
+                    // Eject released with a still-loaded image: re-mount from
+                    // the live result level (no host reload required).
+                    size_l <= res_nbytes_m;
+                    state  <= ST_MOUNTED;
                 end
             end
             ST_MOUNTED: begin
                 img_mounted <= 1'b1;
                 img_size    <= {32'd0, size_l};
-                if (pend_valid || fault_pend || newload_rise) begin
-                    // Any new generation (overwrites the image) or a
-                    // transport fault: eject first (re-parse dance).
-                    // newload_rise fires at the start of the new load
+                if (pend_valid || fault_pend || newload_rise || eject_req) begin
+                    // Any new generation (overwrites the image), a transport
+                    // fault, or an explicit user eject: eject first (re-parse
+                    // dance). newload_rise fires at the start of the new load
                     // (0082), so the engine stops fetching the old image
                     // before the store streams the new one.
                     state <= ST_EJ1;
@@ -160,7 +184,11 @@ module woz_mount_ctl (
             ST_EJ3: begin
                 img_mounted <= 1'b0;            // fall
                 img_size    <= 64'd0;
-                if (pend_valid && pend_code == 2'd0) begin
+                if (eject_req) begin
+                    // User eject held: stay unmounted even if a fresh OK
+                    // generation is pending (re-mount happens on release).
+                    state <= ST_UNMOUNTED;
+                end else if (pend_valid && pend_code == 2'd0) begin
                     // Fresh OK generation: remount (next cycle's rise).
                     size_l <= pend_size;
                     state  <= ST_MOUNTED;

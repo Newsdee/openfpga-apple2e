@@ -37,6 +37,7 @@ fi
     --Mdir obj_dir \
     -sv \
     tb_hdv_bridge.sv \
+    "$ROOT/verilog/stubs/altsyncram_sim.v" \
     "$ROOT/src/fpga/core/hdv_bridge.sv" \
     "$ROOT/src/fpga/core/hdd.v" \
     "$ROOT/src/fpga/core/hdd_rom.v"

@@ -22,6 +22,7 @@
 // ============================================================================
 #include <SDL.h>
 #include <cstdio>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -54,7 +55,7 @@ static uint32_t crc32_buf(const uint8_t *p, size_t n);
 // memory word to its low bits - 128-bit tokens silently drop 12 of
 // every 16 bytes (found 2026-10-22).
 static bool wozaToHex(const std::string &wozaPath, const std::string &hexPath,
-                      size_t *outBytes, uint32_t *outCrc)
+                      size_t *outBytes, uint32_t *outCrc, bool le = false)
 {
     std::ifstream f(wozaPath, std::ios::binary);
     if (!f) {
@@ -75,7 +76,20 @@ static bool wozaToHex(const std::string &wozaPath, const std::string &hexPath,
     }
     for (size_t i = 0; i < buf.size(); i += 4) {
         for (int k = 0; k < 4; k++) {
-            uint8_t b = (i + k < buf.size()) ? buf[i + k] : 0;
+            // le: emit the 4-byte group in reverse so the FIRST file byte
+            // lands in the word's LOW byte ([7:0]) - little-endian.
+            // !le (default): file order, so the FIRST file byte lands in the
+            // HIGH byte ([31:24]) - big-endian.
+            //
+            // The HDV path uses !le (big-endian): the core drives
+            // bridge_endian_little = 0, so the real host writes each DMA word
+            // with the first file byte in [31:24], and hdv_bridge.sv unpacks
+            // big-endian to match (review 2026-11-02). The WOZ storage path
+            // also consumes the big-endian (file-order) orientation, so both
+            // use !le. (le=true is retained only as a parameter for the WOZ
+            // orientation if a LE host is ever modelled.)
+            int idx = le ? (3 - k) : k;
+            uint8_t b = (i + idx < buf.size()) ? buf[i + idx] : 0;
             o << hx[b >> 4] << hx[b & 0xF];
         }
         o << '\n';
@@ -115,29 +129,54 @@ static void dumpPpm(const char *path, const uint32_t *fb, int w, int h,
 int main(int argc, char **argv)
 {
     std::string wozaPath = "disk.woz";
+    std::string hdvPath;
     int seqMode = 0;
     bool smoke = false;
+    bool hdvMode = false;
+    bool hdvDt = false;        // +HDV_DT: also write the datatable entry
+    bool hdvNo008A = false;    // +HDV_NO008A: datatable-only mount variant
+    bool hdvNomount = false;   // +HDV_NOMOUNT: never mount (ROM must fall back)
+    long hdvMountMs = 0;       // 0 = mount at reset release + 50 us settle
+    long hdvFailAt = 0, hdvStallAt = 0, hdvStallMs = 200, hdvGap = 0;
+    bool budgetSet = false;
     bool dramTrace = false;
     bool wzBoundNF = false;
     bool smokePass = false;
     uint32_t wozaCrc = 0;
-        // Context time is in ps (TB timescale 1ns/1ps: #1 = 1ns, 1ms = 1e9 ps).
-    // The host cycle needs ~80 ms of sim time (2 ms action_go + 20 ms
-    // pre-wait + ~58 ms WOZ load at load_pace=40 + Reset-Exit), and the
-    // smoke milestone (below) requires t > 100 ms - so the budget must
-    // exceed 100 ms. (Was 50e9 = 50 ms: the run always ended mid-load and
-    // the smoke could never pass - found 2026-10-24, post-review sweep run.
-    // Pre-existing: the 2026-10-24 01:41 pre-sweep smoke failed identically.)
-    double budgetPs = 1000e9;   // 1000 ms of sim time
+    size_t hdvBytes = 0;
+        // Context time is in the timeprecision() units (PS for this design:
+        // `timescale 1ns/1ps`). VerilatedContext::time() returns ps
+        // (verilated.h: "Returns current simulation time in units of
+        // timeprecision()"; confirmed by the 2026-11-01 e74a ratio =
+        // 1000.000). The pre-fix comment claimed NS - that wrong assumption
+        // made every C++ time value 1000x too large (see
+        // REVIEW_BRIEF_HDV_SIMHOST_TIMING_2026-11-01.md). Convert at the
+        // read site (t = tps/1000.0); all constants below are NS.
+    // The host WOZ load cycle holds machine reset for ~60 ms of machine time
+    // in this harness (load_pace; the pre-fix "~60 s" was the 1000x unit bug).
+    // The smoke milestone (below) fires at 100 ms, so 70 s leaves ample
+    // margin (early-exit on the gate makes the ceiling moot in practice).
+    // (1 s = 1e9 ns. The .bat's --budget-ms path (x1e6, ms->ns) is correct.)
+    double budgetNs = 70e9;   // 70 s of sim time (ceiling; gate early-exits)
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--woz" && i + 1 < argc) wozaPath = argv[++i];
+        else if (a == "--hdv" && i + 1 < argc) { hdvPath = argv[++i]; hdvMode = true; }
+        else if (a == "--hdv-dt") hdvDt = true;
+        else if (a == "--hdv-no008a") hdvNo008A = true;
+        else if (a == "--hdv-nomount") hdvNomount = true;
+        else if (a == "--mount-ms" && i + 1 < argc) hdvMountMs = atol(argv[++i]);
+        else if (a == "--fail-at" && i + 1 < argc) hdvFailAt = atol(argv[++i]);
+        else if (a == "--stall-at" && i + 1 < argc) hdvStallAt = atol(argv[++i]);
+        else if (a == "--stall-ms" && i + 1 < argc) hdvStallMs = atol(argv[++i]);
+        else if (a == "--gap" && i + 1 < argc) hdvGap = atol(argv[++i]);
         else if (a == "--smoke") smoke = true;
         else if (a == "--dramtrace") dramTrace = true;
         else if (a == "--wzbound-nf") wzBoundNF = true;
         else if (a == "--budget-ms" && i + 1 < argc) {
-            budgetPs = atof(argv[++i]) * 1e9;
+            budgetNs = atof(argv[++i]) * 1e6;
+            budgetSet = true;
         }
         else if (a == "--seq" && i + 1 < argc) {
             std::string s = argv[++i];
@@ -145,10 +184,14 @@ int main(int argc, char **argv)
                 if (s == seqNames[m]) seqMode = m;
         } else if (a == "--help") {
             fprintf(stderr,
-                "Usage: %s [--woz FILE.woz] [--seq around|after|before|none] [--smoke]\n",
+                "Usage: %s [--woz FILE.woz] [--hdv FILE.hdv] [--seq around|after|before|none] [--smoke] [--budget-ms N]\n",
                 argv[0]);
             return 0;
         }
+    }
+    if (hdvMode) {   // headless boot-observation run
+        smoke = true;
+        if (!budgetSet) budgetNs = 3e9;    // 3 s ceiling: HDV fast path boots in ms of machine time
     }
 
     // WOZ -> hex for the TB's $readmemh
@@ -157,20 +200,43 @@ int main(int argc, char **argv)
     char plusSize[64];
     snprintf(plusSize, sizeof plusSize, "+WOZSIZE=%zu", wozaBytes);
     char *sizeArg = plusSize;
+    // HDV -> hex (full image, 4-bytes/line LE words, same layout as WOZ).
+    // NOTE: each plusarg is a SEPARATE argv element (Verilator does not
+    // split one element on spaces).
+    static char hdvArgBuf[10][40];
+    char *hdvArgList[10];
+    int nHdvArg = 0;
     static char nfArg[16];
     if (wzBoundNF) snprintf(nfArg, sizeof nfArg, "+WZBOUND_NF=1");
-    int nargv = argc + 1 + (dramTrace ? 1 : 0) + (wzBoundNF ? 1 : 0);
+    if (hdvMode) {
+        if (!wozaToHex(hdvPath, "pocket_boot.hdv.hex", &hdvBytes, nullptr,
+                       /*le=*/false))
+            return 2;
+        snprintf(hdvArgBuf[nHdvArg], 40, "+HDV_EN=1");          hdvArgList[nHdvArg++] = hdvArgBuf[0];
+        snprintf(hdvArgBuf[nHdvArg], 40, "+HDV_SIZE=%zu", hdvBytes); hdvArgList[nHdvArg++] = hdvArgBuf[1];
+        snprintf(hdvArgBuf[nHdvArg], 40, "+HDV_MOUNT_MS=%ld", hdvMountMs); hdvArgList[nHdvArg++] = hdvArgBuf[2];
+        snprintf(hdvArgBuf[nHdvArg], 40, "+HDV_FAIL_AT=%ld", hdvFailAt); hdvArgList[nHdvArg++] = hdvArgBuf[3];
+        snprintf(hdvArgBuf[nHdvArg], 40, "+HDV_STALL_AT=%ld", hdvStallAt); hdvArgList[nHdvArg++] = hdvArgBuf[4];
+        snprintf(hdvArgBuf[nHdvArg], 40, "+HDV_STALL_MS=%ld", hdvStallMs); hdvArgList[nHdvArg++] = hdvArgBuf[5];
+        snprintf(hdvArgBuf[nHdvArg], 40, "+HDV_GAP=%ld", hdvGap); hdvArgList[nHdvArg++] = hdvArgBuf[6];
+        if (hdvDt) { snprintf(hdvArgBuf[nHdvArg], 40, "+HDV_DT=1"); hdvArgList[nHdvArg++] = hdvArgBuf[7]; }
+        if (hdvNo008A) { snprintf(hdvArgBuf[nHdvArg], 40, "+HDV_NO008A=1"); hdvArgList[nHdvArg++] = hdvArgBuf[8]; }
+        if (hdvNomount) { snprintf(hdvArgBuf[nHdvArg], 40, "+HDV_NOMOUNT=1"); hdvArgList[nHdvArg++] = hdvArgBuf[9]; }
+    }
+    int nargv = argc + 1 + (dramTrace ? 1 : 0) + (wzBoundNF ? 1 : 0) + nHdvArg;
     char **nargv2 = new char *[nargv + 1];
     for (int i = 0; i < argc; i++) nargv2[i] = argv[i];
     nargv2[argc] = sizeArg;
     int extra = argc + 1;
     if (dramTrace) nargv2[extra++] = "+DRAM_TRACE=1";
     if (wzBoundNF) nargv2[extra++] = nfArg;
+    for (int i = 0; i < nHdvArg; i++) nargv2[extra++] = hdvArgList[i];
     nargv2[nargv] = nullptr;
     Verilated::commandArgs(nargv, nargv2);
     std::filesystem::create_directories("pocket_boot_shots");
-    fprintf(stderr, "pocket_boot: WOZ %s (%zu bytes) seq=%s smoke=%d\n",
-            wozaPath.c_str(), wozaBytes, seqNames[seqMode], smoke);
+    fprintf(stderr, "pocket_boot: WOZ %s (%zu bytes) seq=%s smoke=%d hdv=%s\n",
+            wozaPath.c_str(), wozaBytes, seqNames[seqMode], smoke,
+            hdvMode ? hdvPath.c_str() : "off");
 
     // ---- sim model ------------------------------------------------------
     Vtb_pocket_boot *top = new Vtb_pocket_boot;
@@ -210,10 +276,22 @@ int main(int argc, char **argv)
 
     bool quit = false;
     long stallCount = 0;
-    double lastLog = -1e9;
+    double lastLog = -1e6;
     int shotCount = 0;
     VerilatedContext *ctx = top->contextp();
     int jumpDbg = 0;
+
+    // time-axis self-check (2026-11-01 review Q1): validate the ps->ns axis
+    // against e74a, the free-running 74.25 MHz edge counter - ground truth
+    // independent of any display. If Verilator's precision ever changes the
+    // harness must fail loudly, not silently mistime a matrix again.
+    double   tcT0 = -1.0, tcT1 = -1.0;
+    uint32_t tcE0 = 0, tcE1 = 0;
+    bool     tcDone = false, tcFail = false;
+    double   hdvTm = -1.0;     // t at which both HDV milestones were set
+    bool     hdvHardFail = false;   // budget exit without milestones
+    fprintf(stderr, "TIMEAX: ctx->timeprecision()=%d (reference only; e74a is the check)\n",
+            (int)ctx->timeprecision());
 
     // Verilator 5 --timing main loop (matches the generated --binary main):
     // eval() processes events at the current time; when events are pending
@@ -240,15 +318,52 @@ int main(int argc, char **argv)
         if (ctx->gotFinish()) break;
         if (!top->eventsPending()) quit = true;   // true stop: nothing left
 
-        uint64_t tps = top->contextp()->time();   // ps (Verilator context time is ps)
-        double t = (double)tps;
+        uint64_t tps = top->contextp()->time();   // ps (timeprecision units)
+        // 2026-11-01 review: ctx->time() is in timeprecision() units (ps for
+        // this design's `timescale 1ns/1ps`); the pre-fix code used the raw
+        // ps value as ns, making every C++ time (display, budget, gates)
+        // 1000x too large. Work in ns everywhere below.
+        double t = (double)tps / 1000.0;          // ns
 
         if (slots == 0 && stallCount++ < 5)
             fprintf(stderr, "STALL: t=%.3fms pending=%d\n",
                     t / 1e6, (int)top->eventsPending());
 
+        // ---- time-axis self-check (once, over a known 50 ms window) ----
+        if (!tcDone && !tcFail) {
+            if (tcT0 < 0 && t >= 1e6) {
+                tcT0 = t; tcE0 = (uint32_t)P(e74a);
+            } else if (tcT0 >= 0 && t >= tcT0 + 50e6) {
+                tcT1 = t; tcE1 = (uint32_t)P(e74a); tcDone = true;
+                double mhz = (double)(tcE1 - tcE0) / (tcT1 - tcT0) * 1e3;
+                fprintf(stderr, "TIMECHECK: e74a rate=%.3f MHz over %.1f ms (expect 74.25 +/-2%%)\n",
+                        mhz, (tcT1 - tcT0) / 1e6);
+                if (mhz < 72.8 || mhz > 75.7) {
+                    tcFail = true;
+                    fprintf(stderr,
+                            "TIMECHECK FAIL: ps->ns axis wrong (ratio off). "
+                            "Aborting before burning wall time.\n");
+                    break;
+                }
+            }
+        }
+
+        // ---- sim-rate line (budget must be chosen from data, not stale notes)
+        {
+            static auto wallPrev = std::chrono::steady_clock::now();
+            static double simPrev = 0.0;
+            auto wallNow = std::chrono::steady_clock::now();
+            double wallS = std::chrono::duration<double>(wallNow - wallPrev).count();
+            if (wallS >= 5.0) {
+                fprintf(stderr, "SIMRATE: sim=%.1f ms wall=%.1f s rate=%.3f ms-sim/s-wall (%.0fx slower than realtime)\n",
+                        t / 1e6, wallS, (t - simPrev) / 1e6 / wallS,
+                        wallS / ((t - simPrev) / 1e9));
+                wallPrev = wallNow; simPrev = t;
+            }
+        }
+
         // ---- console diagnostics (every 1 ms of sim time) ---------------
-        if (t - lastLog > 1e9) {
+        if (t - lastLog > 1e6) {
             lastLog = t;
             stallCount = 0;
             fprintf(stderr,
@@ -273,13 +388,18 @@ int main(int argc, char **argv)
                 if (smoke) {
                     // keep the last 3 frames as PPMs + one long_ shot
                     // every 200 frames for boot-sequence review
-                    char path[64];
-                    snprintf(path, sizeof path,
-                             "pocket_boot_shots/f%03d_%06d.ppm",
-                             shotCount % 3, (int)P(frame_cnt));
-                    dumpPpm(path, P(fb).data(), w, h, 720);
-                    shotCount++;
+                    // stride 20: a 10 s run is ~600 frames; per-frame PPM
+                    // writes would be ~600 MB of disk I/O (review 2026-11-01)
+                    if (P(frame_cnt) % 20 == 0) {
+                        char path[64];
+                        snprintf(path, sizeof path,
+                                 "pocket_boot_shots/f%03d_%06d.ppm",
+                                 shotCount % 3, (int)P(frame_cnt));
+                        dumpPpm(path, P(fb).data(), w, h, 720);
+                        shotCount++;
+                    }
                     if (P(frame_cnt) % 200 == 0) {
+                        char path[64];
                         snprintf(path, sizeof path,
                                  "pocket_boot_shots/long_%04d.ppm",
                                  (int)(P(frame_cnt) / 200));
@@ -331,18 +451,72 @@ int main(int argc, char **argv)
             }
         }
 
+        // ---- hdv observation exit (2026-11-01, review 2026-11-01) --------
+        // The budget is a ceiling, not the runtime: as soon as both boot
+        // milestones (launcher block 41904 + catalog block 41907 fetched)
+        // are set, give the launcher 2 s to reach its verdict screen, then
+        // stop. A budget exit WITHOUT both milestones is a hard fail
+        // ("verdict not reached") - not a content verdict.
+        if (hdvMode) {
+            if (P(hdv_mile_launcher) && P(hdv_mile_catalog)) {
+                if (hdvTm < 0) {
+                    hdvTm = t;
+                    fprintf(stderr,
+                            "HDV MILESTONES: launcher+catalog fetched at t=%.3fms; +200 ms settle for verdict screen\n",
+                            t / 1e6);
+                } else if (t > hdvTm + 200e6) {
+                    fprintf(stderr, "HDV EARLY EXIT: verdict window elapsed (milestones + 200 ms settle)\n");
+                    dumpPpm("pocket_boot_shots/final.ppm", P(fb).data(),
+                            (int)P(fb_w), (int)P(fb_h), 720);
+                    fprintf(stderr,
+                            "HDV RUN END (early): frames=%d fetches=%d errfetches=%d mt=%d tf=%d "
+                            "mile_launcher=%d mile_catalog=%d t=%.3fms fb=%ux%u\n",
+                            (int)P(frame_cnt), (int)P(hdv_fetch_cnt),
+                            (int)P(hdv_err_cnt), (int)P(d_mt), (int)P(d_tf),
+                            (int)P(hdv_mile_launcher), (int)P(hdv_mile_catalog),
+                            t / 1e6, (unsigned)P(fb_w), (unsigned)P(fb_h));
+                    fprintf(stderr,
+                            "HDV VERDICT REACHED: milestones set - inspect final.ppm + HDVFETCH trace.\n");
+                    quit = true;
+                }
+            }
+            if (t > budgetNs && !quit) {
+                dumpPpm("pocket_boot_shots/final.ppm", P(fb).data(),
+                        (int)P(fb_w), (int)P(fb_h), 720);
+                fprintf(stderr,
+                        "HDV RUN END (budget ceiling): frames=%d fetches=%d errfetches=%d mt=%d tf=%d "
+                        "mile_launcher=%d mile_catalog=%d t=%.3fms fb=%ux%u\n",
+                        (int)P(frame_cnt), (int)P(hdv_fetch_cnt),
+                        (int)P(hdv_err_cnt), (int)P(d_mt), (int)P(d_tf),
+                        (int)P(hdv_mile_launcher), (int)P(hdv_mile_catalog),
+                        t / 1e6, (unsigned)P(fb_w), (unsigned)P(fb_h));
+                if (P(hdv_mile_launcher) && P(hdv_mile_catalog)) {
+                    fprintf(stderr,
+                            "HDV VERDICT REACHED: milestones set - inspect final.ppm + HDVFETCH trace.\n");
+                } else {
+                    fprintf(stderr,
+                            "HDV VERDICT NOT REACHED: milestones missing (launcher=%d catalog=%d). "
+                            "Harness/transport/boot failure - NOT a content verdict.\n",
+                            (int)P(hdv_mile_launcher), (int)P(hdv_mile_catalog));
+                    hdvHardFail = true;
+                }
+                quit = true;
+            }
+        }
+
         // ---- smoke exit ---------------------------------------------------
         // Milestone (review 2026-10-22): mounted, no transport fault, CRC of
         // the SDRAM image matches the original file, video alive. Read
         // counts alone are NOT boot proof.
-        // t > 100 ms (was 800 ms, 2026-10-24): the old interactive runs show
-        // the machine first frame at ~68 ms of sim time, so 100 ms keeps
-        // boot margin while the run stays a ~1-hour background job instead
-        // of ~7 hours at this harness's sim speed (~30,000x realtime).
-        if (smoke) {
+        // t > 100 ms: the WOZ load takes ~60 ms of machine time in this
+        // harness, so 100 ms keeps boot margin. With the 2026-11-01 ps->ns
+        // fix this gate finally means 100 ms (pre-fix it was 100 us, which
+        // is why the smoke "failed" with mt=0 - the open finding). The
+        // milestone early-exits; the 70 s budget is only a ceiling.
+        if (smoke && !hdvMode) {
             bool crcOk  = ((unsigned)P(d_crc) == wozaCrc) && P(load_res8f) == 0;
             bool mountOk = P(d_mt) && !P(d_tf);
-            if (crcOk && mountOk && P(frame_cnt) >= 3 && t > 100e9) {
+            if (crcOk && mountOk && P(frame_cnt) >= 3 && t > 100e6) {
                 fprintf(stderr,
                         "SMOKE BOOT OK: frames=%d reads=%u crc=%08X mt=%d tf=%d res8f=%04X t=%.3fms fb=%ux%u\n",
                         (int)P(frame_cnt), (unsigned)P(d_reads),
@@ -407,13 +581,13 @@ int main(int argc, char **argv)
                 smokePass = true;
                 break;
             }
-            if (t > budgetPs) {
+            if (t > budgetNs) {
                 fprintf(stderr,
                         "SMOKE END: frames=%d reads=%u crc=%08X(exp %08X) mt=%d tf=%d res8f=%04X (t>%.0fms) fb=%ux%u\n",
                         (int)P(frame_cnt), (unsigned)P(d_reads),
                         (unsigned)P(d_crc), wozaCrc,
                         (int)P(d_mt), (int)P(d_tf), (int)P(load_res8f),
-                        budgetPs / 1e6,
+                        budgetNs / 1e6,
                         (unsigned)P(fb_w), (unsigned)P(fb_h));
                 break;
             }
@@ -468,13 +642,15 @@ int main(int argc, char **argv)
             (int)P(frame_cnt), (unsigned)P(d_reads), (int)smokePass);
     fprintf(stderr, "exit reason: quit=%d gotFinish=%d t=%.3fms\n",
             (int)quit, (int)ctx->gotFinish(),
-            top->contextp()->time() / 1e6);
+            top->contextp()->time() / 1e9);   // ps -> ms
     top->final();
     delete top;
     delete[] nargv2;
     if (win) SDL_DestroyWindow(win);
     if (ren) SDL_DestroyRenderer(ren);
     SDL_Quit();
+    if (hdvMode && hdvHardFail) return 5;     // verdict not reached (review 2026-11-01)
+    if (tcFail) return 3;                      // time-axis self-check failed
     if (smoke && !smokePass) return 1;   // milestone not reached
     return 0;
 }

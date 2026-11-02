@@ -108,6 +108,30 @@
             "name": "Space / Return"
           }
         ]
+      },
+      {
+        "name": "Boot Media",
+        "id": 8,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "defaultval": 0,
+        "address": "0x01F00010",
+        "options": [
+          {
+            "value": 0,
+            "name": "Both"
+          },
+          {
+            "value": 1,
+            "name": "Floppy"
+          },
+          {
+            "value": 2,
+            "name": "HDD"
+          }
+        ]
       }
     ],
     "messages": []

@@ -42,6 +42,13 @@ module reboot_ctl #(
     input  wire reboot_opt,   // synchronized option bit: 1 = reboot on change
     input  wire mount_rise,   // rising edge of the mount controller's img_mounted
     input  wire clr_done,     // RAM sweep finished (both 65,536-address passes written)
+    input  wire osk_cold_req, // OSK Reset release: force a cold reboot (RAM sweep +
+                              //   reset-hold) so an OSK Reset is a true cold boot -
+                              //   it must NOT be gated by reboot_opt (the user
+                              //   explicitly pressed Reset). Without this the OSK
+                              //   Reset was a warm reset (RAM retained) and the ROM
+                              //   took the $E000 floppy path, never running the HD
+                              //   slot-scan (expert review 2026-10-30).
     output wire cold_reset,   // 1 = must be ORed into machine_reset
     output wire ram_clear     // 1 = RAM sweep in progress
 );
@@ -54,7 +61,9 @@ module reboot_ctl #(
     reg [17:0] cnt;
     reg        ever;        // seen at least one mount since rst
 
-    assign cold_reset = active;
+    // OR in osk_cold_req combinationally so the reset is held from the request
+    // cycle itself (no 1-cycle out-of-reset glitch before `active` registers).
+    assign cold_reset = active | osk_cold_req;
     assign ram_clear  = active && in_clr;
 
     wire first_rise = mount_rise && !ever;
@@ -69,8 +78,9 @@ module reboot_ctl #(
             if (mount_rise)
                 ever <= 1'b1;
 
-            if (!active && mount_rise && !first_rise && reboot_opt) begin
-                // a later mount with the option ON: start the cold reboot
+            if (!active && (osk_cold_req || (mount_rise && !first_rise && reboot_opt))) begin
+                // a later mount with the option ON, OR an OSK Reset release:
+                // start the cold reboot
                 active <= 1'b1;
                 in_clr <= 1'b1;
                 cnt    <= 18'd0;

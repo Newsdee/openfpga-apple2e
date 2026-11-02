@@ -26,7 +26,7 @@
                 "id": 2,
                 "required": false,
                 "deferload": true,
-                "extensions": [ "hdv", "po", "2mg" ],
+                "extensions": [ "hdv" ],
                 "size_maximum": "0x80000000",
                 "parameters": 1
             }

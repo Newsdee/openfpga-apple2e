@@ -53,6 +53,7 @@ module hdd_verilog_tb;
         .hdd_write(hdd_write),
         .hdd_mounted(hdd_mounted),
         .hdd_protect(hdd_protect),
+        .bridge_fault(1'b0),   // Pocket-only fault injection; off in equivalence
         .ram_addr(ram_addr),
         .ram_di(ram_di),
         .ram_do(ram_do),

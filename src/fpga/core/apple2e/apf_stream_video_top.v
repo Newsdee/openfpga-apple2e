@@ -971,11 +971,20 @@ pdl_timer u_pdl (
 // the user is actively changing the option).
 reg  [31:0] cfg_j2k_dir_word = 32'd0;
 reg  [31:0] cfg_j2k_btn_word = 32'd0;
+reg  [31:0] cfg_media_word   = 32'd0;   // "Boot Media" (0x01F00010)
 always @(posedge clk_74a) begin
     if (bridge_wr && bridge_addr == 32'h01F00008)
         cfg_j2k_dir_word <= bridge_wr_data;
     if (bridge_wr && bridge_addr == 32'h01F0000C)
         cfg_j2k_btn_word <= bridge_wr_data;
+    // Boot Media: write-only (host writes at boot, never reads back), so
+    // the 01F00xxx read-back wildcard stays in its proven form - the same
+    // safe pattern as cfg_j2k_* / cfg_colour_word (see the 2026-10-25
+    // disk-bisect: read-back mux arms broke disk loading on silicon).
+    // value: 0=Both 1=Floppy (HD card off the bus) 2=HDD (floppy ejected).
+    // Replaces the 0742 build's "Floppy Eject" id 7 (same address).
+    if (bridge_wr && bridge_addr == 32'h01F00010)
+        cfg_media_word <= bridge_wr_data;
 end
 
 // ---- .a2k profile slot (2026-10-27, joy2key Phase 2) ----
@@ -1109,6 +1118,19 @@ synch_3 #(.WIDTH(3)) u_j2k_btn_sync (
     .i(cfg_j2k_btn_word[2:0]), .o(j2k_btn_m),
     .clk(clk_core_14318), .rise(), .fall()
 );
+
+// Boot Media (machine domain): 00=Both 01=Floppy (HD off) 10=HDD (floppy eject).
+// bit1 feeds woz_mount_ctl.eject_req (the HDD entry holds the WOZ drive
+// unmounted); bit0 gates the HD card off the bus (the Floppy entry: the ROM
+// slot-scan sees an empty slot 7 and falls through to the slot-6 floppy).
+// Default (host never wrote) = 00 = Both = bit-identical to the pre-gate
+// wiring (~0 selects everything, the eject level is 0).
+wire [1:0] media_m;
+synch_3 #(.WIDTH(2)) u_media_sync (
+    .i(cfg_media_word[1:0]), .o(media_m),
+    .clk(clk_core_14318), .rise(), .fall()
+);
+wire hd_off_m = media_m[0];
 
 // joy_to_key's bus convention (post-fix MiSTer order). DO NOT feed joy_dig:
 // its bits 2/3 are swapped and X/Y sit in the Start/Select slots - that is
@@ -1499,6 +1521,15 @@ parameter FP_DIAG = 1'b0;
 // by the runtime "Debug" interact option in the follow-up compile (J9).
 parameter OVL_DEBUG = 1'b1;
 
+// Debug-line visibility window in machine clocks (14.318 MHz). The debug
+// lines (MT=/RD=, AC=/MO=, ST=/A=/F=, RQ=) are drawn only while this window
+// is open after each machine reset. The previous hardwired 0x3FFFFF was
+// ~0.29 s - far too short to photograph (the "4.7 s" comment was stale).
+// Default 10 s: long enough to capture the boot/load diagnostics, then it
+// clears (not "always on"). Widen for a diagnostic build, shorten for a
+// tighter boot screen.
+parameter [27:0] OVL_DBG_WIN_CYCLES = 28'd143_180_000;
+
 sdram_storage #(.FP_EN(FP_DIAG)) stor (
     .clk_74a         ( clk_74a ),
     .sdram_path_rst  ( sdram_path_rst ),
@@ -1606,12 +1637,20 @@ wire        reboot_opt_m;
 synch_3 #(.WIDTH(1)) u_reboot_opt_sync (
     .i(cfg_reboot_word[0]), .o(reboot_opt_m), .clk(clk_core_14318)
 );
+// OSK Reset release -> a cold reboot (so an OSK Reset is a true cold boot that
+// runs the ROM slot-scan and can load the HD). Synchronize osk_cmd_reset to the
+// 14.318 MHz machine clock, then take its falling edge (release). Not gated by
+// reboot_opt: an explicit OSK Reset always cold-boots.
+reg [1:0] osk_reset_s;
+always @(posedge clk_core_14318) osk_reset_s <= {osk_reset_s[0], osk_cmd_reset};
+wire osk_cold_req = ~osk_reset_s[0] & osk_reset_s[1];   // synchronized falling edge
 reboot_ctl woz_reboot (
     .clk         ( clk_core_14318 ),
     .rst         ( machine_reset_base ),
     .reboot_opt  ( reboot_opt_m ),
     .mount_rise  ( mc_mount_rise ),
     .clr_done    ( swp_done ),
+    .osk_cold_req( osk_cold_req ),
     .cold_reset  ( cold_reset_m ),
     .ram_clear   ( ram_clear_m )
 );
@@ -1621,7 +1660,14 @@ reboot_ctl woz_reboot (
 // The HDV (slot 7: $C700-$C7FF ROM + $C0F0-$C0FF registers, the AppleWin
 // HDD interface layout used by MiSTer) takes priority - its address
 // ranges never overlap the disk slot's, so the ordering is only for form.
-wire [7:0]  m_pd_mux = (m_dev_sel[7] | m_io_sel[7]) ? hdd_dout :
+// Slot 7 presence gate: the Boot Media option's Floppy entry takes the HD
+// card off the bus entirely (C7xx reads return the empty-slot value 0x00,
+// the hdd instance is deselected) so the ROM slot-scan signature check
+// (C701=$20, C703=$00, C705=$03) never matches and falls through to the
+// slot-6 WOZ floppy. For Both/HDD (hd_off_m=0) the wiring is bit-identical
+// to the pre-gate form.
+wire sel7_live = (m_dev_sel[7] | m_io_sel[7]) & ~hd_off_m;
+wire [7:0]  m_pd_mux = sel7_live ? hdd_dout :
                        (m_dev_sel[6] | m_io_sel[6]) ? woz_dout : 8'h00;
 
 disk_ii_woz woz (
@@ -1693,6 +1739,7 @@ woz_mount_ctl woz_mc (
     .res_nbytes_m    ( stor_res_nbytes_m ),
     .new_load_m      ( stor_new_load_m ),
     .transport_fault ( woz_transport_fault ),
+    .eject_req       ( media_m[1] ),
     .img_mounted     ( mc_img_mounted ),
     .img_size        ( mc_img_size ),
     .img_readonly    ( ),
@@ -1713,34 +1760,46 @@ woz_mount_ctl woz_mc (
 // CPU_WAIT for the whole transfer, and walks the 512-byte sector buffer.
 // Read-only milestone: hdd_protect=1, so hdd_write never fires (C0F0
 // WRITE returns 0x2B PROTECT) and the 0x0184 arm stays inert.
-wire        hdd_read, hdd_write, hdd_dout_w;
+wire        hdd_read, hdd_write;
+wire [7:0]  hdd_dout;
 wire [15:0] hdd_sector;
 wire [8:0]  hdd_ram_addr;
 wire [7:0]  hdd_ram_di, hdd_ram_do;
 wire        hdd_ram_we;
 wire        cpu_wait_hdd;
 wire [31:0] hdv_ram_word;   // bridge readback window 0x01F01000-00F
+wire [2:0]  hdv_state;
+wire        hdv_fault;
+wire [7:0]  hdv_fetch_cnt;
+wire        bridge_err_74;   // bridge drop/timeout fault pulse (74a)
+wire        bridge_err_m;    // 2FF-synced to the machine domain for hdd
+synch_3 #(.WIDTH(1)) u_bridge_err_sync (
+    .i(bridge_err_74), .o(bridge_err_m), .clk(clk_core_14318), .rise(), .fall()
+);
 
 hdd u_hdd (
     .CLK_14M        ( clk_core_14318 ),
-    .IO_SELECT      ( m_io_sel[7] ),
-    .DEVICE_SELECT  ( m_dev_sel[7] ),
+    // Boot Media = Floppy takes the whole card off the bus - including the
+    // WRITE path (C0F0/C0F2/C0F3 writes must not arm a 0x0180 fetch while
+    // the ROM believes slot 7 is empty; the read mux alone is not enough).
+    .IO_SELECT      ( m_io_sel[7] & ~hd_off_m ),
+    .DEVICE_SELECT  ( m_dev_sel[7] & ~hd_off_m ),
     .RESET          ( machine_reset ),
     .A              ( m_addr ),
     .RD             ( ~m_cpu_we ),
     .D_IN           ( m_ram_di ),
-    .D_OUT          ( hdd_dout_w ),
+    .D_OUT          ( hdd_dout ),
     .sector         ( hdd_sector ),
     .hdd_read       ( hdd_read ),
     .hdd_write      ( hdd_write ),
     .hdd_mounted    ( hdv_mounted_m ),
     .hdd_protect    ( 1'b1 ),
+    .bridge_fault   ( bridge_err_m ),
     .ram_addr       ( hdd_ram_addr ),
     .ram_di         ( hdd_ram_di ),
     .ram_do         ( hdd_ram_do ),
     .ram_we         ( hdd_ram_we )
 );
-wire [7:0] hdd_dout = hdd_dout_w;
 
 hdv_bridge u_hdv_bridge (
     .clk_74a        ( clk_74a ),
@@ -1767,7 +1826,11 @@ hdv_bridge u_hdv_bridge (
     .hdd_read       ( hdd_read ),
     .hdd_write      ( hdd_write ),
     .hdd_sector     ( hdd_sector ),
-    .cpu_wait_hdd   ( cpu_wait_hdd )
+    .cpu_wait_hdd   ( cpu_wait_hdd ),
+    .hdv_state      ( hdv_state ),
+    .hdv_fault      ( hdv_fault ),
+    .hdv_fetch_cnt  ( hdv_fetch_cnt ),
+    .bridge_err     ( bridge_err_74 )
 );
 
 // CPU_WAIT (active-high = stall the 6502) for the whole HDV transfer
@@ -1775,6 +1838,43 @@ wire        cpu_wait_hdd_m;
 synch_3 #(.WIDTH(1)) u_hdd_wait_sync (
     .i(cpu_wait_hdd), .o(cpu_wait_hdd_m), .clk(clk_core_14318), .rise(), .fall()
 );
+
+// HDV bridge diagnostics for the on-screen debug line (74a -> 14M):
+// {cpu stalled now, fetch/write timeout fault, FSM state, last host err,
+// completed-fetch count}. The 10 s window renders it as
+// "HD=S F=F E=E N=NN M=M" (see sdram_status_overlay.v). Bit[15] is the
+// HDV MOUNTED state (hdv_size_q != 0) - the decisive 2026-11-02 hardware
+// diagnostic: N=0+F=0+E=0+M=0 => every fetch dropped as not-mounted;
+// N=0+M=1 => the driver never armed a 0x0180 at all.
+wire [15:0] hd_dbg_74 = {hdv_mounted_74, hdv_fault, hdv_state,
+                         target_dataslot_err, hdv_fetch_cnt};
+wire [15:0] hd_dbg_m;
+synch_3 #(.WIDTH(16)) u_hd_dbg_sync (
+    .i(hd_dbg_74), .o(hd_dbg_m), .clk(clk_core_14318), .rise(), .fall()
+);
+
+// PC snapshot (2026-11-02 hardware slowness diagnostic): the 6502 crawls
+// (~1 HD block / 30 s) and sits on the Apple logo. Capture the program
+// counter on the fetch phase (PHASE_ZERO) so the overlay can show where the
+// CPU is sitting. m_addr is the CPU address bus (PC on fetch, data address
+// on access); gating on m_pz isolates the PC. Same machine clock as the
+// overlay - no CDC needed.
+reg  [15:0] pc_snap_m;
+always @(posedge clk_core_14318) begin
+    if (m_pz)
+        pc_snap_m <= m_addr;
+end
+
+// DATA-address snapshot (2026-11-02): the PC flickers between two states = a
+// tight two-address loop, i.e. a soft-switch polling loop. Capture m_addr on
+// the ACCESS phase (!PHASE_ZERO) - that is the data address the 6502 is
+// reading/writing. If the loop polls a soft switch, this sits steady on that
+// C0xx address and identifies exactly which switch never changes on the FPGA.
+reg  [15:0] da_snap_m;
+always @(posedge clk_core_14318) begin
+    if (!m_pz)
+        da_snap_m <= m_addr;
+end
 
 // ---- drive-activity diagnostics (M1 no-boot: where is it stuck?) ----
 wire        drv_active;            // engine D1_ACTIVE (selected-drive motor)
@@ -1789,27 +1889,28 @@ end
 
 // ---- on-screen diagnostic (temporary, M0 only) ----
 wire [23:0] ovl_rgb;
-// J11 (2026-10-25): overlay visibility = ~4.7 s after each machine reset
-// (2026-10-25 rev2: shortened from ~9.4 s - owner found the longer window
-// "always on" in practice). The boot window covers the disk-load/verify
-// diagnostics (they happen while the keyboard is closed) and re-arms on
-// every reset, including the "Reboot on disk change" cold reboots.
+// J11 (2026-10-25): overlay visibility = a fixed window after each machine
+// reset, re-arming on every reset including "Reboot on disk change" cold
+// reboots. Window length is now the OVL_DBG_WIN_CYCLES parameter (default
+// 10 s - the old hardwired 0x3FFFFF was ~0.29 s, too short to photograph;
+// the "4.7 s" comment that preceded it was already stale). The owner can
+// shorten it if the boot screen feels "always on".
 // Machine-domain only - no bridge read-back (J7/J9 two-line mystery).
 // 0.2.6: the OSK-visible escape hatch (J11: "keyboard open shows diagnostics
 // at any time") is REMOVED per owner request - while the on-screen keyboard
 // is open the screen belongs to the keyboard; the same diagnostics remain
 // available in the 0xF9xxxxxx bridge debug reads.
-reg  [25:0] dbg_win_cnt = 26'd0;
+reg  [27:0] dbg_win_cnt = 28'd0;
 always @(posedge clk_core_14318)
-    if (machine_reset) dbg_win_cnt <= 26'd0;
-    else if (dbg_win_cnt != 26'h3FFFFF) dbg_win_cnt <= dbg_win_cnt + 26'd1;
-wire        ovl_debug_en = (dbg_win_cnt != 26'h3FFFFF);
+    if (machine_reset) dbg_win_cnt <= 28'd0;
+    else if (dbg_win_cnt != OVL_DBG_WIN_CYCLES) dbg_win_cnt <= dbg_win_cnt + 28'd1;
+wire        ovl_debug_en = (dbg_win_cnt != OVL_DBG_WIN_CYCLES);
 
 sdram_status_overlay #(.SHOW_FP(FP_DIAG), .OVL_DBG(OVL_DEBUG)) ovl (
     .clk(clk_core_14318), .reset(machine_reset),
     // sel_* (NTSC): RGB and its own blanking travel together - the overlay must
     // be positioned by the same blanking that produced the pixels.
-    // debug_en (main, J11): overlay visibility = OSK visible OR ~4.7 s post-reset.
+    // debug_en (main, J11): overlay visibility = OSK visible OR the OVL_DBG_WIN_CYCLES post-reset window.
     .rgb_in(osk_rgb24), .hbl(sel_hbl), .vbl(sel_vbl),
     .debug_en(ovl_debug_en),
     .rgb_out(ovl_rgb),
@@ -1831,7 +1932,10 @@ sdram_status_overlay #(.SHOW_FP(FP_DIAG), .OVL_DBG(OVL_DEBUG)) ovl (
     .drv_mstate(mc_state),
     .drv_ack(woz_sd_ack),
     .drv_tfault(woz_transport_fault),
-    .drv_rdreq(woz_sd_rd)
+    .drv_rdreq(woz_sd_rd),
+    .hd_dbg_m(hd_dbg_m),
+    .pc_dbg(pc_snap_m),
+    .da_dbg(da_snap_m)
 );
 
 

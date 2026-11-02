@@ -11,8 +11,12 @@
 // Covers: power-on mount suppression (first rise), second-mount trigger
 // with exact CLR(handshake)/HOLD window shape, mid-reboot mount ignored
 // (no restart or extension), option OFF = no reboot, base-reset abort
-// (async) + ever-flag re-arm, repeated changes reboot again, and the
-// CLR_TIMEOUT path when clr_done never comes.
+// (async) + ever-flag re-arm, repeated changes reboot again, the
+// CLR_TIMEOUT path when clr_done never comes, and (2026-10-30) the
+// osk_cold_req path: an OSK Reset release forces a cold reboot with the
+// option OFF (not gated by reboot_opt), glitch-free (cold_reset high on
+// the request cycle itself via the combinational OR), and a request
+// during an active reboot neither restarts nor extends the window.
 //
 `timescale 1ns/10ps
 
@@ -29,6 +33,7 @@ module tb_reboot_ctl;
     reg rst = 1'b1;
     reg reboot_opt = 1'b0;
     reg mount_rise = 1'b0;
+    reg osk_cold_req = 1'b0;
     reg tb_done_en = 1'b1;
     wire cold_reset, ram_clear, clr_done;
 
@@ -46,6 +51,7 @@ module tb_reboot_ctl;
     reboot_ctl #(.CLR_TIMEOUT(CLR_TO), .HOLD_CYCLES(HOLD)) dut (
         .clk(clk), .rst(rst),
         .reboot_opt(reboot_opt), .mount_rise(mount_rise), .clr_done(clr_done),
+        .osk_cold_req(osk_cold_req),
         .cold_reset(cold_reset), .ram_clear(ram_clear)
     );
 
@@ -76,6 +82,24 @@ module tb_reboot_ctl;
             mount_rise <= 1'b1;
             cyc;
             mount_rise <= 1'b0;
+        end
+    endtask
+
+    // 1-cycle osk_cold_req pulse: models the synchronized falling-edge
+    // pulse the top derives from the OSK Reset release. The DUT latches
+    // it on the posedge inside the pulse. Glitch check inside: cold_reset
+    // must be high on the request cycle itself (the DUT ORs the request
+    // combinationally, so no out-of-reset gap before `active` registers).
+    task osk_pulse;
+        begin
+            osk_cold_req <= 1'b1;
+            #1;   // let the NBA settle within this timestep
+            if (!cold_reset) begin
+                fails = fails + 1;
+                $display("F osk: cold_reset not high on the request cycle (glitch) - cold=%b req=%b", cold_reset, osk_cold_req);
+            end
+            cyc;
+            osk_cold_req <= 1'b0;
         end
     endtask
 
@@ -229,8 +253,42 @@ module tb_reboot_ctl;
         tb_done_en = 1'b1;
         if (fails == 0) $display("T7 PASS: missing clr_done falls back to the CLR_TIMEOUT bound (window=%0d)", rem);
 
+        // ============ T8: OSK Reset release -> cold boot, opt OFF =========
+        // An explicit OSK Reset must NOT be gated by reboot_opt: it runs
+        // the full CLR/HOLD window even with the option OFF.
+        reboot_opt = 1'b0;
+        ncy(3);
+        osk_pulse;                     // 1-cycle request (glitch checked inside)
+        check_window(WIN, CLR_CYC, 64'h8);
+        check_quiet(10, 64'h81);
+        if (fails == 0) $display("T8 PASS: OSK reset release cold-boots with the option OFF (window=%0d)", WIN);
+
+        // ============ T9: OSK request mid-reboot: no restart/extend =====
+        reboot_opt = 1'b1;
+        ncy(3);
+        osk_pulse;                     // request #1 -> window starts
+        ncy(6);
+        osk_pulse;                     // request #2, ~7 cycles into the window
+        rem = 0;
+        while (cold_reset) begin
+            rem = rem + 1;
+            if (rem > WIN + 4) begin
+                fails = fails + 1;
+                $display("F T9: runaway window (rem=%0d)", rem);
+                break;
+            end
+            cyc;
+        end
+        if (rem > WIN) $display("F T9: window extended beyond %0d (rem=%0d)", WIN, rem);
+        else if (rem < WIN/2) begin
+            fails = fails + 1;
+            $display("F T9: window truncated to %0d cycles", rem);
+        end
+        check_quiet(10, 64'h91);
+        if (fails == 0) $display("T9 PASS: OSK request during reboot is ignored (rem=%0d <= WIN, not restarted)", rem);
+
         if (fails == 0)
-            $display("REBOOT CTL PASS: suppression, handshake window, mid-reboot, opt-off, reset-abort, repeat, timeout");
+            $display("REBOOT CTL PASS: suppression, handshake window, mid-reboot, opt-off, reset-abort, repeat, timeout, osk-cold");
         else
             $fatal(1, "REBOOT CTL FAIL: %0d errors", fails);
         $finish;

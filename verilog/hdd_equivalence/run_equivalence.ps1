@@ -48,7 +48,7 @@ if (-not $CompareOnly) {
     $env:VERILATOR_ROOT = 'C:/msys64/ucrt64/share/verilator'
     $env:SHELL = 'C:\msys64\usr\bin\sh'
     Remove-Item -ErrorAction SilentlyContinue (Join-Path $build 'obj') -Recurse
-    & $verilator --binary --timing -Wno-fatal --Mdir (Join-Path $build 'obj') -sv "$here\hdd_verilog_tb.sv" "$portRoot\hdd.v" "$portRoot\hdd_rom.v"
+    & $verilator --binary --timing -Wno-fatal --Mdir (Join-Path $build 'obj') -sv "$here\hdd_verilog_tb.sv" "$portRoot\hdd.v" "$portRoot\hdd_rom.v" "$here\..\stubs\altsyncram_sim.v"
     if ($LASTEXITCODE -ne 0) { throw "verilator failed" }
     & (Join-Path $build 'obj\Vhdd_verilog_tb.exe')
     if ($LASTEXITCODE -ne 0) { throw "verilator tb run failed" }

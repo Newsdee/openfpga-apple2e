@@ -97,7 +97,12 @@ module sdram_status_overlay (
     // region; F=/L= give exact head/tail bytes.
     input  wire [127:0] fp_first,
     input  wire [127:0] fp_last,
-    input  wire [127:0] fp_w
+    input  wire [127:0] fp_w,
+    input  wire [15:0] hd_dbg_m      // HDV bridge (machine domain):
+                                      // {cpu stalled, timeout fault, state[2:0],
+                                      //  last host err[2:0], fetch count[7:0]}
+    , input  wire [15:0] pc_dbg       // 6502 PC snapshot (PHASE_ZERO-gated m_addr)
+    , input  wire [15:0] da_dbg       // 6502 data-address snapshot (!PHASE_ZERO m_addr)
     );
 
     // Show-window length in machine clocks (default = 5 s @ 14.318 MHz;
@@ -129,6 +134,8 @@ module sdram_status_overlay (
     localparam GL_O = 5'd17, GL_K = 5'd18, GL_R = 5'd19, GL_I = 5'd20;
     localparam GL_L = 5'd21, GL_V = 5'd22, GL_T = 5'd23, GL_S = 5'd24;
     localparam GL_N = 5'd27, GL_M = 5'd28, GL_W = 5'd29;
+    localparam GL_H = 5'd30;
+    localparam GL_P = 5'd31;         // 'P' (added 2026-11-02 for the PC readout)
     localparam GL_C5 = 5'd13;         // 'C' (glyph code 13)
     localparam GL_EQ = 5'd25, GL_SP = 5'd26;
 
@@ -169,6 +176,8 @@ module sdram_status_overlay (
                 5'd27 : gf = 35'b01000_10100_10010_10001_10000_10000_10000; // N
                 5'd28 : gf = 35'b00100_01100_10010_10001_10001_10001_10001; // M
                 5'd29 : gf = 35'b10001_10001_10001_10001_10101_10101_01010; // W
+                5'd30 : gf = 35'b10001_10001_11111_10001_10001_10001_10001; // H
+                5'd31 : gf = 35'b01110_10001_10001_10001_11110_10000_10000; // P
                 default: gf = 35'd0;
             endcase
         end
@@ -554,6 +563,125 @@ module sdram_status_overlay (
     assign px7 = !hbl && !vbl && in_x7 && in_l7 && cidx7_w < 10'd4 &&
                 cin7_w < 10'd5 && r7bits[3'd4 - cin7_w[2:0]];
 
+    // line 7b: 21 chars at X0=424, rows 65..71: "HD=S F=F E=E N=NN M=M"
+    //   S = bridge FSM state (0 idle, 1 fetch, 2 walk-in, 3 walk-out,
+    //       4 arm-write, 5 write); F = fetch/write timeout fault latch;
+    //   E = last host command err (0=OK); N = completed 0x0180 fetches;
+    //   M = HDV mounted (hdv_size_q != 0). 2026-11-02: the decisive
+    //   hardware diagnostic - N=0+F=0+E=0 with M=0 => every fetch is
+    //   dropped as not-mounted; M=1 with N=0 => the driver never armed
+    //   a 0x0180 at all. (Replaces the old W=cpu_wait, redundant with S.)
+    // Decodes an HD hang from a photo of the 10 s window: W=1 with S=1
+    // stuck = the host's 0x0180 never completed; F=1 = it timed out
+    // (the CPU was released after ~3.6 s). X0=424 (NOT 460): 20 chars
+    // span 120 px and the raster is 560 wide - at 460 the N=/W= tail
+    // rendered off-screen (caught on hardware 2026-10-30).
+    wire [4:0] dh [0:20];
+    assign dh[0]  = GL_H;
+    assign dh[1]  = 5'd14;   // 'D'
+    assign dh[2]  = GL_EQ;
+    assign dh[3]  = hexg({1'b0, hd_dbg_m[13:11]});   // state
+    assign dh[4]  = GL_SP;
+    assign dh[5]  = 5'd16;   // 'F'
+    assign dh[6]  = GL_EQ;
+    assign dh[7]  = hd_dbg_m[14] ? 5'd1 : 5'd0;      // fault
+    assign dh[8]  = GL_SP;
+    assign dh[9]  = 5'd15;   // 'E'
+    assign dh[10] = GL_EQ;
+    assign dh[11] = hexg({1'b0, hd_dbg_m[10:8]});   // last err
+    assign dh[12] = GL_SP;
+    assign dh[13] = GL_N;
+    assign dh[14] = GL_EQ;
+    assign dh[15] = hexg(hd_dbg_m[7:4]);            // fetch count high nibble
+    assign dh[16] = hexg(hd_dbg_m[3:0]);            // fetch count low nibble
+    assign dh[17] = GL_SP;
+    assign dh[18] = GL_M;    // 'M' = HDV mounted (hdv_size_q != 0)
+    assign dh[19] = GL_EQ;
+    assign dh[20] = hd_dbg_m[15] ? 5'd1 : 5'd0;   // mounted value
+    wire        in_xh, in_lh;
+    wire [9:0]  cpxh, cidxh_w, cinh_w;
+    wire [7:0]  rh_w;
+    wire [4:0]  gh;
+    wire [34:0] gh_bits;
+    wire [4:0]  rhbits;
+    wire        pxh;
+    assign in_xh   = (col >= 10'd424) && (col < 10'd550);
+    assign cpxh    = in_xh ? (col - 10'd424) : 10'd0;
+    assign cidxh_w = cpxh / 10'd6;
+    assign cinh_w  = cpxh % 10'd6;
+    assign in_lh   = (row >= 8'd65) && (row < 8'd72);
+    assign rh_w    = in_lh ? (row - 8'd65) : 8'd0;
+    assign gh      = (in_lh && cidxh_w < 10'd21) ? dh[cidxh_w[4:0]] : 5'd0;
+    assign gh_bits = gf(gh);
+    assign rhbits  = gh_bits[34 - {2'b00, rh_w[2:0]} * 5'd5 -: 5];
+    assign pxh = !hbl && !vbl && in_xh && in_lh && cidxh_w < 10'd21 &&
+                cinh_w < 10'd5 && rhbits[3'd4 - cinh_w[2:0]];
+
+    // line 7c: 7 chars at X0=424, rows 73..79: "PC=XXXX" (2026-11-02 slowness
+    //   diagnostic). XXXX = the 6502 program counter, captured on PHASE_ZERO
+    //   (pc_dbg). For a crawling/stuck machine this shows exactly where the
+    //   CPU is sitting: a fixed value = stalled at one address (e.g. polling a
+    //   soft switch or stuck in a driver wait); a small cluster = a tight loop.
+    wire [4:0] pcp [0:6];
+    assign pcp[0] = GL_P;                                  // 'P'
+    assign pcp[1] = GL_C5;                                 // 'C'
+    assign pcp[2] = GL_EQ;                                 // '='
+    assign pcp[3] = hexg(pc_dbg[15:12]);
+    assign pcp[4] = hexg(pc_dbg[11:8]);
+    assign pcp[5] = hexg(pc_dbg[7:4]);
+    assign pcp[6] = hexg(pc_dbg[3:0]);
+    wire        in_xpc, in_lpc;
+    wire [9:0]  cpxpc, cidxpc_w, cipc_w;
+    wire [7:0]  rpc_w;
+    wire [4:0]  gpc;
+    wire [34:0] gpc_bits;
+    wire [4:0]  rpcbits;
+    wire        pxpc;
+    assign in_xpc   = (col >= 10'd424) && (col < 10'd466);
+    assign cpxpc    = in_xpc ? (col - 10'd424) : 10'd0;
+    assign cidxpc_w = cpxpc / 10'd6;
+    assign cipc_w   = cpxpc % 10'd6;
+    assign in_lpc   = (row >= 8'd73) && (row < 8'd80);
+    assign rpc_w    = in_lpc ? (row - 8'd73) : 8'd0;
+    assign gpc      = (in_lpc && cidxpc_w < 10'd7) ? pcp[cidxpc_w[2:0]] : 5'd0;
+    assign gpc_bits = gf(gpc);
+    assign rpcbits  = gpc_bits[34 - {2'b00, rpc_w[2:0]} * 5'd5 -: 5];
+    assign pxpc = !hbl && !vbl && in_xpc && in_lpc && cidxpc_w < 10'd7 &&
+                  cipc_w < 10'd5 && rpcbits[3'd4 - cipc_w[2:0]];
+
+    // line 7d: 7 chars at X0=424, rows 81..87: "DA=XXXX" (2026-11-02). The
+    //   6502 is stuck in a tight two-state loop = a soft-switch polling loop.
+    //   XXXX = the data address it is reading (access-phase m_addr). For a
+    //   polling loop this sits steady on the C0xx soft switch that never
+    //   changes on the FPGA - identifying exactly which switch the boot waits
+    //   on. (D=14, A=11 are the existing hex-letter glyphs.)
+    wire [4:0] dad [0:6];
+    assign dad[0] = 5'd14;                                // 'D'
+    assign dad[1] = 5'd11;                                // 'A'
+    assign dad[2] = GL_EQ;                                // '='
+    assign dad[3] = hexg(da_dbg[15:12]);
+    assign dad[4] = hexg(da_dbg[11:8]);
+    assign dad[5] = hexg(da_dbg[7:4]);
+    assign dad[6] = hexg(da_dbg[3:0]);
+    wire        in_xda, in_lda;
+    wire [9:0]  cpxda, cidxda_w, cida_w;
+    wire [7:0]  rda_w;
+    wire [4:0]  gda;
+    wire [34:0] gda_bits;
+    wire [4:0]  rdbits;
+    wire        pxda;
+    assign in_xda   = (col >= 10'd424) && (col < 10'd466);
+    assign cpxda    = in_xda ? (col - 10'd424) : 10'd0;
+    assign cidxda_w = cpxda / 10'd6;
+    assign cida_w   = cpxda % 10'd6;
+    assign in_lda   = (row >= 8'd81) && (row < 8'd88);
+    assign rda_w    = in_lda ? (row - 8'd81) : 8'd0;
+    assign gda      = (in_lda && cidxda_w < 10'd7) ? dad[cidxda_w[2:0]] : 5'd0;
+    assign gda_bits = gf(gda);
+    assign rdbits   = gda_bits[34 - {2'b00, rda_w[2:0]} * 5'd5 -: 5];
+    assign pxda = !hbl && !vbl && in_xda && in_lda && cidxda_w < 10'd7 &&
+                  cida_w < 10'd5 && rdbits[3'd4 - cida_w[2:0]];
+
     // ---- image fingerprint readout (SHOW_FP-gated, M1 hardware-load diagnostic) ----
     // line 8:  24 chars at X0=406, rows 65..71: "W0=XXXXXXXX W1=XXXXXXXX"
     // line 9:  24 chars at X0=406, rows 73..79: "W2=XXXXXXXX W3=XXXXXXXX"
@@ -703,7 +831,7 @@ module sdram_status_overlay (
     wire led_io  = st_io  && drv_ack;
 
     wire ovl_px = mpx || px1 || px2 || px3 || px4 || px5 || px6 || px7 ||
-                  px8 || px9 || px10 || px11 || dbg_px;
+                  px8 || pxh || pxpc || pxda || px9 || px10 || px11 || dbg_px;
     // J11 (2026-10-25): drawing is additionally gated by debug_en - clean
     // screen during gameplay, diagnostics visible at boot and while the
     // on-screen keyboard is up. J9: the drive LEDs always override in.

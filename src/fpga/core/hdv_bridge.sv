@@ -43,7 +43,17 @@
 // The host read port (bridge reads of 0x01F01xxx, used by the 0x0184 DMA)
 // is exposed as hdv_ram_word for the top-level bridge_rd mux.
 
-module hdv_bridge (
+module hdv_bridge #(
+    // 74a-clock timeout for an in-flight host command (0x0180/0x0184).
+    // If the host never completes, the FSM aborts to IDLE after this many
+    // clocks (default 2^28-1 ~ 3.6 s at 74.25 MHz), releases the CPU stall,
+    // and latches hdv_fault. Without this, a fetch that never completes
+    // holds cpu_wait_hdd high FOREVER - a frozen machine with no recovery
+    // (observed on hardware 2026-10-30: HDV mounted -> ROM commits to the
+    // HD -> first C0F0 read -> stall that never ends).
+    // NOTE: 28 bits max = 0x0FFFFFFF; 0x1000_0000 itself needs 29 bits.
+    parameter [27:0] FETCH_TO = 28'h0FFFFFFF
+) (
     input  wire        clk_74a,        // bridge clock
     input  wire        clk_14a,        // machine clock (14.318)
     input  wire        reset_n,        // bridge reset, active low (74a)
@@ -52,7 +62,7 @@ module hdv_bridge (
     input  wire        bridge_wr,
     input  wire [31:0] bridge_addr,
     input  wire [31:0] bridge_wr_data,
-    output wire [31:0] hdv_ram_word,   // 0x01F01xxx read port (LE word)
+    output wire [31:0] hdv_ram_word,   // 0x01F01xxx read port (BE word)
 
     // core_bridge_cmd dataslot interface (74a) - driven here
     output reg         target_dataslot_read,
@@ -80,7 +90,18 @@ module hdv_bridge (
     input  wire [15:0] hdd_sector,
 
     // machine stall request (74a domain; the top syncs to 14M for CPU_WAIT)
-    output wire        cpu_wait_hdd
+    output wire        cpu_wait_hdd,
+
+    // diagnostics (74a domain; the top syncs them to the machine domain
+    // for the on-screen debug line)
+    output wire [2:0]  hdv_state,      // command FSM state (0 idle .. 5 write)
+    output wire        hdv_fault,      // a host command timed out (until reset or a clean completion)
+    output wire [7:0]  hdv_fetch_cnt,  // completed 0x0180 fetches (saturates at 255)
+
+    // media-fault pulse to hdd.v (74a domain; the top 2FF-syncs it to 14M
+    // and hdd uses it to force reg_status, so C0F1 reports a dropped or
+    // timed-out fetch instead of the stale optimistic 00 from execute)
+    output wire        bridge_err
 );
 
     localparam BRIDGE_HDV_ADDR = 32'h01F01000; // RAM base (512-byte window)
@@ -91,7 +112,8 @@ module hdv_bridge (
     // ------------------------------------------------------------------
     reg [7:0] hdv_ram [0:511];
 
-    // host DMA write port: a 32-bit LE word = 4 consecutive bytes
+    // host DMA write port: a 32-bit BE word = 4 consecutive bytes (first file
+    // byte in [31:24]; the core drives bridge_endian_little = 0)
     wire        host_wr_en = bridge_wr && (bridge_addr[31:12] == 20'h01F01);
     wire [6:0]  host_word  = bridge_addr[8:2];   // 0..127
     wire [8:0]  host_byte0 = {host_word, 2'b00};
@@ -103,22 +125,31 @@ module hdv_bridge (
 
     always @(posedge clk_74a) begin
         if (host_wr_en) begin
-            hdv_ram[host_byte0        ] <= bridge_wr_data[7:0];
-            hdv_ram[host_byte0 + 9'd1] <= bridge_wr_data[15:8];
-            hdv_ram[host_byte0 + 9'd2] <= bridge_wr_data[23:16];
-            hdv_ram[host_byte0 + 9'd3] <= bridge_wr_data[31:24];
+            // BIG-ENDIAN: the core drives bridge_endian_little = 0, so the
+            // real host writes each 32-bit word with the first file byte in
+            // [31:24] and the last in [7:0]. Unpack in that order (a
+            // little-endian unpack here byte-reverses every 4-byte group -
+            // the "intertwined" block-0 corruption seen on hardware 2026-11-02
+            // while the sim, whose emulated host hardcodes LE, masked it).
+            hdv_ram[host_byte0        ] <= bridge_wr_data[31:24];
+            hdv_ram[host_byte0 + 9'd1] <= bridge_wr_data[23:16];
+            hdv_ram[host_byte0 + 9'd2] <= bridge_wr_data[15:8];
+            hdv_ram[host_byte0 + 9'd3] <= bridge_wr_data[7:0];
         end
         if (wo_wen)
             hdv_ram[wo_addr] <= wo_data;
     end
 
-    // host read port (74a, combinational): LE word for 0x0184 DMA reads
+    // host read port (74a, combinational): BE word for 0x0184 DMA reads
     wire [6:0] rd_word  = bridge_addr[8:2];
     wire [8:0] rd_byte0 = {rd_word, 2'b00};
-    assign hdv_ram_word = {hdv_ram[rd_byte0 + 9'd3],
-                           hdv_ram[rd_byte0 + 9'd2],
+    // BIG-ENDIAN readout, matching the write path above (bridge_endian_little
+    // = 0): word[31:24] = first file byte of the group (hdv_ram[rd_byte0]),
+    // word[7:0] = last (hdv_ram[rd_byte0+3]).
+    assign hdv_ram_word = {hdv_ram[rd_byte0],
                            hdv_ram[rd_byte0 + 9'd1],
-                           hdv_ram[rd_byte0      ]};
+                           hdv_ram[rd_byte0 + 9'd2],
+                           hdv_ram[rd_byte0 + 9'd3]};
 
     // ------------------------------------------------------------------
     // CDC: 14M -> 74a (request pulses, walk_done pulse, walk_out bytes)
@@ -280,7 +311,11 @@ module hdv_bridge (
         end
     end
 
-    wire walk_in_active = (cnt_i < 10'd512);
+    // Request-QUALIFIED active flag: cnt_i parks at 0 between walks, so an
+    // unqualified (cnt_i < 512) would hold hdd_ram_we HIGH at idle, clobbering
+    // sector_buf[0] with hdv_ram[0] every 14M cycle. The counter only runs
+    // while the request level is present, and the flag must too.
+    wire walk_in_active = qi_sync[1] && (cnt_i < 10'd512);
     wire [9:0] wo_byte  = cnt_o2[10:1];   // byte index 0..511
 
     // walk_out strobe: the gap phase, once per byte, data valid (byte 0's
@@ -325,6 +360,21 @@ module hdv_bridge (
     reg        done_d;
     wire       done_rise = target_dataslot_done & ~done_d;
 
+    // command timeout + fault + fetch count (see FETCH_TO parameter)
+    reg  [27:0] to_cnt;
+    reg        fault;
+    reg [7:0]  fetch_cnt;
+    wire       in_host_cmd = (state == ST_FETCH) || (state == ST_WRITE);
+    wire       to_fire = in_host_cmd && (to_cnt == FETCH_TO - 28'd1);
+
+    // bridge_err hold: a drop or timeout sets the hold to 15 x 74a cycles
+    // (~202 ns = ~3 machine clocks, so the 2FF in the top always samples a
+    // full high window - a bare 1-cycle 74a pulse would be missed by the
+    // 14M sampler most of the time). bridge_err is the level while held.
+    reg  [3:0] err_hold_74;
+    wire       drop_evt = (state == ST_IDLE) && read_pend && !hdv_mounted;
+    assign bridge_err = (err_hold_74 != 4'd0);
+
     always @(posedge clk_74a or negedge reset_n) begin
         if (!reset_n) begin
             state <= ST_IDLE;
@@ -335,6 +385,10 @@ module hdv_bridge (
             walk_in_req_74 <= 1'b0;
             walk_out_req_74 <= 1'b0;
             done_d <= 1'b0;
+            to_cnt <= 28'd0;
+            fault <= 1'b0;
+            fetch_cnt <= 8'd0;
+            err_hold_74 <= 4'd0;
             target_dataslot_id <= 16'd0;
             target_dataslot_slotoffset <= 32'd0;
             target_dataslot_bridgeaddr <= 32'd0;
@@ -350,6 +404,23 @@ module hdv_bridge (
             walk_in_req_74  <= (state == ST_WALK_IN);
             walk_out_req_74 <= (state == ST_WALK_OUT);
 
+            // timeout counter: runs only while a host command is in flight;
+            // saturates at the bound so to_fire stays a clean one-shot per
+            // entry (the fire branch drops the state to IDLE next cycle).
+            if (in_host_cmd)
+                to_cnt <= (to_cnt == FETCH_TO - 28'd1) ? to_cnt : to_cnt + 28'd1;
+            else
+                to_cnt <= 28'd0;
+
+            if (to_fire || drop_evt)
+                err_hold_74 <= 4'd15;
+            else if (err_hold_74 != 4'd0)
+                err_hold_74 <= err_hold_74 - 4'd1;
+
+            if (to_fire) begin
+                state <= ST_IDLE;      // release the CPU; the fault is reported
+                fault <= 1'b1;
+            end else begin
             case (state)
                 ST_IDLE: begin
                     // capture requests only here: the 6502 is stalled by
@@ -389,9 +460,12 @@ module hdv_bridge (
 
                 ST_FETCH: begin
                     if (done_rise) begin
-                        if (target_dataslot_err == 3'd0)
+                        if (target_dataslot_err == 3'd0) begin
                             state <= ST_WALK_IN;    // req level auto-asserts
-                        else
+                            fault <= 1'b0;          // channel is healthy again
+                            if (fetch_cnt != 8'd255)
+                                fetch_cnt <= fetch_cnt + 8'd1;
+                        end else
                             state <= ST_IDLE;       // abort: err stays readable
                     end
                 end
@@ -415,16 +489,24 @@ module hdv_bridge (
                 end
 
                 ST_WRITE: begin
-                    if (done_rise)
+                    if (done_rise) begin
+                        if (target_dataslot_err == 3'd0)
+                            fault <= 1'b0;
                         state <= ST_IDLE;
+                    end
                 end
 
                 default: state <= ST_IDLE;
             endcase
+            end   // to_fire else
         end
     end
 
     // stall the 6502 across the whole transfer (both directions)
     assign cpu_wait_hdd = (state != ST_IDLE);
+
+    assign hdv_state     = state;
+    assign hdv_fault     = fault;
+    assign hdv_fetch_cnt = fetch_cnt;
 
 endmodule
