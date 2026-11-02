@@ -1,0 +1,13 @@
+# ramprobe: keep only the source (design + TB + project files).
+# Generated Quartus / Verilator build output is throwaway - the probe's
+# CONCLUSION (altsyncram BIDIR_DUAL_PORT resolved defaults) is already
+# encoded in verilog/stubs/altsyncram_sim.v + the hdd.v defparams, so
+# nothing in the shipping/test path needs these build trees.
+db/
+incremental_db/
+obj_dir/
+*.rpt
+*.smsg
+*.summary
+*.pin
+run_out.txt

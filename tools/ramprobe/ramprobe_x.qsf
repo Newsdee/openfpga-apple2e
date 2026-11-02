@@ -1,0 +1,7 @@
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CEBA4F23C8
+set_global_assignment -name TOP_LEVEL_ENTITY ramprobe_x
+set_global_assignment -name QIP_FILE ramprobe.qip
+set_global_assignment -name LAST_QUARTUS_VERSION "17.0.2"
+set_global_assignment -name ORIGINAL_QUARTUS_VERSION "17.0.2"
+set_global_assignment -name PROJECT_CREATION_TIME_DATE "08:00:00  OCT 29 2026"

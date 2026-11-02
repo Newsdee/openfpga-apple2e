@@ -1,0 +1,2 @@
+# ramprobe.qip - standalone altsyncram config probe sources
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "ramprobe.v"]
