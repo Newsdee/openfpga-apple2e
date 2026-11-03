@@ -125,6 +125,8 @@ verilog/obj_dir_*.log
 
 # Release packaging workdir (derived from sd_root + tools; regenerated, not source)
 sd_root_release/
+# Backup of the SD card (owner copy; not source)
+sd_root_backup/
 
 # NTSC line-0 diagnostic run log (verilog/tb/tb_ntsc_line0.sv)
 ntsc_line0_run.log
