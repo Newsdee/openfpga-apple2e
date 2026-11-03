@@ -28,16 +28,16 @@ set "MISROOT=%HERE%..\..\Apple-II_MiSTer"
 set "OBJ=%HERE%obj_dir_kbd_tb_pocket_kbd"
 set "EXE=%OBJ%\Vtb_pocket_kbd.exe"
 rem env for the from-scratch Verilator --binary build
-set "VERILATOR_ROOT=C:\msys64\ucrt64\share\verilator"
-set "TMP=C:\msys64\tmp"
-set "TEMP=C:\msys64\tmp"
-set "TMPDIR=C:\msys64\tmp"
+set "VERILATOR_ROOT=C:/msys64/ucrt64/share/verilator"
+set "TMP=C:/msys64/tmp"
+set "TEMP=C:/msys64/tmp"
+set "TMPDIR=C:/msys64/tmp"
 rem make shim: the Verilator --binary link step calls bare `make`; the ucrt64
 rem bin only ships mingw32-make.exe, so expose it as make.exe, first on PATH.
-if not exist "C:\msys64\tmp\makeshim" mkdir "C:\msys64\tmp\makeshim"
-copy /y "%MAKE%" "C:\msys64\tmp\makeshim\make.exe" >nul
-set "PATH=C:\msys64\tmp\makeshim;C:\msys64\ucrt64\bin;C:\msys64\usr\bin;%PATH%"
-set "SHELL=C:\msys64\usr\bin\sh"
+if not exist "C:/msys64/tmp/makeshim" mkdir "C:/msys64/tmp/makeshim"
+copy /y "%MAKE%" "C:/msys64/tmp/makeshim/make.exe" >nul
+set "PATH=C:/msys64/tmp/makeshim;C:/msys64/ucrt64/bin;C:/msys64/usr/bin;%PATH%"
+set "SHELL=C:/msys64/usr/bin/sh"
 
 echo === tb_pocket_kbd (docked USB HID keyboard) ===
 echo working dir: %CD%
