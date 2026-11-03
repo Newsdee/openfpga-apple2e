@@ -48,7 +48,7 @@ if not exist "%MISROOT%\rtl\roms\video2.hex" goto nofont
 if not exist "%OBJ%" mkdir "%OBJ%"
 
 echo [build]  (Verilator --binary --timing; CWD = verilog\)
-"%VERILATOR%" --binary --timing -j 4 --top tb_pocket_kbd -DJOY_TO_KEY=1 -Wno-fatal -Wno-undriven -Wno-unused -Wno-width -Wno-style -Wno-latch --Mdir "%OBJ%" "%REPO%\src\fpga\core\apple2e\apple2e_osk.v" "%REPO%\src\fpga\core\hid_to_ps2.sv" "%REPO%\machine\osk\virtual_keyboard_controller.sv" "%REPO%\machine\osk\virtual_keyboard_overlay.sv" "%REPO%\machine\keyboard.v" "%REPO%\machine\rom.v" "%REPO%\machine\apple2_font_rom.v" tb\tb_pocket_kbd.sv
+"%VERILATOR%" --binary --timing -j 4 --top tb_pocket_kbd -DJOY_TO_KEY=1 -CXXFLAGS "-mconsole" -Wno-fatal -Wno-undriven -Wno-unused -Wno-width -Wno-style -Wno-latch --Mdir "%OBJ%" "%REPO%\src\fpga\core\apple2e\apple2e_osk.v" "%REPO%\src\fpga\core\hid_to_ps2.sv" "%REPO%\machine\osk\virtual_keyboard_controller.sv" "%REPO%\machine\osk\virtual_keyboard_overlay.sv" "%REPO%\machine\keyboard.v" "%REPO%\machine\rom.v" "%REPO%\machine\apple2_font_rom.v" tb\tb_pocket_kbd.sv
 if errorlevel 1 goto buildfail
 
 echo [link + run]  (fresh PE each link; AV probe with retries)
