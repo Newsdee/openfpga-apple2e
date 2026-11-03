@@ -119,7 +119,7 @@ module apf_stream_video (
     // hpos ~352 (60 + 10 + 280 = 350). DEC2X=1 is NOT the shipping mode
     // (DEC2X=0 ships); re-verify this window if DEC2X=1 is ever enabled.
     localparam [8:0] RD_START = 9'd10;   // read window opens RD_START clocks after HS
-    localparam [8:0] RD_END   = RD_START + 280;
+    localparam [8:0] RD_END   = RD_START + 9'd280;  // 9-bit literal: no 32-bit->9-bit truncation warning
     reg [8:0]  rw;                      // read window position
     reg [8:0]  rptr;                     // buffer read pointer (0..279)
     wire       rd_win = (rw >= RD_START) && (rw < RD_END);

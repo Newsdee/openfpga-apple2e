@@ -53,6 +53,11 @@ module reboot_ctl #(
     output wire ram_clear     // 1 = RAM sweep in progress
 );
 
+    // CLR_TIMEOUT=262144 (2^18) and HOLD_CYCLES=1024 (2^10) are unsized (32-bit)
+    // params, so "- 1" computes 32-bit and the localparams truncate: benign, the
+    // results (262143 = 2^18-1, 1023 = 2^10-1) are exactly the max 18/12-bit
+    // values. Left unsized (a [17:0] param can't hold 2^18); the warning is kept
+    // as a guard if a future CLR_TIMEOUT no longer fits.
     localparam [17:0] CLR_MAX  = CLR_TIMEOUT - 1'b1;
     localparam [11:0] HOLD_MAX = HOLD_CYCLES - 1'b1;
 

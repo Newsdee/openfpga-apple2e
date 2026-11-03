@@ -132,6 +132,12 @@ module sdram_storage (
     wire [23:0] fifo_rd_addr;
     wire [31:0] fifo_rd_data;
 
+    // Note (Quartus Warning 276027): the slot_fifo is inferred as a dual-clock
+    // RAM, so the read-during-write behavior is formally undefined. It is
+    // structurally safe here: the FIFO's own full/empty signalling keeps the
+    // write pointer from lapping the read pointer (no write-when-full /
+    // read-when-empty), so a same-address same-cycle read+write never occurs.
+    // Kept visible (not suppressed) as a guard if the FIFO gating ever changes.
     slot_fifo #(.DEPTH(256)) sf0 (
         .wr_clk    ( clk_74a ),
         .rst       ( sdram_path_rst ),
@@ -471,7 +477,7 @@ module sdram_storage (
         if (ds0082) begin
             // New load generation: re-arm regardless of current state.
             ld_size   <= ds_requestwrite_size;
-            exp_words <= (ds_requestwrite_size + 32'd3) >> 2;
+            exp_words <= (ds_requestwrite_size + 32'd3) >> 2;  // 32-bit expr -> 24-bit: benign, word count fits <=64MB media (the only source the Pocket SDRAM accepts)
             gen_words <= 24'd0;                // per-generation write count
             res_valid <= 1'b0;                 // clear the previous result
             if (ds_requestwrite_size == 32'd0) begin
@@ -620,7 +626,7 @@ co_st      <= CO_RES;
             16'h0018: diag_rd_data_r = v_first_word_74;
             16'h001C: diag_rd_data_r = v_last_word_74;
             16'h0020: diag_rd_data_r = {16'd0, v_words_readout_74};
-            16'h0024: diag_rd_data_r = {27'd0, co_st, res_fail, res_code, res_valid};
+            16'h0024: diag_rd_data_r = {24'd0, co_st, res_fail, res_code, res_valid};  // 24-bit pad: total 32 (co_st3+res_fail2+res_code2+res_valid1), no 35->32 truncation
             16'h0028: diag_rd_data_r = res_crc;
             16'h002C: diag_rd_data_r = res_nbytes;
             default:  diag_rd_data_r = 32'd0;
