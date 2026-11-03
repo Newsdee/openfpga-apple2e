@@ -599,6 +599,11 @@ apple2e_osk osk (
     .clk(clk_core_14318),
     .reset(osk_reset),
     .cont1_key(cont1_key),
+    // Legacy/monochrome path: the docked-keyboard bus is tied off (the live
+    // path is apf_stream_video_top). All-zero = idle report = no keyboard.
+    .cont3_key(32'h0),
+    .cont3_joy(32'h0),
+    .cont3_trig(16'h0),
     .video_in(m_video),
     .hblank(m_hbl),
     .vblank(m_vbl),

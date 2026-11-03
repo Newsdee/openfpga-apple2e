@@ -866,6 +866,11 @@ apple2e_osk #(.RGB_IN(1'b1)) osk (
     .clk(clk_core_14318),
     .reset(osk_reset),
     .cont1_key(cont1_key),
+    // Docked USB HID keyboard (PLAN_USB_KEYBOARD_2026-11-02): type-4 reports
+    // arrive on the Player-3 pad slot; apple2e_osk syncs + converts to PS/2.
+    .cont3_key(cont3_key),
+    .cont3_joy(cont3_joy),
+    .cont3_trig(cont3_trig),
     .video_in(m_video),
     .hblank(sel_hbl),
     .vblank(sel_vbl),

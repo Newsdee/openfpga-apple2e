@@ -116,6 +116,7 @@ verilator_bin --cc --timing -j 4 \
     "$ROOT/src/fpga/core/hdd.v" \
     "$ROOT/src/fpga/core/hdd_rom.v" \
     "$ROOT/src/fpga/core/hdv_bridge.sv" \
+    "$ROOT/src/fpga/core/hid_to_ps2.sv" \
     "$ROOT/src/fpga/core/woz/disk_ii_woz.sv" \
     "$ROOT/src/fpga/core/woz/flux_drive.v" \
     "$ROOT/src/fpga/core/woz/woz_bram.sv" \

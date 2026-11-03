@@ -46,6 +46,11 @@ module apple2e_osk #(
     input  wire        clk,          // 14.318 MHz (machine domain)
     input  wire        reset,        // machine reset
     input  wire [31:0] cont1_key,    // APF pad domain (74.25 MHz) - synced internally
+    // Docked USB HID keyboard (framework PAD bus, Player-3 slot, type 4).
+    // See the sync/gate block below (PLAN_USB_KEYBOARD_2026-11-02.md).
+    input  wire [31:0] cont3_key,    //   [31:28] controller type (4 = HID kbd), [15:8] modifier byte
+    input  wire [31:0] cont3_joy,    //   HID usage codes 1-4 (6-bit slots)
+    input  wire [15:0] cont3_trig,   //   HID usage codes 5-6
     // machine video (1-bit, 14.318 domain)
     input  wire        video_in,     //   native 1-bit video
     input  wire        hblank,
@@ -89,6 +94,82 @@ module apple2e_osk #(
         cont1_key_s2 <= cont1_key_s1;
         cont1_key_s3 <= cont1_key_s2;
     end
+
+    // ------------------------------------------------------------------
+    // Docked USB HID keyboard (cont3, type 4) -> PS/2 set-2.
+    //
+    // The PAD bus delivers a docked keyboard as a raw USB HID report split
+    // across three words (openFPGA framework):
+    //   cont3_key[31:28] = controller type (4 = USB HID keyboard)
+    //   cont3_key[15:8]  = 8-bit modifier byte
+    //   cont3_joy (slots 1-4) + cont3_trig (slots 5-6) = up to 6 usage codes
+    // HID has NO break codes and NO auto-repeat: the report is a set-snapshot,
+    // so hid_to_ps2 diffs consecutive reports for make/break, and typematic
+    // comes from the oskc staged-repeat engine downstream.
+    //
+    // CDC: 2FF-sync each word (pad/74a -> 14.318). The same quasi-static
+    // assumption justified for cont1_key's 3FF above applies (KB-009): the
+    // pad posts a report atomically, then it is stable for the (multi-ms)
+    // time until the next report, so a 2-stage sync suffices; the gate below
+    // additionally guards a torn crossing.
+    // ------------------------------------------------------------------
+    reg [31:0] ck_s1, ck_s2;
+    reg [31:0] cj_s1, cj_s2;
+    reg [15:0] ct_s1, ct_s2;
+    always @(posedge clk) begin
+        ck_s1 <= cont3_key;  ck_s2 <= ck_s1;
+        cj_s1 <= cont3_joy;  cj_s2 <= cj_s1;
+        ct_s1 <= cont3_trig; ct_s2 <= ct_s1;
+    end
+
+    // Report stabilization: latch a snapshot only after all three synced words
+    // have held unchanged for RPT_STABLE+1 (4) cycles. A torn multi-bit pad
+    // crossing (the three words are not atomic relative to our clock) would
+    // otherwise be latched mid-transition and - since hid_to_ps2 edge-detects
+    // report changes - post a phantom make/break pair.
+    localparam [1:0] RPT_STABLE = 2'd3;
+    reg [31:0] ck_prev, ck_snap, cj_snap;
+    reg [15:0] ct_prev, ct_snap;
+    reg [1:0]  rpt_stable_cnt;
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            ck_prev <= 32'd0;  cj_prev <= 32'd0;  ct_prev <= 16'd0;
+            ck_snap <= 32'd0;  cj_snap <= 32'd0;  ct_snap <= 16'd0;
+            rpt_stable_cnt <= 2'd0;
+        end else begin
+            if (ck_s2 != ck_prev || cj_s2 != cj_prev || ct_s2 != ct_prev) begin
+                rpt_stable_cnt <= 2'd0;
+                ck_prev <= ck_s2;
+                cj_prev <= cj_s2;
+                ct_prev <= ct_s2;
+            end else if (rpt_stable_cnt != RPT_STABLE) begin
+                rpt_stable_cnt <= rpt_stable_cnt + 2'd1;
+            end
+            if (rpt_stable_cnt == RPT_STABLE) begin
+                ck_snap <= ck_s2;
+                cj_snap <= cj_s2;
+                ct_snap <= ct_s2;
+            end
+        end
+    end
+
+    // Type gate: only a type-4 report is a USB HID keyboard. Any other type
+    // (including 0 = nothing plugged in) presents an all-zero idle report so
+    // held keys break cleanly on hot-unplug - no stuck keys.
+    wire        kbd_active = (ck_snap[31:28] == 4'h4);
+    wire [31:0] hid_joy    = kbd_active ? cj_snap : 32'd0;
+    wire [15:0] hid_trig   = kbd_active ? ct_snap : 16'd0;
+    wire [7:0]  hid_mods   = kbd_active ? ck_snap[15:8] : 8'd0;
+
+    wire [10:0] ps2_usb;
+    hid_to_ps2 u_hid_to_ps2 (
+        .clk(clk),
+        .reset(reset),
+        .joy(hid_joy),
+        .trig(hid_trig),
+        .mods(hid_mods),
+        .ps2_key(ps2_usb)
+    );
 
     // ------------------------------------------------------------------
     // APF buttons -> controller joystick[10:0]
@@ -196,7 +277,7 @@ module apple2e_osk #(
     virtual_keyboard_controller oskc (
         .clk(clk),
         .reset(reset),
-        .ps2_key(11'h0),              // no physical PS/2 on the Pocket
+        .ps2_key(ps2_usb),            // docked USB HID keyboard (cont3, type 4); idle 11'h0 when absent
         .joystick(osk_joystick),
         .joystick_analog(16'h0),
         .enabled(osk_en),

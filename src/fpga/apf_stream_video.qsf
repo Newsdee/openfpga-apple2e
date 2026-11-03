@@ -810,6 +810,9 @@ set_global_assignment -name VERILOG_FILE core/core_bridge_cmd.v
 set_global_assignment -name VERILOG_FILE core/hdd.v
 set_global_assignment -name VERILOG_FILE core/hdd_rom.v
 set_global_assignment -name VERILOG_FILE core/hdv_bridge.sv
+# Docked USB HID keyboard converter (PLAN_USB_KEYBOARD_2026-11-02): PCXT
+# verbatim import (NOTICE_hid_to_ps2.md), cont3 report -> ps2_key[10:0].
+set_global_assignment -name VERILOG_FILE core/hid_to_ps2.sv
 set_global_assignment -name SDC_FILE core/apple2e/apple2e_core_constraints.sdc
 set_global_assignment -name SIGNALTAP_FILE core/stp1.stp
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_1wire
