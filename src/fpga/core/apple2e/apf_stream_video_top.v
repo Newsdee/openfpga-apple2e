@@ -931,13 +931,17 @@ joystick_input #(.RELATIVE_UPDATE_CYCLES(71591)) u_joy (
     .clk(joy_clk),
     .reset(machine_reset),
     .joystick_digital(joy_dig),
-    .joystick_analog(16'h0),
+    // BRIEF_JOY_RELATIVE_MODE: feed the live left-stick bytes (donor convention
+    // analog[15:8]=X, analog[7:0]=Y; cont1_joy [7:0]=X [15:8]=Y) and the
+    // Relative-mode enable. In Absolute the module ignores the analog bytes
+    // (d-pad snaps the paddles) so this is inert by default.
+    .joystick_analog({cont1_joy_m[7:0], cont1_joy_m[15:8]}),
     .paddle(8'h0),
     .swap_axes(1'b0),
     .paddle_as_x(1'b0),
     .paddle_as_y(1'b0),
     .x_center(3'd0),
-    .relative_mode(1'b0),   // J10: hardwired Absolute (mode option removed)
+    .relative_mode(joy_rel_m),   // 0=Absolute (default) 1=Relative ("Joystick Mode")
     .joy_an(joy_an),
     .joy(joy)
 );
@@ -986,6 +990,7 @@ pdl_timer u_pdl (
 reg  [31:0] cfg_j2k_dir_word = 32'd0;
 reg  [31:0] cfg_j2k_btn_word = 32'd0;
 reg  [31:0] cfg_media_word   = 32'd0;   // "Boot Media" (0x01F00010)
+reg  [31:0] cfg_joy_mode_word = 32'd0;  // "Joystick Mode" (0x01F00014)
 always @(posedge clk_74a) begin
     if (bridge_wr && bridge_addr == 32'h01F00008)
         cfg_j2k_dir_word <= bridge_wr_data;
@@ -999,7 +1004,22 @@ always @(posedge clk_74a) begin
     // Replaces the 0742 build's "Floppy Eject" id 7 (same address).
     if (bridge_wr && bridge_addr == 32'h01F00010)
         cfg_media_word <= bridge_wr_data;
+    // Joystick Mode (BRIEF_JOY_RELATIVE_MODE): 0=Absolute (default) 1=Relative.
+    // write-only (same safe pattern as cfg_media_word - the 01F00xxx read-back
+    // wildcard stays in its proven form; a new bridge_rd arm broke disk loading
+    // on silicon in the 2026-10-25 bisect).
+    if (bridge_wr && bridge_addr == 32'h01F00014)
+        cfg_joy_mode_word <= bridge_wr_data;
 end
+
+// Joystick Mode (BRIEF_JOY_RELATIVE_MODE): the relative-mode enable, synced
+// from the 74a-domain cfg_joy_mode_word[0] (0=Absolute, 1=Relative) into the
+// machine domain (joystick_input runs on clk_core_14318). One bit -> a plain
+// sync chain (no multi-bit skew concern).
+reg joy_rel_m;
+synch_3 #(.WIDTH(1)) s_joy_rel (
+    .i(cfg_joy_mode_word[0]), .o(joy_rel_m), .clk(clk_core_14318)
+);
 
 // ---- .a2k profile slot (2026-10-27, joy2key Phase 2) ----
 // data.json id 3: parameters 4 = bit2 (nonvolatile filename cloned from

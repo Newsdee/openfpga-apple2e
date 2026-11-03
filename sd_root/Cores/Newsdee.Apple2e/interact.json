@@ -132,6 +132,26 @@
             "name": "HDD"
           }
         ]
+      },
+      {
+        "name": "Joystick Mode",
+        "id": 7,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "defaultval": 0,
+        "address": "0x01F00014",
+        "options": [
+          {
+            "value": 0,
+            "name": "Absolute"
+          },
+          {
+            "value": 1,
+            "name": "Relative"
+          }
+        ]
       }
     ],
     "messages": []
