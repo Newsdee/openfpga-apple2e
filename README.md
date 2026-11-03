@@ -217,5 +217,15 @@ history; the split applies from that date forward and history was not rewritten.
 
 ## Provenance / licensing
 
-- APF shell: `open-fpga/core-template` (Analogue openFPGA program).
-- Machine RTL: `Apple-II_MiSTer` project (Newsdee).
+- This repository is licensed under **GPL-3.0-or-later** (`LICENSE`).
+  The complete corresponding source for the distributed bitstream is this
+  repository (public: `Newsdee/openfpga-apple2e`), satisfying GPL source
+  provision for shipped `bitstream.rbf_r`.
+- APF shell: `open-fpga/core-template` (Analogue openFPGA program; MIT/GPL
+  dual with EULA-prevail per file headers - usable as-is under this license).
+- Machine RTL: `Apple-II_MiSTer` project (Newsdee; MiSTer family is GPL-3,
+  see `Main_MiSTer/LICENSE`).
+- `src/fpga/core/hid_to_ps2.sv`: verbatim import from
+  `github.com/desaster/openfpga-PCXT` - provenance and hashes in
+  `src/fpga/core/NOTICE_hid_to_ps2.md`. Verbatim files carry zero local
+  edits; provenance lives in the NOTICE.

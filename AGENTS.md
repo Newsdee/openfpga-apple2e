@@ -324,6 +324,17 @@ Planned allocation (4 of 16): `Reboot on load` (exists) + 1 joystick + 2 video
   `machine/apple2.v:119` labels gameport bits 3/2/1 `pb3 pb2 pb1`, but the real
   Apple II convention is `$C061`=PB0, `$C062`=PB1, `$C063`=PB2. **There is no
   PB3.** Record it in the NOTICE; do not edit the pinned comment.
+- **Licensing (2026-11-02):** the repo is **GPL-3.0-or-later** (`LICENSE`);
+  complete corresponding source for the shipped bitstream is this public repo.
+  The MiSTer donor family and the PCXT/myc64 Pocket references are all GPL-3,
+  so verbatim imports stay within one compatible license - no clean-room needed.
+- **Verbatim third-party imports** follow the same discipline as pinned
+  `machine/` files: **zero local edits**, provenance (upstream repo, commit,
+  path, license, SHA-256) recorded in a sibling `NOTICE_*.md`. Any required
+  change is made in *our* glue, never in the imported file; if the import must
+  ever diverge, re-diff against upstream first and record the deviation in the
+  NOTICE. Current example: `src/fpga/core/hid_to_ps2.sv` (+
+  `NOTICE_hid_to_ps2.md`), imported from `github.com/desaster/openfpga-PCXT`.
 - **CDC (skill KB-009):** pad signals arrive in the 74.25 MHz pad domain; machine
   logic runs at 14.318 MHz. The 3FF pattern in `apple2e_osk.v` is acceptable for a
   quasi-static button bitmap (a torn read costs one frame) — **but write that
