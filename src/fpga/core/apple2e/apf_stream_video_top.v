@@ -927,7 +927,12 @@ wire [15:0] joy_dig = {8'b0,
                        cont1_key_m[3]};  // dpad_right -> [0]
 wire [15:0] joy_an;
 wire [7:0]  joy;
-joystick_input #(.RELATIVE_UPDATE_CYCLES(71591)) u_joy (
+// RELATIVE_UPDATE_CYCLES: the period between relative-mode accumulator steps.
+// 143182 (= 1 ms @ 143.18 MHz) is the donor default. 71591 (0.5 ms, 2x faster)
+// felt "floaty" on hardware (the paddle overshoots before you release, reading
+// as inertia), so use the donor 1 ms period - half the step rate, snappier stop.
+// Re-tune upward (fewer ms) if it's now too sluggish.
+joystick_input #(.RELATIVE_UPDATE_CYCLES(143182)) u_joy (
     .clk(joy_clk),
     .reset(machine_reset),
     .joystick_digital(joy_dig),
