@@ -1016,7 +1016,7 @@ end
 // from the 74a-domain cfg_joy_mode_word[0] (0=Absolute, 1=Relative) into the
 // machine domain (joystick_input runs on clk_core_14318). One bit -> a plain
 // sync chain (no multi-bit skew concern).
-reg joy_rel_m;
+wire joy_rel_m;
 synch_3 #(.WIDTH(1)) s_joy_rel (
     .i(cfg_joy_mode_word[0]), .o(joy_rel_m), .clk(clk_core_14318)
 );
