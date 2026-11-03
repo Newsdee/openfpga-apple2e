@@ -1565,7 +1565,7 @@ parameter FP_DIAG = 1'b0;
 // _MODE): the debug text (HD/PC/DA + the new JOY line) is visible so the owner
 // can wiggle the stick and read the raw bytes. Revert to 1'b0 once the probe
 // verdict is in (feature build) or for the shipping build.
-parameter OVL_DEBUG = 1'b1;
+parameter OVL_DEBUG = 1'b0;   // shipping (0.3.2): debug text/lines off; drive lamps stay (not OVL_DBG-gated)
 
 // Debug-line visibility window in machine clocks (14.318 MHz). The debug
 // lines (MT=/RD=, AC=/MO=, ST=/A=/F=, RQ=) are drawn only while this window

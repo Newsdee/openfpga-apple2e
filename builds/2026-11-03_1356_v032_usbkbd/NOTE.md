@@ -27,18 +27,21 @@ types into the machine exactly like the on-screen keyboard does.
 No `interact.json`/`data.json`/`video.json` change (a docked keyboard is a hardware
 input, not an OSD option or media slot). `core.json` bumped 0.3.1 -> 0.3.2.
 
-## Compile (Quartus 17.0.2 Lite)
-- Fit: Successful. ALM 13,686 / 18,480 (74%).
-- STA: TNS 0.000 (all constraints met).
-- ASM: Successful. `.rbf` 1,801,892 bytes.
-- Resources: registers 15,172; block memory 1,557,504 / 3,153,920 (49%);
+## Compile (Quartus 17.0.2 Lite) — shipping-clean (OVL_DEBUG=0)
+- `OVL_DEBUG=1'b0`: debug text/lines off for shipping; drive lamps stay (not OVL_DBG-gated).
+  (First 0.3.2 pass was compiled with OVL_DEBUG=1 inherited from the joystick probe;
+  recompiled 14:12 with OVL_DEBUG=0 for the shipping bitstream.)
+- Fit: Successful. ALM 11,544 / 18,480 (62%).
+- STA: TNS 0.000 (all 80 constraints met).
+- ASM: Successful. `.rbf` 1,718,520 bytes.
+- Resources: registers 14,519; block memory 1,557,504 / 3,153,920 (49%);
   pins 224 / 224 (100%); DSP 29 / 66 (44%).
 - A&S registers `core/hid_to_ps2.sv` + `core/apple2e/apple2e_osk.v` (USB-kbd sources
   confirmed in the map report).
 
 ## SHA-256
-- source `.rbf`:        `52b57bef6d097fed49b8a55a9e9448797c36b8efdb20486bff60d35e4076c430`
-- `bitstream.rbf_r`:    `843c74acfcf35d9efe5d947cd83f810cac6d0bb8add2988b5145394184aa9105`
+- source `.rbf`:        `1c4dad6ccba2b4b5d64ebdb05fb9399cb9d0216d6069cc3bbf08e6d52e1c0082`
+- `bitstream.rbf_r`:    `cc058003629fc42446a791143d4cf8fe35507f1674f3e809032d21b284fc53d3`
 
 ## Unit TB (run_kbd_suites.bat) — PASS (all checks)
 Proven (hard checks): USB pass-through with the OSK closed (unshifted 'A'=0x41 make +
