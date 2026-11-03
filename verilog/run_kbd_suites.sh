@@ -29,7 +29,7 @@ overall=0
 obj="obj_dir_kbd_tb_pocket_kbd"
 log="$obj.log"
 rm -rf "$obj"
-( "$VERILATOR" --binary --timing -j 4 --top tb_pocket_kbd $WARN_FLAGS \
+( "$VERILATOR" --binary --timing -j 4 --top tb_pocket_kbd -DJOY_TO_KEY=1 $WARN_FLAGS \
     --Mdir "$obj" \
     "$S/apple2e_osk.v" \
     "$C/hid_to_ps2.sv" \
