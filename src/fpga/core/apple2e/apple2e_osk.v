@@ -128,7 +128,7 @@ module apple2e_osk #(
     // otherwise be latched mid-transition and - since hid_to_ps2 edge-detects
     // report changes - post a phantom make/break pair.
     localparam [1:0] RPT_STABLE = 2'd3;
-    reg [31:0] ck_prev, ck_snap, cj_snap;
+    reg [31:0] ck_prev, ck_snap, cj_prev, cj_snap;
     reg [15:0] ct_prev, ct_snap;
     reg [1:0]  rpt_stable_cnt;
     always @(posedge clk or posedge reset) begin
