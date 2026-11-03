@@ -107,6 +107,7 @@ module tb_pocket_kbd;
             // ---- T1: 'a' make (HID 0x04 in slot0) -> a key latches; the
             // machine's `reads` ack clears it (the PS2 break alone does not) ----
             set_report(8'h00, 8'h04, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00);
+            $display("DBG1 kbd_active=%b ck_snap=%h hid_joy=%h hid_trig=%h hid_mods=%h ps2_usb=%b K=%h", dut.kbd_active, dut.ck_snap, dut.hid_joy, dut.hid_trig, dut.hid_mods, dut.ps2_usb, K);
             check("T1a 'a' make sets key_ready", (K[7] === 1'b1));
             check("T1b 'a' make yields a non-zero code", (K[7:0] != 8'h00));
             reads_pulse;
