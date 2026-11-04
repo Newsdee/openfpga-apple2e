@@ -19,6 +19,20 @@
 //       commits success, the bridge drops the request, and C0F1 later
 //       reports the error (the silent-corruption path, closed by
 //       bridge_err -> hdd reg_status).
+//   T8: full WRITE round-trip (0.3.3, WP2.1/2/3): C0F8 bytes -> walk_out
+//       -> 0x0184 host capture (the never-exercised data leg, BE lane
+//       order) -> deliberate-mismatch non-vacancy check -> 0x0180 re-read
+//       of the same sector with the captured bytes DMA'd back -> C0F8
+//       readout must match; plus a two-sector slotoffset check (40 then 42).
+//   T9: mixed-direction back-to-back (WP2.4): READ 44, WRITE 44, READ 44
+//       immediately in succession - the shared walk counters across
+//       consecutive direction changes (a coverage gap from the ProDOS-
+//       crash investigation).
+//   T10: protect toggled between hdd_write and the bridge's arm decision
+//        (WP2.5): the drop branch must consume the request cleanly and
+//        the next unprotected write must work.
+//   T11: write-leg host timeout (WP2.6): a 0x0184 that never completes
+//        must release the CPU, latch the fault, and make C0F1 report 1
 //
 // Build/run: run_hdv_bridge.sh (MSYS2 ucrt64) - Verilator --binary.
 
@@ -61,9 +75,13 @@ module tb_hdv_bridge;
     wire [31:0] target_dataslot_length;
 
     // ---- slot presence ----
-    reg         hdv_mounted = 1'b0;   // bridge (74a) view
-    reg         hdd_mnt     = 1'b0;   // hdd (14M) view (split for the T7 desync)
-    reg         hdv_protect = 1'b1;
+    reg         hdv_mounted    = 1'b0; // bridge (74a) view
+    reg         hdd_mnt        = 1'b0; // hdd (14M) view (split for the T7 desync)
+    // protect is split the same way (0.3.3): the top feeds the same
+    // 74a-domain option word to the bridge raw and to hdd through a
+    // synch_3 copy - the TB mirrors that so T10 can desync the two.
+    reg         hdv_protect    = 1'b1; // hdd (14M) view
+    reg         hdv_protect_74 = 1'b1; // bridge (74a) view
 
     // ---- hdd sector-buffer interface ----
     wire [8:0]  hdd_ram_addr;
@@ -108,7 +126,7 @@ module tb_hdv_bridge;
         .target_dataslot_bridgeaddr ( target_dataslot_bridgeaddr ),
         .target_dataslot_length     ( target_dataslot_length ),
         .hdv_mounted    ( hdv_mounted ),
-        .hdv_protect    ( hdv_protect ),
+        .hdv_protect    ( hdv_protect_74 ),
         .hdd_ram_addr   ( hdd_ram_addr ),
         .hdd_ram_di     ( hdd_ram_di ),
         .hdd_ram_do     ( hdd_ram_do ),
@@ -209,6 +227,17 @@ module tb_hdv_bridge;
     reg         dma_busy;
     reg         dma_go = 1'b0;   // sequence: pattern DMA finished -> done
 
+    // 0x0184 capture store (0.3.3, WP2.1): the host reads the sector RAM
+    // back word-by-word during a write transfer - the data leg the
+    // shipping core had never exercised anywhere.
+    reg [31:0] cap [0:127];
+    // 0x0180 replay store: the host DMAs these words into the RAM for a
+    // READ (normally the pattern is generated on the fly; T8/T9/T11
+    // replay captured bytes instead).
+    reg [31:0] rep [0:127];
+    reg        use_rep = 1'b0;
+    reg [31:0] rep_w;
+
     // pattern: byte i of a sector
     function [7:0] pat;
         input [8:0] i;
@@ -230,6 +259,18 @@ module tb_hdv_bridge;
         end
     endfunction
 
+    // 0.3.3 write pattern (WP2.2): 1..255, never 0x00 - a round-trip check
+    // that passed against a dead 0x0184 returning zeros would be
+    // worthless.
+    function [7:0] patw;
+        input [8:0]  i;
+        reg  [31:0]  t;
+        begin
+            t = (i * 7) % 255;
+            patw = t[7:0] + 8'd1;
+        end
+    endfunction
+
     always @(posedge clk_74a) begin
         if (!reset_n) begin
             tr_sync <= 2'b00; tw_sync <= 2'b00;
@@ -247,6 +288,7 @@ module tb_hdv_bridge;
                 cmd_seen_len    <= target_dataslot_length;
                 target_dataslot_done <= 1'b0;   // host: done until command start
                 dma_busy       <= 1'b1;
+                rep_w          <= 32'd0;        // host replay: reset the word index
             end else if (tw_rise) begin
                 cmd_kind        <= 2'd2;
                 cmd_seen_id     <= target_dataslot_id;
@@ -258,6 +300,18 @@ module tb_hdv_bridge;
             end else if (dma_go && dma_busy && !host_ignore) begin
                 target_dataslot_done <= 1'b1;
                 dma_busy             <= 1'b0;
+            end else if (dma_busy && use_rep && !host_ignore) begin
+                // host replay: DMA the rep[] words into the sector RAM,
+                // one bridge word per cycle (the real host does the same,
+                // paced by its own bridge reads/writes)
+                bridge_wr      <= 1'b1;
+                bridge_addr    <= 32'h01F01000 + rep_w*4;
+                bridge_wr_data <= rep[rep_w[7:0]];
+                if (rep_w == 32'd127) begin
+                    dma_busy <= 1'b0;
+                    target_dataslot_done <= 1'b1;
+                end else
+                    rep_w <= rep_w + 32'd1;
             end
         end
     end
@@ -462,7 +516,8 @@ module tb_hdv_bridge;
         if (failures == 0) $display("PASS T7: dropped fetch reports error via C0F1");
 
         // ---- T4: WRITE with protect=0 ----
-        hdv_protect = 1'b0;
+        hdv_protect    = 1'b0;
+        hdv_protect_74 = 1'b0;
         for (i = 0; i < 512; i = i + 1) begin
             t = (i * 3 + 1) % 256;
             c0f8_write(t[7:0]);
@@ -496,11 +551,289 @@ module tb_hdv_bridge;
         #100;
         if (failures == 0) $display("PASS T4: 512-byte WRITE walk exact (0x0184 armed)");
 
+        // ---- T8: full WRITE round-trip via the 0x0184 data leg (WP2.1/2/3) ----
+        // C0F8 bytes -> walk_out -> 0x0184 (the host READS the sector RAM -
+        // the data leg never exercised anywhere) -> the host captures the BE
+        // stream -> a 0x0180 re-read of the same sector DMAs the captured
+        // bytes back -> walk_in -> C0F8 readout. Every byte the CPU wrote
+        // must come back exact. Pattern is 1..255 (never 0x00).
+        c0f_write(16'hC0F6, 8'd40);
+        c0f_write(16'hC0F7, 8'd0);
+        for (i = 0; i < 512; i = i + 1)
+            c0f8_write(patw(i[8:0]));
+        c0f_write(16'hC0F2, 8'd2);         // command = WRITE
+        c0f_read(16'hC0F0, st);
+        if (st !== 8'd0) begin $display("FAIL T8: C0F0 WRITE status = %0d (want 0)", st); failures = failures + 1; end
+        // WP2.3 slotoffset, first of the pair: sector 40 -> 20480.
+        wait (cmd_kind == 2'd2 && cmd_seen_offset == 32'd20480);
+        if (cmd_seen_id !== 16'd2)    begin $display("FAIL T8: write cmd id %0d (want 2)", cmd_seen_id); failures = failures + 1; end
+        if (cmd_seen_len !== 32'd512) begin $display("FAIL T8: write cmd len %0d (want 512)", cmd_seen_len); failures = failures + 1; end
+        write_cmds = write_cmds + 1;
+        // host: read the sector RAM back through the 0x0184 port, the way
+        // the real host DMAs it: 0x01F01000+off in 4-byte steps, BE (first
+        // file byte of the group in [31:24]). The RAM is static during
+        // ST_WRITE (walker idle, machine stalled), so each word can be
+        // captured combinationally after setting the address.
+        bridge_wr = 1'b0;
+        for (i = 0; i < 128; i = i + 1) begin
+            bridge_addr = 32'h01F01000 + i*4;
+            #1;
+            cap[i] = hdv_ram_word;
+        end
+        // lane-order check: word i must be {patw(4i+3), patw(4i+2),
+        // patw(4i+1), patw(4i)}
+        for (i = 0; i < 128; i = i + 1) begin
+            /* verilator lint_off WIDTHTRUNC */
+            tmp16 = i*4;
+            /* verilator lint_on WIDTHTRUNC */
+            b0 = tmp16[8:0];
+            tmp16 = tmp16 + 16'd1; b1 = tmp16[8:0];
+            tmp16 = tmp16 + 16'd1; b2 = tmp16[8:0];
+            tmp16 = tmp16 + 16'd1; b3 = tmp16[8:0];
+            if (cap[i] !== {patw(b0), patw(b1), patw(b2), patw(b3)}) begin
+                if (failures < 8) $display("FAIL T8: cap[%0d] = %h want %h", i, cap[i], {patw(b0), patw(b1), patw(b2), patw(b3)});
+                failures = failures + 1;
+            end
+        end
+        // WP2.2 non-vacancy: corrupt one captured word; the byte comparison
+        // above MUST then see exactly one mismatch (a check that passes
+        // against a dead 0x0184 returning zeros is worthless); restore it
+        // and it must be clean again.
+        cap[64] = cap[64] ^ 32'h0001_0000;
+        begin : vac
+            integer vm;
+            vm = 0;
+            for (i = 0; i < 128; i = i + 1) begin
+                /* verilator lint_off WIDTHTRUNC */
+                tmp16 = i*4;
+                /* verilator lint_on WIDTHTRUNC */
+                b0 = tmp16[8:0];
+                tmp16 = tmp16 + 16'd1; b1 = tmp16[8:0];
+                tmp16 = tmp16 + 16'd1; b2 = tmp16[8:0];
+                tmp16 = tmp16 + 16'd1; b3 = tmp16[8:0];
+                if (cap[i] !== {patw(b0), patw(b1), patw(b2), patw(b3)})
+                    vm = vm + 1;
+            end
+            if (vm !== 1) begin $display("FAIL T8: non-vacancy - %0d mismatches after corrupting 1 word (want 1)", vm); failures = failures + 1; end
+        end
+        cap[64] = {patw(9'd256), patw(9'd257), patw(9'd258), patw(9'd259)};   // restore ([31:24] = first file byte)
+        dma_go = 1'b1;   // host accepts the 0x0184 (data already captured)
+        while (cpu_wait_hdd) @(negedge clk_14a);
+        #100;
+        // the round trip: re-issue a 0x0180 READ of sector 40 and replay
+        // the captured store into the RAM (the host's read DMA is the
+        // 0x0184 stream in reverse)
+        dma_go  = 1'b0;
+        use_rep = 1'b1;
+        for (i = 0; i < 128; i = i + 1)
+            rep[i] = cap[i];
+        c0f_write(16'hC0F2, 8'd1);         // command = READ
+        c0f_read(16'hC0F0, st);
+        if (st !== 8'd0) begin $display("FAIL T8: C0F0 READ status = %0d (want 0)", st); failures = failures + 1; end
+        wait (cmd_kind == 2'd1 && cmd_seen_offset == 32'd20480);
+        read_cmds = read_cmds + 1;
+        // the host model replays rep[] automatically (use_rep); wait for
+        // the stall to release (replay DMA + walk_in)
+        while (cpu_wait_hdd) @(negedge clk_14a);
+        #100;
+        use_rep = 1'b0;
+        for (i = 0; i < 512; i = i + 1) begin
+            c0f8_read(d8);
+            if (d8 !== patw(i[8:0])) begin
+                if (failures < 8) $display("FAIL T8: round-trip C0F8[%0d] = %0d want %0d", i, d8, patw(i[8:0]));
+                failures = failures + 1;
+            end
+        end
+        if (failures == 0) $display("PASS T8a: WRITE round-trip via 0x0184 capture byte-exact");
+        // WP2.3 slotoffset, second of the pair: the next write goes to
+        // sector 42 - the walk must not have touched the sector registers
+        // (the RTL comment says it does not; prove it)
+        c0f_write(16'hC0F6, 8'd42);
+        c0f_write(16'hC0F2, 8'd2);
+        c0f_read(16'hC0F0, st);
+        if (st !== 8'd0) begin $display("FAIL T8: C0F0 WRITE status = %0d (want 0)", st); failures = failures + 1; end
+        wait (cmd_kind == 2'd2 && cmd_seen_offset == 32'd21504);
+        if (cmd_seen_offset !== 32'd21504) begin $display("FAIL T8: slotoffset %0d (want 21504)", cmd_seen_offset); failures = failures + 1; end
+        write_cmds = write_cmds + 1;
+        dma_go = 1'b1;   // host accepts the 0x0184
+        while (cpu_wait_hdd) @(negedge clk_14a);
+        #200;
+        if (failures == 0) $display("PASS T8b: consecutive write slotoffsets 20480 / 21504");
+
+        // ---- T9: mixed-direction back-to-back (WP2.4) ----
+        // The harness never tested mixed N-consecutive-direction sequences
+        // (shared walk counters cnt_i/cnt_o2 reset paths): READ 44, WRITE
+        // 44, READ 44 - each immediately after the previous completed.
+        // Phase A: READ 44 (replay a known pattern)
+        dma_go  = 1'b0;
+        use_rep = 1'b1;
+        for (i = 0; i < 128; i = i + 1) begin
+            /* verilator lint_off WIDTHTRUNC */
+            tmp16 = i*4;
+            /* verilator lint_on WIDTHTRUNC */
+            b0 = tmp16[8:0];
+            tmp16 = tmp16 + 16'd1; b1 = tmp16[8:0];
+            tmp16 = tmp16 + 16'd1; b2 = tmp16[8:0];
+            tmp16 = tmp16 + 16'd1; b3 = tmp16[8:0];
+            rep[i] = {pat2(b0, 8'd44), pat2(b1, 8'd44), pat2(b2, 8'd44), pat2(b3, 8'd44)};
+        end
+        c0f_write(16'hC0F6, 8'd44);
+        c0f_write(16'hC0F2, 8'd1);         // command = READ
+        c0f_read(16'hC0F0, st);
+        if (st !== 8'd0) begin $display("FAIL T9: C0F0 READ status = %0d (want 0)", st); failures = failures + 1; end
+        wait (cmd_kind == 2'd1 && cmd_seen_offset == 32'd22528);   // 44*512
+        read_cmds = read_cmds + 1;
+        while (cpu_wait_hdd) @(negedge clk_14a);
+        #100;
+        for (i = 0; i < 512; i = i + 1) begin
+            c0f8_read(d8);
+            if (d8 !== pat2(i[8:0], 8'd44)) begin
+                if (failures < 8) $display("FAIL T9: A C0F8[%0d] = %0d want %0d", i, d8, pat2(i[8:0], 8'd44));
+                failures = failures + 1;
+            end
+        end
+        // Phase B: WRITE 44 immediately after the read completed
+        use_rep = 1'b0;
+        c0f_write(16'hC0F6, 8'd44);
+        c0f_write(16'hC0F2, 8'd2);         // command = WRITE
+        c0f_read(16'hC0F0, st);
+        if (st !== 8'd0) begin $display("FAIL T9: C0F0 WRITE status = %0d (want 0)", st); failures = failures + 1; end
+        wait (cmd_kind == 2'd2 && cmd_seen_offset == 32'd22528);
+        write_cmds = write_cmds + 1;
+        // capture the 0x0184 stream again (the write leg must be exact too).
+        // The sector buffer still holds Phase A's pat2(44) data (phase B
+        // issues no C0F8 writes), so the stream is that pattern.
+        bridge_wr = 1'b0;
+        for (i = 0; i < 128; i = i + 1) begin
+            bridge_addr = 32'h01F01000 + i*4;
+            #1;
+            cap[i] = hdv_ram_word;
+        end
+        for (i = 0; i < 128; i = i + 1) begin
+            /* verilator lint_off WIDTHTRUNC */
+            tmp16 = i*4;
+            /* verilator lint_on WIDTHTRUNC */
+            b0 = tmp16[8:0];
+            tmp16 = tmp16 + 16'd1; b1 = tmp16[8:0];
+            tmp16 = tmp16 + 16'd1; b2 = tmp16[8:0];
+            tmp16 = tmp16 + 16'd1; b3 = tmp16[8:0];
+            if (cap[i] !== {pat2(b0, 8'd44), pat2(b1, 8'd44), pat2(b2, 8'd44), pat2(b3, 8'd44)}) begin
+                if (failures < 8) $display("FAIL T9: B cap[%0d] = %h want %h", i, cap[i], {pat2(b0, 8'd44), pat2(b1, 8'd44), pat2(b2, 8'd44), pat2(b3, 8'd44)});
+                failures = failures + 1;
+            end
+        end
+        dma_go = 1'b1;   // host accepts the 0x0184
+        while (cpu_wait_hdd) @(negedge clk_14a);
+        #100;
+        // Phase C: READ 44 immediately after the write completed - the
+        // replayed captured bytes must come back exactly
+        dma_go  = 1'b0;
+        use_rep = 1'b1;
+        for (i = 0; i < 128; i = i + 1)
+            rep[i] = cap[i];
+        c0f_write(16'hC0F6, 8'd44);
+        c0f_write(16'hC0F2, 8'd1);         // command = READ
+        c0f_read(16'hC0F0, st);
+        if (st !== 8'd0) begin $display("FAIL T9: C0F0 READ status = %0d (want 0)", st); failures = failures + 1; end
+        wait (cmd_kind == 2'd1 && cmd_seen_offset == 32'd22528);
+        read_cmds = read_cmds + 1;
+        while (cpu_wait_hdd) @(negedge clk_14a);
+        #100;
+        use_rep = 1'b0;
+        for (i = 0; i < 512; i = i + 1) begin
+            c0f8_read(d8);
+            if (d8 !== pat2(i[8:0], 8'd44)) begin
+                if (failures < 8) $display("FAIL T9: C C0F8[%0d] = %0d want %0d", i, d8, pat2(i[8:0], 8'd44));
+                failures = failures + 1;
+            end
+        end
+        if (failures == 0) $display("PASS T9: READ/WRITE/READ back-to-back exact");
+
+        // ---- T10: protect toggled between hdd_write and the arm ----
+        // (WP2.5) hdd (14M) sees protect=0 and pulses hdd_write; the bridge
+        // (74a) sees protect=1 and must drop the request via the
+        // `else if (write_pend)` branch - no 0x0184, no walk, no stall,
+        // no stale pend. The next unprotected write must work.
+        hdv_protect_74 = 1'b1;   // bridge view only; hdd still sees 0
+        c0f_write(16'hC0F6, 8'd46);
+        for (i = 0; i < 512; i = i + 1)
+            c0f8_write(patw(i[8:0]));
+        c0f_write(16'hC0F2, 8'd2);
+        c0f_read(16'hC0F0, st);
+        if (st !== 8'd0) begin $display("FAIL T10: C0F0 status %0d (want 0, optimistic)", st); failures = failures + 1; end
+        #1000;   // the wr_rise -> pend -> drop window is ~10 machine clocks
+        if (hdv_state !== 3'd0) begin $display("FAIL T10: state=%0d after protected drop (want 0=IDLE)", hdv_state); failures = failures + 1; end
+        if (cpu_wait_hdd) begin $display("FAIL T10: cpu_wait asserted on a dropped write"); failures = failures + 1; end
+        if (write_cmds !== 4) begin $display("FAIL T10: write_cmds=%0d (want 4: T4 + T8x2 + T9; the drop issues no 0x0184)", write_cmds); failures = failures + 1; end
+        // no stale pend: the next unprotected write must arm normally
+        hdv_protect_74 = 1'b0;
+        c0f_write(16'hC0F6, 8'd46);
+        c0f_write(16'hC0F2, 8'd2);
+        c0f_read(16'hC0F0, st);
+        if (st !== 8'd0) begin $display("FAIL T10: C0F0 status %0d (want 0)", st); failures = failures + 1; end
+        wait (cmd_kind == 2'd2 && cmd_seen_offset == 32'd23552);   // 46*512
+        write_cmds = write_cmds + 1;
+        dma_go = 1'b1;
+        while (cpu_wait_hdd) @(negedge clk_14a);
+        #200;
+        if (failures == 0) $display("PASS T10: protected drop consumes cleanly, next write works");
+
+        // ---- T11: write-leg host timeout (WP2.6) ----
+        // A 0x0184 the host never completes must release the CPU (the 6502
+        // cannot stall forever), latch the fault, and make C0F1 report 1
+        // through the bridge_err override (hdd.v:338) - not the stale
+        // optimistic 00 the execute committed.
+        host_ignore = 1'b1;
+        use_rep     = 1'b0;
+        c0f_write(16'hC0F6, 8'd48);
+        c0f_write(16'hC0F2, 8'd2);
+        c0f_read(16'hC0F0, st);
+        if (st !== 8'd0) begin $display("FAIL T11: C0F0 status %0d (want 0, write in flight)", st); failures = failures + 1; end
+        // the walk_out precedes the 0x0184 arm (~36us); wait for the
+        // state to reach WRITE, then confirm it is in flight
+        begin : t11arm
+            integer w;
+            for (w = 0; w < 2000 && hdv_state !== 3'd5; w = w + 1)
+                @(negedge clk_14a);
+        end
+        if (hdv_state !== 3'd5) begin $display("FAIL T11: state=%0d (want 5=WRITE, in flight before timeout)", hdv_state); failures = failures + 1; end
+        if (!cpu_wait_hdd) begin $display("FAIL T11: cpu_wait not held during in-flight write"); failures = failures + 1; end
+        begin : t11wait
+            integer w;
+            for (w = 0; w < 3000 && cpu_wait_hdd; w = w + 1)
+                @(negedge clk_14a);
+        end
+        if (cpu_wait_hdd) begin $display("FAIL T11: cpu_wait still held after the timeout bound"); failures = failures + 1; end
+        if (hdv_state !== 3'd0) begin $display("FAIL T11: state=%0d after timeout (want 0=IDLE)", hdv_state); failures = failures + 1; end
+        if (!hdv_fault) begin $display("FAIL T11: hdv_fault not latched on a write-leg timeout"); failures = failures + 1; end
+        #1000;   // bridge_err hold (15 x 74a) + 2FF sync reaches hdd
+        c0f_read(16'hC0F1, st);
+        if (st !== 8'h01) begin $display("FAIL T11: C0F1 after write timeout = %0d (want 1, not stale 00)", st); failures = failures + 1; end
+        if (write_cmds !== 5) begin $display("FAIL T11: write_cmds=%0d (want 5: T4 + T8x2 + T9 + T10; the timeout is issued but not completed)", write_cmds); failures = failures + 1; end
+        // recovery: the host answers again -> the next write completes
+        // clean. The write arms the 0x0184 only AFTER its walk_out (~36us),
+        // so wait for the state to reach WRITE first, then for completion.
+        host_ignore = 1'b0;
+        dma_go      = 1'b1;
+        c0f_write(16'hC0F2, 8'd2);
+        c0f_read(16'hC0F0, st);
+        begin : t11rec
+            integer w;
+            for (w = 0; w < 2000 && hdv_state !== 3'd5; w = w + 1)
+                @(negedge clk_14a);
+        end
+        if (hdv_state !== 3'd5) begin $display("FAIL T11: recovery write never reached the 0x0184 arm (state=%0d)", hdv_state); failures = failures + 1; end
+        while (cpu_wait_hdd) @(negedge clk_14a);
+        #500;
+        if (hdv_fault) begin $display("FAIL T11: fault not cleared by a clean write"); failures = failures + 1; end
+        if (failures == 0) $display("PASS T11: write-leg timeout releases the CPU, fault latches, clean write recovers");
+
         // ---- T5: host fetch never completes -> timeout releases the CPU ----
         // (the 2026-10-30 hardware hang: HDV mounted, ROM commits to the HD,
         // first C0F0 read, and the stall never ends. The timeout must bound
         // that: IDLE + fault latch + a later clean fetch clears the fault.)
-        hdv_protect = 1'b1;
+        hdv_protect    = 1'b1;
+        hdv_protect_74 = 1'b1;
         host_ignore = 1'b1;
         dma_go      = 1'b0;
         c0f_write(16'hC0F6, 8'd20);
@@ -523,8 +856,9 @@ module tb_hdv_bridge;
         #1000;   // bridge_err hold (15 x 74a) + 2FF sync reaches hdd
         c0f_read(16'hC0F1, st);
         if (st !== 8'h01) begin $display("FAIL T5: C0F1 after timeout = %0d (want 1, not stale 00)", st); failures = failures + 1; end
-        // a timed-out fetch does NOT count as completed (T1 + T6's two)
-        if (hdv_fetch_cnt !== 8'd3) begin $display("FAIL T5: hdv_fetch_cnt=%0d after timeout (want 3, timeout is not a completion)", hdv_fetch_cnt); failures = failures + 1; end
+        // a timed-out fetch does NOT count as completed (T1 + T6x2 + T8
+        // round-trip read + T9's two reads)
+        if (hdv_fetch_cnt !== 8'd6) begin $display("FAIL T5: hdv_fetch_cnt=%0d after timeout (want 6, timeout is not a completion)", hdv_fetch_cnt); failures = failures + 1; end
         // recovery: host responds again -> the next fetch completes clean
         host_ignore = 1'b0;
         dma_go      = 1'b1;
@@ -533,7 +867,7 @@ module tb_hdv_bridge;
         while (cpu_wait_hdd) @(negedge clk_14a);
         #500;
         if (hdv_fault) begin $display("FAIL T5: fault not cleared by a clean fetch"); failures = failures + 1; end
-        if (hdv_fetch_cnt !== 8'd4) begin $display("FAIL T5: fetch_cnt=%0d (want 4: T1 + T6x2 + recovery; timeout not counted)", hdv_fetch_cnt); failures = failures + 1; end
+        if (hdv_fetch_cnt !== 8'd7) begin $display("FAIL T5: fetch_cnt=%0d (want 7: T1 + T6x2 + T8 + T9x2 + recovery; timeout not counted)", hdv_fetch_cnt); failures = failures + 1; end
         if (failures == 0) $display("PASS T5: fetch timeout releases the CPU, fault latches, clean fetch recovers");
 
         // ---- summary ----

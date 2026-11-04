@@ -54,6 +54,20 @@ button-combination switcher is planned. Note the Pocket LCD is 1600x1440
 decimation must keep DE contiguous (see `video_skip` note in the expert
 briefs).
 
+### Data slots (media images)
+
+`data.json` assigns the machine's media to three host data slots:
+
+| Slot | Core assignment | File | Notes |
+|---|---|---|---|
+| 1 | **Floppy disk** (Disk II / WOZ drive) | `.woz` | Optional; max 4 MiB; carries the floppy OSD options (9 parameters). Boots the machine like a real WOZ disk. |
+| 2 | **Hard disk** (the HDV) | `.hdv` | Optional; `deferload` — NOT pre-loaded into RAM. Sectors are streamed live from the SD card on every disk transfer (host bridge `0x0180` read / `0x0184` write), which is also why a writable HDV persists per-sector (0.3.3+). Size cap is 2 GiB (effectively any HDV). Appears to the machine as the hard-disk volume (ProDOS volume 2 / DOS HD drive). |
+| 3 | **Joy2key profile** (joystick-to-keyboard map) | `.a2k` | Optional; 16 bytes loaded at `0x01F10000`; carries the joystick-mode OSD options (5 parameters). |
+
+Everything else is not a data slot: video is the single 560x192 stream
+above, audio is I2S from the core, and the docked USB keyboard arrives as a
+docked-controller report (Player-3, type 4), not a slot.
+
 ## OSK controls
 
 Works on both cores; START opens/closes the panel.
@@ -170,7 +184,11 @@ check, keyboard-protocol regression, RAM-inference minimal repro in
 `sd_root/Cores/Newsdee.Apple2e/`** (`core.json`, `data.json`,
 `interact.json`, `video.json`, `audio.json`, `input.json`, `variants.json`),
 plus `sd_root/Platforms/apple2e.json`. That directory IS the card layout - copy
-it to the Pocket SD card root.
+it to the Pocket SD card root. When a release adds a new interact option (e.g.
+0.3.3's "Hard Disk Write Protect"), the **bitstream and `interact.json` must
+be copied to the card as a pair** - a mismatched pair is inert (old core
+ignores the new address; new core without the JSON keeps its safe RTL
+default), so there is no corruption risk either way.
 
 There are deliberately **no copies at the repository root**. They used to exist
 as leftovers from the `open-fpga/core-template` origin and had silently drifted:

@@ -152,6 +152,26 @@
             "name": "Space / Return"
           }
         ]
+      },
+      {
+        "name": "Hard Disk Write Protect",
+        "id": 9,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "defaultval": 1,
+        "address": "0x01F00018",
+        "options": [
+          {
+            "value": 1,
+            "name": "Protected"
+          },
+          {
+            "value": 0,
+            "name": "Writable"
+          }
+        ]
       }
     ],
     "messages": []

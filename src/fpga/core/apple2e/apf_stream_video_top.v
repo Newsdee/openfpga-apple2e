@@ -1001,6 +1001,11 @@ reg  [31:0] cfg_j2k_dir_word = 32'd0;
 reg  [31:0] cfg_j2k_btn_word = 32'd0;
 reg  [31:0] cfg_media_word   = 32'd0;   // "Boot Media" (0x01F00010)
 reg  [31:0] cfg_joy_mode_word = 32'd0;  // "Joystick Mode" (0x01F00014)
+// Hard Disk Write Protect (PLAN_HDV_WRITE_2026-11-04, 0.3.3):
+// 1 = Protected (default) 0 = Writable. Initial value is 1 - the safe
+// state until the host has written the option (interact.json id 9 has
+// defaultval 1; the two agree, same convention as cfg_media_word).
+reg  [31:0] cfg_wp_word      = 32'd1;   // "HD Write Protect" (0x01F00018)
 always @(posedge clk_74a) begin
     if (bridge_wr && bridge_addr == 32'h01F00008)
         cfg_j2k_dir_word <= bridge_wr_data;
@@ -1020,6 +1025,10 @@ always @(posedge clk_74a) begin
     // on silicon in the 2026-10-25 bisect).
     if (bridge_wr && bridge_addr == 32'h01F00014)
         cfg_joy_mode_word <= bridge_wr_data;
+    // HD Write Protect (write-only, same safe pattern as the words above -
+    // the 01F00xxx read-back wildcard stays in its proven form).
+    if (bridge_wr && bridge_addr == 32'h01F00018)
+        cfg_wp_word <= bridge_wr_data;
 end
 
 // Joystick Mode (BRIEF_JOY_RELATIVE_MODE): the relative-mode enable, synced
@@ -1862,8 +1871,21 @@ woz_mount_ctl woz_mc (
 // hdd pulses hdd_read/hdd_write on C0F0 execute; the bridge FSM arms
 // 0x0180/0x0184 against the deferload HDV slot (id 2), stalls the 6502 via
 // CPU_WAIT for the whole transfer, and walks the 512-byte sector buffer.
-// Read-only milestone: hdd_protect=1, so hdd_write never fires (C0F0
-// WRITE returns 0x2B PROTECT) and the 0x0184 arm stays inert.
+// Write-through (0.3.3, PLAN_HDV_WRITE_2026-11-04): the protect level
+// comes from the "Hard Disk Write Protect" interact option (0x01F00018,
+// cfg_wp_word, PROTECTED BY DEFAULT). One 74a-domain source, two
+// consumers in different domains: hdv_bridge (74a) uses the raw word
+// below (it already runs on clk_74a - no sync); hdd (14M) uses the
+// synch_3 copy. The option is quasi-static (user toggles it from the
+// OSD); a transient mixed state while toggling can at worst drop one
+// hdd_write the hdd itself accepted - the bridge's drop branch consumes
+// it cleanly, and no partial write is possible (0x0184 DMAs one atomic
+// 512-byte sector). protect=1: hdd_write never fires (C0F0 WRITE
+// returns 0x2B PROTECT) and the 0x0184 arm stays inert.
+wire hdv_protect_m;
+synch_3 #(.WIDTH(1)) u_hdv_protect_sync (
+    .i(cfg_wp_word[0]), .o(hdv_protect_m), .clk(clk_core_14318), .rise(), .fall()
+);
 wire        hdd_read, hdd_write;
 wire [7:0]  hdd_dout;
 wire [15:0] hdd_sector;
@@ -1897,7 +1919,7 @@ hdd u_hdd (
     .hdd_read       ( hdd_read ),
     .hdd_write      ( hdd_write ),
     .hdd_mounted    ( hdv_mounted_m ),
-    .hdd_protect    ( 1'b1 ),
+    .hdd_protect    ( hdv_protect_m ),
     .bridge_fault   ( bridge_err_m ),
     .ram_addr       ( hdd_ram_addr ),
     .ram_di         ( hdd_ram_di ),
@@ -1922,7 +1944,8 @@ hdv_bridge u_hdv_bridge (
     .target_dataslot_bridgeaddr ( target_dataslot_bridgeaddr ),
     .target_dataslot_length     ( target_dataslot_length ),
     .hdv_mounted    ( hdv_mounted_74 ),
-    .hdv_protect    ( 1'b1 ),
+    // 74a domain: the raw word (see the domain note above the hdd instance)
+    .hdv_protect    ( cfg_wp_word[0] ),
     .hdd_ram_addr   ( hdd_ram_addr ),
     .hdd_ram_di     ( hdd_ram_di ),
     .hdd_ram_do     ( hdd_ram_do ),

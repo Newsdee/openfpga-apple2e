@@ -878,8 +878,11 @@ module sdram_status_overlay (
     //   green = floppy active  OR an HD read in flight  (FETCH/WALK_IN/WALK_OUT)
     //   red   = floppy motor   OR an HD write in flight (ARM_WRITE/WRITE)
     //   white = floppy sector IO OR an HD block completed (fetch_cnt changed)
-    // NOTE: the core is currently read-only end to end (IMG_READONLY=1,
-    // hdd_protect=1), so the red lamp stays dark until write-back lands.
+    // 0.3.3 (PLAN_HDV_WRITE): the HD is writable when the user opts out of
+    // the "Hard Disk Write Protect" option (PROTECTED BY DEFAULT), so the
+    // HD lamp now also lights on write activity (ARM_WRITE/WRITE states).
+    // RED stays the floppy's per the reassignment below; the plan's stale
+    // "red = write lamp" premise predates it (noted in the 0.3.3 review).
     wire [2:0] hd_state_m = hd_dbg_m[13:11];
     wire       hd_rd_act  = (hd_state_m == 3'd1) || (hd_state_m == 3'd2) ||
                             (hd_state_m == 3'd3);
@@ -916,7 +919,7 @@ module sdram_status_overlay (
             if (drv_active || drv_motor) begin act_fls <= 1'b1; hold_fls <= 24'd0; end
             else if (act_fls && hold_fls == LAMP_HOLD) act_fls <= 1'b0;
             else if (act_fls) hold_fls <= hold_fls + 24'd1;
-            if (hd_rd_act) begin act_hd <= 1'b1; hold_hd <= 24'd0; end
+            if (hd_rd_act || hd_wr_act) begin act_hd <= 1'b1; hold_hd <= 24'd0; end  // 0.3.3: HD write lights it too
             else if (act_hd && hold_hd == LAMP_HOLD) act_hd <= 1'b0;
             else if (act_hd) hold_hd <= hold_hd + 24'd1;
             if (hd_io) begin act_io <= 1'b1; hold_io <= 24'd0; end
@@ -925,7 +928,7 @@ module sdram_status_overlay (
         end
     end
 
-    wire led_act = st_act && act_hd;   // green = HD read
+    wire led_act = st_act && act_hd;   // green = HD read or write (0.3.3)
     wire led_mot_red  = st_mot && act_flr;   // bright red = floppy READ (sd_ack)
     wire led_mot_dark = st_mot && act_fls;   // dark   red = floppy SPIN (active/motor)
     wire led_io  = st_io  && act_io;   // white = HD block completed
