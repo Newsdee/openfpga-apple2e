@@ -77,13 +77,25 @@ module sdram_word_owner (
     output wire [31:0] fc_data,    // word just completed
     output wire        fc_done,    // 1-cycle: transfer (word) complete
     output wire [7:0]  fc_done_len, // always 1 (single-word protocol)
-    output wire [7:0]  fc_done_gen  // generation tag of the completed transfer
+    output wire [7:0]  fc_done_gen, // generation tag of the completed transfer
+
+    // ---- client: host bridge read (W0, PLAN_W0_2026-11-05) ----
+    // SDRAM -> bridge bulk-read arm (nonvolatile slot read-back, savestate
+    // blob). Same level protocol as verifier/fetcher. The request arrives
+    // from the 74a-domain address FIFO's read side, which is already in
+    // THIS domain (133.12) - no extra sync. Inert when hr_req=0: the three
+    // legacy clients keep their exact op phases (WP1 gate).
+    input  wire        hr_req,     // level; held until the word completes
+    input  wire [23:0] hr_addr,    // stable while hr_req
+    output wire        hr_done,    // 1-FF level: this client's read completed
+    output wire [31:0] hr_data     // stable while hr_done
 );
 
     localparam CL_NONE  = 2'd0;
     localparam CL_STORE = 2'd1;
     localparam CL_VERIFY= 2'd2;
     localparam CL_FETCH = 2'd3;
+    localparam CL_HOST_RD = 2'd4;   // W0 host bridge read
 
     reg         rst_n_s1;
 
@@ -95,11 +107,15 @@ module sdram_word_owner (
     // read-client attribution (its word_done lost, store timeout) -
     // measured in TB T7/T9. The store client re-pulses on the next idle
     // cycle (disk_store protocol), so it simply waits out the transfer.
-    wire read_armed  = vr_req || fc_req;
+    // W0: the host read is a fourth read level. It joins the read priority
+    // and masks the store pulse exactly like the other read clients; the
+    // store client re-pulses on the next idle cycle (disk_store protocol).
+    wire read_armed  = vr_req || fc_req || hr_req;
     wire st_req_eff  = st_req && !read_armed;
     assign word_rd   = init_done && read_armed;
     assign word_wr   = init_done && st_req_eff;
-    assign word_addr = read_armed ? (vr_req ? vr_addr : fc_addr) : st_addr;
+    assign word_addr = read_armed ? (vr_req ? vr_addr : (fc_req ? fc_addr : hr_addr))
+                                  : st_addr;
     assign word_data = st_data;
 
     // ---- ownership attribution (op-start edge, current levels) ----
@@ -146,6 +162,8 @@ module sdram_word_owner (
                 inflight <= CL_NONE;
             end else if (word_rd_valid && (inflight == CL_FETCH)) begin
                 inflight <= CL_NONE;
+            end else if (word_rd_valid && (inflight == CL_HOST_RD)) begin
+                inflight <= CL_NONE;
             end else if (word_busy && !busy_d) begin
                 // op start (or refresh): attribute. The OP KIND is the
                 // truth (the owner drives it: a read op runs with
@@ -160,6 +178,8 @@ module sdram_word_owner (
                         inflight <= CL_VERIFY;
                     else if (fc_req && !fc_done_lvl)
                         inflight <= CL_FETCH;
+                    else if (hr_req && !hr_done_lvl)
+                        inflight <= CL_HOST_RD;
                     else
                         inflight <= CL_FETCH;   // anomalous: no read level
                                                 // visible; fetcher is the
@@ -227,5 +247,26 @@ module sdram_word_owner (
     assign fc_data       = word_q;
     assign fc_done_len   = 8'd1;
     assign fc_done_gen   = fc_gen_l;
+
+    // W0 host bridge read: same 1-FF level shape as the verifier; data
+    // latched at the completion pulse; the client holds hr_req until it
+    // retires the word (address-FIFO read-side protocol), so the
+    // attribution invariant (client armed through its own op) holds by
+    // construction, exactly as for vr/fc.
+    reg hr_done_lvl;
+    reg [31:0] hr_data_r;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            hr_done_lvl <= 1'b0;
+            hr_data_r   <= 32'd0;
+        end else begin
+            hr_done_lvl <= (word_rd_valid && (inflight == CL_HOST_RD)) ? 1'b1
+                                                                       : (hr_done_lvl & hr_req);
+            if (word_rd_valid && (inflight == CL_HOST_RD))
+                hr_data_r <= word_q;
+        end
+    end
+    assign hr_done = hr_done_lvl;
+    assign hr_data = hr_data_r;
 
 endmodule
