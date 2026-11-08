@@ -8,30 +8,16 @@ at-a-glance index.
 ## Releases
 
 ### 0.3.5 — 2026-11-08
-**HDV writes fixed; Boot Media and Write Protect combined.**
-- **Root cause of HDV write corruption** was the framework's 0x0184 convention (a
-  129-strobe prime + discard). The core's single-stage HDV read port lagged by one
-  position, shifting every read-back. Fixed with a local read stage in `hdv_bridge.sv`
-  (`RD_PRIME_STAGE`, ships at 1) — local to the bridge, no global mux touched.
-- **Combined the "Boot Media" and "Hard Disk Write Protect" options** into one 5-value
-  **Boot Media** option (Both read-only / Both write / Floppy no HD / HDD read-only /
-  HDD write); the separate Write Protect option is retired.
-- Diagnostics reverted for shipping (`OVL_DEBUG=0`, `OOB_ENCODE` diagnostic-only).
-- Testbench release gate moved to the 2-stage shipping port. See
-  [`RELEASE_NOTES_0.3.5.md`](RELEASE_NOTES_0.3.5.md).
+**Writable HDV (working) + combined Boot Media option.**
 
-### 0.3.4 — 2026-11-07
-**Diagnostics + the second root cause (not the shipped fix).**
-- Added the OOB / out-of-range trace and K-counter diagnostics; fixed an arm race.
-- Expert review identified **root cause #2** — the 0x0184 read-back alignment (the
-  prime + discard). A fresh compile was required before any hardware test; the fix
-  itself shipped in 0.3.5. See [`RELEASE_NOTES_0.3.4.md`](RELEASE_NOTES_0.3.4.md).
-
-### 0.3.3 — 2026-11-04
-**Writable HDV behind a Hard Disk Write Protect option (default protected).**
-- Added the **Hard Disk Write Protect** option (default **Protected** = read-only)
-  gating HDV writes. Drive lamps show HD read/write. See
-  [`RELEASE_NOTES_0.3.3.md`](RELEASE_NOTES_0.3.3.md).
+The hard disk is now readable **and** writable — **default read-only** (opt in). The
+writable-HDV work ran across internal builds (0.3.3 added opt-in writes; 0.3.4 chased
+the write corruption); 0.3.5 is the fix — a local read stage in `hdv_bridge.sv`
+(`RD_PRIME_STAGE`, ships at 1) that corrects the framework's 0x0184 prime + discard
+convention, so HDV writes are now byte-exact. The separate "Boot Media" and "Hard Disk
+Write Protect" options are combined into one 5-value **Boot Media** option; diagnostics
+are reverted for shipping. See [`RELEASE_NOTES_0.3.5.md`](RELEASE_NOTES_0.3.5.md)
+(user-facing) and [`HDV_WRITE_FIX.md`](HDV_WRITE_FIX.md) (technical root cause + fix).
 
 ### 0.3.2
 **Docked USB keyboard; HDV read-only; joystick relative mode.**

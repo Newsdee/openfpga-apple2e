@@ -15,8 +15,8 @@ joystick and paddle support, a docked USB keyboard, and seven colour presets.
 
 - **Boots real Apple IIe software** — a 65C02 CPU with the standard Applesoft + Monitor
   ROMs, 64K of RAM. Load a floppy or a hard disk and it runs.
-- **Floppy disk** — mount a WOZ (`.woz`) Disk II image. It reads **and writes**, so a
-  game that saves its state writes back to your image file.
+- **Floppy disk** — mount a WOZ (`.woz`) Disk II image. Currently **read-only**
+  (write-back — saves to the image — is in development).
 - **Hard disk** — mount a ProDOS `.hdv` image (up to 2 GiB). Readable **and writable**
   (since 0.3.5). It appears to the machine as the hard-disk volume (ProDOS volume 2 /
   the DOS "HD" drive).
@@ -55,7 +55,7 @@ HDV writable (0.3.5+).
 
 | Slot | What | File | Notes |
 |---|---|---|---|
-| **disk** | **Floppy** (Disk II / WOZ) | `.woz` | Up to 4 MiB. Reads and writes (saves persist to the image). Boots the machine like a real WOZ disk. |
+| **disk** | **Floppy** (Disk II / WOZ) | `.woz` | Up to 4 MiB. Currently **read-only** (write-back is coming). Boots the machine like a real WOZ disk. |
 | **hard disk** | **Hard disk** (ProDOS HDV) | `.hdv` | Up to 2 GiB (effectively any HDV). Streamed live from the card (not pre-loaded); readable **and writable** (0.3.5+). Shows up as the HD volume (ProDOS volume 2 / DOS "HD" drive). |
 | **joy2key profile** | **Joy2key map** | `.a2k` | 16 bytes. Joystick-to-keyboard map (used by the DPad/Fire Keys options below). |
 
@@ -98,9 +98,10 @@ With the OSK **closed**, the d-pad and face buttons drive the Apple II paddle po
 | Y | second fire / IIe shift (`$C063`) |
 
 **Joystick Mode** (Core Settings) picks **Absolute** — the default, snaps instantly to
-the d-pad extremes, good for digital-only games — or **Relative** (slow / normal / fast),
-which accumulates a virtual paddle position. Paddle reads use the classic one-shot
-interval, so both paddle and digital games work.
+the d-pad extremes, good for digital-only games — or **Relative**, where the paddle
+position accumulates over time instead of snapping (the MiSTer `relative_mode`
+behaviour). Paddle reads use the classic one-shot interval, so both paddle and digital
+games work.
 
 ## Core Settings
 
@@ -110,15 +111,15 @@ The Pocket's **Core Settings** menu (the core's "OSD") exposes six options:
 |---|---|
 | **Reboot on load** | Reset the machine when the core loads. On / Off (default **On**). |
 | **Boot Media** | What the machine boots from, **plus** the hard disk's write state, in one pick: **Both, read-only** (default) · **Both, write** · **Floppy (no HD)** · **HDD, read-only** · **HDD, write**. |
-| **Joystick Mode** | **Absolute** (snap) or **Relative** (slow / normal / fast). |
+| **Joystick Mode** | **Absolute** (snap to the extremes) or **Relative** (paddle accumulator). |
 | **Color Preset** | NTSC //e · Old TV · AppleWin · Muted Sharp · Monochrome · Green · Amber. |
 | **DPad Keys** | Map the d-pad to keys — Off / Cursor keys / IJKL / IJMK / A·Z·left·right — for joy2key profiles. |
 | **Fire Keys** | Map the face buttons to keys — Off / U·O / Space·Return. |
 
 ## Disk format notes
 
-- **Floppy:** `.woz` is the modern WOZ standard and the only format that writes back
-  (saves). Other formats, if converted on the fly, are read-only.
+- **Floppy:** `.woz` is the modern WOZ standard. It's currently **read-only**; write-back
+  (saves to the image) is in development. Other formats are read-only too.
 - **Hard disk:** `.hdv` is a raw ProDOS partition image. A `.2mg` image can be turned
   into an HDV by stripping its 64-byte header (`dd if=x.2mg of=x.hdv bs=64 skip=1`).
 
