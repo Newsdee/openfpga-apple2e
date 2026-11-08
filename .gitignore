@@ -147,3 +147,6 @@ verilog/hdd_equivalence/*.log
 verilog/tb/*.log
 *.gch
 *.ppm
+
+# --- HDV write-corruption debugging scratch (2026-11-07; scripts + report + HDV images) ---
+scratch_hdv_corrupt/
