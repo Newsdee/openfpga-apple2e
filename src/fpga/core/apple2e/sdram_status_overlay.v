@@ -98,9 +98,13 @@ module sdram_status_overlay (
     input  wire [127:0] fp_first,
     input  wire [127:0] fp_last,
     input  wire [127:0] fp_w,
-    input  wire [15:0] hd_dbg_m      // HDV bridge (machine domain):
+    input  wire [31:0] hd_dbg_m      // HDV bridge (machine domain):
                                       // {cpu stalled, timeout fault, state[2:0],
-                                      //  last host err[2:0], fetch count[7:0]}
+                                      //  last host err[2:0], oob read cnt[7:0]
+                                      //  (2026-11-06: want 0 - the host's 0x0184
+                                      //  start offset k), write read-cnt[7:0]
+                                      //  (2026-11-05: want 128 per 0x0184),
+                                      //  fetch count[7:0]}
     , input  wire [15:0] pc_dbg       // 6502 PC snapshot (PHASE_ZERO-gated m_addr)
     , input  wire [15:0] da_dbg       // 6502 data-address snapshot (!PHASE_ZERO m_addr)
     // Step 0 stick-liveness probe (BRIEF_JOY_RELATIVE_MODE): raw synced stick bytes.
@@ -575,33 +579,47 @@ module sdram_status_overlay (
     //   hardware diagnostic - N=0+F=0+E=0 with M=0 => every fetch is
     //   dropped as not-mounted; M=1 with N=0 => the driver never armed
     //   a 0x0180 at all. (Replaces the old W=cpu_wait, redundant with S.)
-    // Decodes an HD hang from a photo of the 10 s window: W=1 with S=1
-    // stuck = the host's 0x0180 never completed; F=1 = it timed out
-    // (the CPU was released after ~3.6 s). X0=424 (NOT 460): 20 chars
-    // span 120 px and the raster is 560 wide - at 460 the N=/W= tail
-    // rendered off-screen (caught on hardware 2026-10-30).
-    wire [4:0] dh [0:20];
-    assign dh[0]  = GL_H;
-    assign dh[1]  = 5'd14;   // 'D'
-    assign dh[2]  = GL_EQ;
-    assign dh[3]  = hexg({1'b0, hd_dbg_m[13:11]});   // state
-    assign dh[4]  = GL_SP;
-    assign dh[5]  = 5'd16;   // 'F'
-    assign dh[6]  = GL_EQ;
-    assign dh[7]  = hd_dbg_m[14] ? 5'd1 : 5'd0;      // fault
-    assign dh[8]  = GL_SP;
-    assign dh[9]  = 5'd15;   // 'E'
-    assign dh[10] = GL_EQ;
-    assign dh[11] = hexg({1'b0, hd_dbg_m[10:8]});   // last err
+    // Decodes an HD hang from a photo of the 10 s window: S stuck +
+    // F=0 = a transfer still open; F=1 = it timed out (the CPU was
+    // released after ~3.6 s); K>0 = the host 0x0184 DMA started K words
+    // into the window (the read-port misalignment offset). X0 moved
+    // 424->402 when the line grew to 26 chars (K=NN, 2026-11-06);
+    // 2026-10-30: at 460 the 21-char line ran off the 560-px raster.
+    wire [4:0] dh [0:25];
+    // "S=S F=F N=NN M=M W=NN K=NN": S=FSM state, F=timeout fault, N=completed
+    // fetch count, M=HDV mounted, W=host read words of the last 0x0184
+    // (want 128; <128 with F=1 => the framework gave up mid-DMA - the
+    // 2026-11-05 SmartportHD corruption diagnostic), K=out-of-window reads
+    // of the last 0x0184 (2026-11-06: want 0; K>0 = the host started its
+    // DMA k words into the 512-B window - the measured offset that the
+    // read-port misalignment fix must match). The err field was dropped
+    // from the line to fit W (it remains in hd_dbg_m[26:24]).
+    assign dh[0]  = GL_S;
+    assign dh[1]  = GL_EQ;
+    assign dh[2]  = hexg({1'b0, hd_dbg_m[29:27]});   // state
+    assign dh[3]  = GL_SP;
+    assign dh[4]  = 5'd16;   // 'F'
+    assign dh[5]  = GL_EQ;
+    assign dh[6]  = hd_dbg_m[30] ? 5'd1 : 5'd0;      // fault
+    assign dh[7]  = GL_SP;
+    assign dh[8]  = GL_N;
+    assign dh[9]  = GL_EQ;
+    assign dh[10] = hexg(hd_dbg_m[7:4]);            // fetch count high nibble
+    assign dh[11] = hexg(hd_dbg_m[3:0]);            // fetch count low nibble
     assign dh[12] = GL_SP;
-    assign dh[13] = GL_N;
+    assign dh[13] = GL_M;    // 'M' = HDV mounted (hdv_size_q != 0)
     assign dh[14] = GL_EQ;
-    assign dh[15] = hexg(hd_dbg_m[7:4]);            // fetch count high nibble
-    assign dh[16] = hexg(hd_dbg_m[3:0]);            // fetch count low nibble
-    assign dh[17] = GL_SP;
-    assign dh[18] = GL_M;    // 'M' = HDV mounted (hdv_size_q != 0)
-    assign dh[19] = GL_EQ;
-    assign dh[20] = hd_dbg_m[15] ? 5'd1 : 5'd0;   // mounted value
+    assign dh[15] = hd_dbg_m[31] ? 5'd1 : 5'd0;   // mounted value
+    assign dh[16] = GL_SP;
+    assign dh[17] = GL_W;
+    assign dh[18] = GL_EQ;
+    assign dh[19] = hexg(hd_dbg_m[15:12]);         // write read-cnt high nibble
+    assign dh[20] = hexg(hd_dbg_m[11:8]);          // write read-cnt low nibble
+    assign dh[21] = GL_SP;
+    assign dh[22] = GL_K;                           // 'K' = out-of-window reads
+    assign dh[23] = GL_EQ;
+    assign dh[24] = hexg(hd_dbg_m[23:20]);         // oob cnt high nibble
+    assign dh[25] = hexg(hd_dbg_m[19:16]);         // oob cnt low nibble
     wire        in_xh, in_lh;
     wire [9:0]  cpxh, cidxh_w, cinh_w;
     wire [7:0]  rh_w;
@@ -609,16 +627,19 @@ module sdram_status_overlay (
     wire [34:0] gh_bits;
     wire [4:0]  rhbits;
     wire        pxh;
-    assign in_xh   = (col >= 10'd424) && (col < 10'd550);
-    assign cpxh    = in_xh ? (col - 10'd424) : 10'd0;
+    // X0=402 (was 424): the line grew to 26 chars with K=NN (2026-11-06);
+    // 26*6 = 156 px, 402+156 = 558 < 560 raster width. 2026-10-30: at 460
+    // even the 21-char line ran off-screen (caught on hardware).
+    assign in_xh   = (col >= 10'd402) && (col < 10'd560);
+    assign cpxh    = in_xh ? (col - 10'd402) : 10'd0;
     assign cidxh_w = cpxh / 10'd6;
     assign cinh_w  = cpxh % 10'd6;
     assign in_lh   = (row >= 8'd65) && (row < 8'd72);
     assign rh_w    = in_lh ? (row - 8'd65) : 8'd0;
-    assign gh      = (in_lh && cidxh_w < 10'd21) ? dh[cidxh_w[4:0]] : 5'd0;
+    assign gh      = (in_lh && cidxh_w < 10'd26) ? dh[cidxh_w[4:0]] : 5'd0;
     assign gh_bits = gf(gh);
     assign rhbits  = gh_bits[34 - {2'b00, rh_w[2:0]} * 5'd5 -: 5];
-    assign pxh = !hbl && !vbl && in_xh && in_lh && cidxh_w < 10'd21 &&
+    assign pxh = !hbl && !vbl && in_xh && in_lh && cidxh_w < 10'd26 &&
                 cinh_w < 10'd5 && rhbits[3'd4 - cinh_w[2:0]];
 
     // line 7c: 7 chars at X0=424, rows 73..79: "PC=XXXX" (2026-11-02 slowness
@@ -873,8 +894,8 @@ module sdram_status_overlay (
     // J12 (2026-11-02): the HDV shares these lamps with the floppy. Decoded
     // from hd_dbg_m, which already carries the bridge FSM state, so no new
     // ports are needed. hd_dbg_m = {mounted, fault, state[2:0], err[2:0],
-    // fetch_cnt[7:0]}; hdv_bridge.sv states: 0 IDLE, 1 FETCH, 2 WALK_IN,
-    // 3 WALK_OUT, 4 ARM_WRITE, 5 WRITE.
+    // wrcnt[7:0] (2026-11-05), fetch_cnt[7:0]}; hdv_bridge.sv states:
+    // 0 IDLE, 1 FETCH, 2 WALK_IN, 3 WALK_OUT, 4 ARM_WRITE, 5 WRITE.
     //   green = floppy active  OR an HD read in flight  (FETCH/WALK_IN/WALK_OUT)
     //   red   = floppy motor   OR an HD write in flight (ARM_WRITE/WRITE)
     //   white = floppy sector IO OR an HD block completed (fetch_cnt changed)
@@ -883,7 +904,7 @@ module sdram_status_overlay (
     // HD lamp now also lights on write activity (ARM_WRITE/WRITE states).
     // RED stays the floppy's per the reassignment below; the plan's stale
     // "red = write lamp" premise predates it (noted in the 0.3.3 review).
-    wire [2:0] hd_state_m = hd_dbg_m[13:11];
+    wire [2:0] hd_state_m = hd_dbg_m[21:19];
     wire       hd_rd_act  = (hd_state_m == 3'd1) || (hd_state_m == 3'd2) ||
                             (hd_state_m == 3'd3);
     wire       hd_wr_act  = (hd_state_m == 3'd4) || (hd_state_m == 3'd5);

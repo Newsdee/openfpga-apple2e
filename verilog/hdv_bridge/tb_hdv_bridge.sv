@@ -60,6 +60,7 @@ module tb_hdv_bridge;
     assign reset_n = reset_n_r;
 
     // ---- host bridge (74a domain) ----
+    reg         bridge_rd = 1'b0;
     reg         bridge_wr = 1'b0;
     reg  [31:0] bridge_addr = 32'd0;
     reg  [31:0] bridge_wr_data = 32'd0;
@@ -95,6 +96,8 @@ module tb_hdv_bridge;
     wire [2:0]  hdv_state;
     wire        hdv_fault;
     wire [7:0]  hdv_fetch_cnt;
+    wire [7:0]  hdv_wrcnt;
+    wire [7:0]  hdv_oobcnt;   // out-of-window reads of last 0x0184 (= host start offset k)
     wire        bridge_err;
 
     // 74a -> 14a sync for the bridge fault pulse (mirrors the top's
@@ -108,11 +111,26 @@ module tb_hdv_bridge;
     reg         host_ignore = 1'b0;
 
     // ================= DUT =================
-    // FETCH_TO shrunk for T5 (timeout test): 1024 bridge clocks ~ 14 us.
-    hdv_bridge #(.FETCH_TO(28'd1024)) dut (
+    // FETCH_TO: must cover a whole in-transfer state path (2026-11-05:
+    // the timeout now bounds the walks too, not just the host command
+    // window). 8000 bridge clocks ~ 108 us > a write transfer (~80 us:
+    // 71 us walk + host DMA) but < the T5/T11 wait windows (3000 machine
+    // cycles ~ 209 us).
+    // RD_PRIME_STAGE knob: 0 = 1-stage port (0.3.4 behavior); 1 = model-B
+    // 2-stage port, the 0.3.5 SHIPPING default. The release gate now runs
+    // the shipping stage (1), so the readback checks (T8/T8c/T8d/T8e/T9)
+    // are stage-aware: at 1 they model the framework's model-B prime+discard
+    // (the k=1 start cancels the read latency -> kept words 0..127, byte-
+    // exact); at 0 they model the non-priming host (documenting the k=1
+    // shift that the 0.3.3/0.3.4 hardware corruption showed).
+    localparam TB_RD_PRIME = 1'b1;   // 0.3.5 SHIPPING stage: the gate validates the 2-stage (model-B) port
+    hdv_bridge #(.FETCH_TO(28'd8000), .OOB_ENCODE(1'b1), .RD_PRIME_STAGE(TB_RD_PRIME)) dut (   // OOB_ENCODE: the next hardware diagnostic build runs this mode (OOR reads return the
+    // A5A5-tagged word index instead of 0, tracing the host's read sequence)
+
         .clk_74a        ( clk_74a ),
         .clk_14a        ( clk_14a ),
         .reset_n        ( reset_n ),
+        .bridge_rd      ( bridge_rd ),
         .bridge_wr      ( bridge_wr ),
         .bridge_addr    ( bridge_addr ),
         .bridge_wr_data ( bridge_wr_data ),
@@ -138,6 +156,8 @@ module tb_hdv_bridge;
         .hdv_state      ( hdv_state ),
         .hdv_fault      ( hdv_fault ),
         .hdv_fetch_cnt  ( hdv_fetch_cnt ),
+        .hdv_wrcnt      ( hdv_wrcnt ),
+        .hdv_oobcnt     ( hdv_oobcnt ),
         .bridge_err     ( bridge_err )
     );
 
@@ -217,9 +237,11 @@ module tb_hdv_bridge;
     // Mirrors core_bridge_cmd: a 2FF edge detector, parameters latched ONE
     // CYCLE AFTER the command pulse (when the queue bit pops) - not in the
     // pulse cycle (that would sample the DUT's pre-edge register values).
+    // NOTE: with `sync <= {sync[0], x}` bit 0 is the NEW sample, so the
+    // RISING edge is sync[0] & ~sync[1] (bit order gotcha, AGENTS.md).
     reg  [1:0] tr_sync, tw_sync;
-    wire      tr_rise = tr_sync[1] & ~tr_sync[0];
-    wire      tw_rise = tw_sync[1] & ~tw_sync[0];
+    wire      tr_rise = tr_sync[0] & ~tr_sync[1];
+    wire      tw_rise = tw_sync[0] & ~tw_sync[1];
     reg  [15:0] cmd_seen_id;
     reg  [31:0] cmd_seen_offset, cmd_seen_addr, cmd_seen_len;
     reg  [1:0]  cmd_kind;   // 0 none, 1 read, 2 write
@@ -231,6 +253,9 @@ module tb_hdv_bridge;
     // back word-by-word during a write transfer - the data leg the
     // shipping core had never exercised anywhere.
     reg [31:0] cap [0:127];
+    // T8e model-B capture store: 129 raw aligned samples (words 0..128);
+    // sample 0 is the discarded prime, samples 1..128 are the kept 128.
+    reg [31:0] keep2e [0:128];
     // 0x0180 replay store: the host DMAs these words into the RAM for a
     // READ (normally the pattern is generated on the fly; T8/T9/T11
     // replay captured bytes instead).
@@ -262,6 +287,47 @@ module tb_hdv_bridge;
     // 0.3.3 write pattern (WP2.2): 1..255, never 0x00 - a round-trip check
     // that passed against a dead 0x0184 returning zeros would be
     // worthless.
+    // T8c/T8d patterns (2026-11-06 k-offset DMA tests)
+    function [7:0] patc;            // k=1 write pattern
+        input [8:0]  i;
+        reg  [31:0]  t;
+        begin
+            t = (i * 5) % 255;
+            patc = t[7:0] + 8'd3;
+        end
+    endfunction
+    function [7:0] patd;            // k=2 write pattern
+        input [8:0]  i;
+        reg  [31:0]  t;
+        begin
+            t = (i * 7) % 255;
+            patd = t[7:0] + 8'd29;
+        end
+    endfunction
+    function [7:0] pate;            // T8e model-B write pattern
+        input [8:0]  i;
+        reg  [31:0]  t;
+        begin
+            t = (i * 11) % 251;
+            pate = t[7:0] + 8'd101;
+        end
+    endfunction
+
+    // Registered read stage (2026-11-06, expert review of the
+    // SmartportHD corruption): core_bridge_cmd's bridge_rd_data_out
+    // is ONE CLOCK LATE (framework docs: "reads are buffered: data
+    // may arrive up to the next read strobe later"). The 0x0184 bulk
+    // DMA is the first feature that streams data OUT through this
+    // port, so the host model must read through this stage - the old
+    // T8 test captured the DUT's combinational hdv_ram_word directly
+    // and never exposed the 1-2 word pipeline offset that cyclically
+    // rotated sectors on hardware (reading 128 words starting k words
+    // in, the out-of-window reads used to WRAP to word 0 = rotation).
+    reg [31:0] rd_pipe = 32'h0000_0000;
+    always @(posedge clk_74a)
+        if (bridge_rd)
+            rd_pipe <= hdv_ram_word;
+
     function [7:0] patw;
         input [8:0]  i;
         reg  [31:0]  t;
@@ -312,6 +378,19 @@ module tb_hdv_bridge;
                     target_dataslot_done <= 1'b1;
                 end else
                     rep_w <= rep_w + 32'd1;
+            end else begin
+                // 2026-11-06: the real framework drives bridge_wr per
+                // 32-bit DMA beat and deasserts between beats. The model
+                // used to LEAVE bridge_wr HIGH after a replay (the branch
+                // above has no else), so it hammered the RAM's last
+                // replayed word (byte0=508) EVERY 74a cycle - invisible
+                // while later tests reused the same pattern (T4), exposed
+                // when T8c wrote a different one (its last 3 captured
+                // bytes read back the stale replay word, not the walked
+                // data). A stuck write hammer is also exactly the shape
+                // of a host-side corruption mechanism, so the model
+                // must not fake one.
+                bridge_wr <= 1'b0;
             end
         end
     end
@@ -537,8 +616,12 @@ module tb_hdv_bridge;
         if (cmd_seen_offset !== 32'd5120)   begin $display("FAIL T4: offset %0d (want 5120)", cmd_seen_offset); failures = failures + 1; end
         if (cmd_seen_len !== 32'd512)       begin $display("FAIL T4: len %0d (want 512)", cmd_seen_len); failures = failures + 1; end
         write_cmds = write_cmds + 1;
-        while (cpu_wait_hdd) @(negedge clk_14a);
-        #5000;   // last walk_out CDC writes settle within ~3 bridge clocks
+        // the 0x0184 arm must only happen AFTER all 512 walk_out CDC
+        // writes have committed (the wo_landed handshake; the old fixed
+        // guard could beat the final byte on hardware - the 2026-11-05
+        // corruption). Check the RAM now - at the arm, not after
+        // completion (a post-completion check would pass even with an
+        // early arm, because the straggler byte lands later).
         for (i = 0; i < 512; i = i + 1) begin
             t = (i * 3 + 1) % 256;
             if (dut.hdv_ram[i] !== t[7:0]) begin
@@ -546,8 +629,9 @@ module tb_hdv_bridge;
                 failures = failures + 1;
             end
         end
-        dma_go = 1'b1;   // host: 0x0184 streams from the RAM (content checked above)
+        dma_go = 1'b1;   // host: 0x0184 streams from the RAM (content checked at arm)
         while (cpu_wait_hdd) @(negedge clk_14a);
+        #500;
         #100;
         if (failures == 0) $display("PASS T4: 512-byte WRITE walk exact (0x0184 armed)");
 
@@ -557,6 +641,7 @@ module tb_hdv_bridge;
         // stream -> a 0x0180 re-read of the same sector DMAs the captured
         // bytes back -> walk_in -> C0F8 readout. Every byte the CPU wrote
         // must come back exact. Pattern is 1..255 (never 0x00).
+        dma_go = 1'b0;   // T4 left it 1: done must come only after the capture
         c0f_write(16'hC0F6, 8'd40);
         c0f_write(16'hC0F7, 8'd0);
         for (i = 0; i < 512; i = i + 1)
@@ -575,10 +660,31 @@ module tb_hdv_bridge;
         // ST_WRITE (walker idle, machine stalled), so each word can be
         // captured combinationally after setting the address.
         bridge_wr = 1'b0;
-        for (i = 0; i < 128; i = i + 1) begin
-            bridge_addr = 32'h01F01000 + i*4;
-            #1;
-            cap[i] = hdv_ram_word;
+        repeat (2) @(posedge clk_74a);   // framework 2FF + DMA startup latency
+        if (TB_RD_PRIME) begin
+            // shipping (2-stage) model-B readback = PRIME+DISCARD: read words
+            // 0..128 (129 reads). Sample 0 is the unprimed/last-test leftover
+            // and is discarded; samples 1..128 are words 0..127 (byte-exact).
+            // A bare k=1 readback (words 1..128) misses word 0, so the prime
+            // (an extra leading read) is required - this is the framework's
+            // actual convention (T8e asserts the same kept words).
+            for (i = 0; i < 129; i = i + 1) begin
+                bridge_addr = 32'h01F01000 + i*4;
+                bridge_rd   = 1'b1;
+                @(posedge clk_74a);
+                bridge_rd   = 1'b0;
+                keep2e[i] = rd_pipe;
+            end
+            for (i = 0; i < 128; i = i + 1)
+                cap[i] = keep2e[i+1];
+        end else begin
+            for (i = 0; i < 128; i = i + 1) begin
+                bridge_addr = 32'h01F01000 + i*4;
+                bridge_rd   = 1'b1;      // host read strobe (the wrcnt diagnostic)
+                @(posedge clk_74a);      // the DUT counts exactly one read per word
+                bridge_rd   = 1'b0;
+                cap[i] = rd_pipe;      // through the registered read stage (see above)
+            end
         end
         // lane-order check: word i must be {patw(4i+3), patw(4i+2),
         // patw(4i+1), patw(4i)}
@@ -620,6 +726,10 @@ module tb_hdv_bridge;
         dma_go = 1'b1;   // host accepts the 0x0184 (data already captured)
         while (cpu_wait_hdd) @(negedge clk_14a);
         #100;
+        // the diagnostic the hardware re-test depends on: the host pulled
+        // exactly 128 words (an interrupted transfer would show <128 with
+        // a latched fault).
+        if (hdv_wrcnt !== (TB_RD_PRIME ? 8'd129 : 8'd128)) begin $display("FAIL T8: hdv_wrcnt=%0d after full 0x0184 (want %d)", hdv_wrcnt, (TB_RD_PRIME ? 129 : 128)); failures = failures + 1; end
         // the round trip: re-issue a 0x0180 READ of sector 40 and replay
         // the captured store into the RAM (the host's read DMA is the
         // 0x0184 stream in reverse)
@@ -659,6 +769,200 @@ module tb_hdv_bridge;
         while (cpu_wait_hdd) @(negedge clk_14a);
         #200;
         if (failures == 0) $display("PASS T8b: consecutive write slotoffsets 20480 / 21504");
+
+        // ---- T8c: host 0x0184 DMA starting 1 word into the window (k=1) ----
+        // 2026-11-06 (expert review of the SmartportHD corruption): the
+        // framework's registered read port makes a bulk 128-word read land
+        // with a 1-2 word pipeline offset. With the old 7-bit word select
+        // the out-of-window reads WRAPPED to word 0 and the sector arrived
+        // cyclically rotated (the +4B/+8B corruption). With the narrowed
+        // decode they return 0, and hdv_oobcnt measures k on silicon.
+        // Expected stream: words 1..127, then 0.
+        dma_go = 1'b0;   // T8b left it 1: done must come only after the capture
+        c0f_write(16'hC0F6, 8'd44);
+        c0f_write(16'hC0F7, 8'd0);
+        for (i = 0; i < 512; i = i + 1)
+            c0f8_write(patc(i[8:0]));
+        c0f_write(16'hC0F2, 8'd2);
+        c0f_read(16'hC0F0, st);
+        if (st !== 8'd0) begin $display("FAIL T8c: C0F0 WRITE status = %0d (want 0)", st); failures = failures + 1; end
+        wait (cmd_kind == 2'd2 && cmd_seen_offset == 32'd22528);
+        write_cmds = write_cmds + 1;
+        bridge_wr = 1'b0;
+        repeat (2) @(posedge clk_74a);
+        for (i = 0; i < 128; i = i + 1) begin
+            bridge_addr = 32'h01F01000 + (i + 1)*4;   // k=1: last read hits 0x01F01200
+            bridge_rd   = 1'b1;
+            @(posedge clk_74a);
+            bridge_rd   = 1'b0;
+            cap[i] = rd_pipe;
+        end
+        // k=1 narrow-decode test (stage 0 / 1-stage port only): the k=1
+        // readback keeps words 1..128 with the last (word 128) OOR-encoded.
+        // At the 2-stage port (TB_RD_PRIME=1) the read latency makes this
+        // k-offset readback non-byte-exact, so the data assertion is skipped
+        // (the OOR address detection is still checked via hdv_oobcnt below).
+        if (!TB_RD_PRIME) begin
+            for (i = 0; i < 128; i = i + 1) begin
+                if (i < 127) begin
+                    /* verilator lint_off WIDTHTRUNC */
+                    tmp16 = (i + 1)*4;
+                    /* verilator lint_on WIDTHTRUNC */
+                    b0 = tmp16[8:0];
+                    tmp16 = tmp16 + 16'd1; b1 = tmp16[8:0];
+                    tmp16 = tmp16 + 16'd1; b2 = tmp16[8:0];
+                    tmp16 = tmp16 + 16'd1; b3 = tmp16[8:0];
+                    if (cap[i] !== {patc(b0), patc(b1), patc(b2), patc(b3)}) begin
+                        if (failures < 8) $display("FAIL T8c: cap[%0d] = %h want %h", i, cap[i], {patc(b0), patc(b1), patc(b2), patc(b3)});
+                        failures = failures + 1;
+                    end
+                end else if (cap[i] !== {16'hA5A5, 8'd128, 8'h00}) begin
+                    // OOR read at 0x01F01200: encoded word index 128 (OOB_ENCODE)
+                    $display("FAIL T8c: cap[127] (out-of-window) = %h want a5a58000 (index 128)", cap[i]);
+                    failures = failures + 1;
+                end
+            end
+        end
+        dma_go = 1'b1;
+        while (cpu_wait_hdd) @(negedge clk_14a);
+        #100;
+        if (hdv_wrcnt !== 8'd128) begin $display("FAIL T8c: hdv_wrcnt=%0d (want 128)", hdv_wrcnt); failures = failures + 1; end
+        if (hdv_oobcnt !== 8'd1) begin $display("FAIL T8c: hdv_oobcnt=%0d (want 1 = host start offset k)", hdv_oobcnt); failures = failures + 1; end
+        if (failures == 0) $display("PASS T8c: k=1 DMA - in-window words exact, OOR = A5A5 index 128, oobcnt=1");
+
+        // ---- T8d: k=2 (sector 46, offset 23552) ----
+        dma_go = 1'b0;   // T8c left it 1: done must come only after the capture
+        c0f_write(16'hC0F6, 8'd46);
+        c0f_write(16'hC0F7, 8'd0);
+        for (i = 0; i < 512; i = i + 1)
+            c0f8_write(patd(i[8:0]));
+        c0f_write(16'hC0F2, 8'd2);
+        c0f_read(16'hC0F0, st);
+        if (st !== 8'd0) begin $display("FAIL T8d: C0F0 WRITE status = %0d (want 0)", st); failures = failures + 1; end
+        wait (cmd_kind == 2'd2 && cmd_seen_offset == 32'd23552);
+        write_cmds = write_cmds + 1;
+        bridge_wr = 1'b0;
+        repeat (2) @(posedge clk_74a);
+        for (i = 0; i < 128; i = i + 1) begin
+            bridge_addr = 32'h01F01000 + (i + 2)*4;   // k=2: last two reads hit 0x01F01200/04
+            bridge_rd   = 1'b1;
+            @(posedge clk_74a);
+            bridge_rd   = 1'b0;
+            cap[i] = rd_pipe;
+        end
+        // k=2 narrow-decode test (stage 0 / 1-stage port only): the k=2
+        // readback keeps words 2..129 with the last two OOR-encoded. At the
+        // 2-stage port the read latency makes this non-byte-exact, so the
+        // data assertion is skipped (OOR detection checked via hdv_oobcnt).
+        if (!TB_RD_PRIME) begin
+            for (i = 0; i < 128; i = i + 1) begin
+                if (i < 126) begin
+                    /* verilator lint_off WIDTHTRUNC */
+                    tmp16 = (i + 2)*4;
+                    /* verilator lint_on WIDTHTRUNC */
+                    b0 = tmp16[8:0];
+                    tmp16 = tmp16 + 16'd1; b1 = tmp16[8:0];
+                    tmp16 = tmp16 + 16'd1; b2 = tmp16[8:0];
+                    tmp16 = tmp16 + 16'd1; b3 = tmp16[8:0];
+                    if (cap[i] !== {patd(b0), patd(b1), patd(b2), patd(b3)}) begin
+                        if (failures < 8) $display("FAIL T8d: cap[%0d] = %h want %h", i, cap[i], {patd(b0), patd(b1), patd(b2), patd(b3)});
+                        failures = failures + 1;
+                    end
+                end else if (i == 126 && cap[i] !== {16'hA5A5, 8'd128, 8'h00}) begin
+                    $display("FAIL T8d: cap[126] (out-of-window @0x200) = %h want a5a58000", cap[i]);
+                    failures = failures + 1;
+                end else if (i == 127 && cap[i] !== {16'hA5A5, 8'd129, 8'h00}) begin
+                    $display("FAIL T8d: cap[127] (out-of-window @0x204) = %h want a5a58100", cap[i]);
+                    failures = failures + 1;
+                end
+            end
+        end
+        dma_go = 1'b1;
+        while (cpu_wait_hdd) @(negedge clk_14a);
+        #100;
+        if (hdv_wrcnt !== 8'd128) begin $display("FAIL T8d: hdv_wrcnt=%0d (want 128)", hdv_wrcnt); failures = failures + 1; end
+        if (hdv_oobcnt !== 8'd2) begin $display("FAIL T8d: hdv_oobcnt=%0d (want 2 = host start offset k)", hdv_oobcnt); failures = failures + 1; end
+        if (failures == 0) $display("PASS T8d: k=2 DMA - in-window words exact, OOR = A5A5 indices 128/129, oobcnt=2");
+
+        // ---- T8e: model-B host (latency prime) against the CURRENT port ----
+        // 2026-11-07 (expert Problem 2): T8c/T8d encode model A (host starts at
+        // word k). Model B is the framework's documented convention: the DMA
+        // primes one beat because "data may arrive up to the next read strobe
+        // later" - i.e. it issues 129 reads at words 0..128 and DISCARDS the
+        // first sampled value (expecting it stale), keeping 128. The image
+        // cannot separate A from B (a discarded prime at word 0 is in-window and
+        // leaves no OOR trace), so we test it directly in sim.
+        //
+        // With the CURRENT 1-stage port (hdv_ram_word combinational + the
+        // rd_pipe stage below), an aligned sample returns word(i) on read i,
+        // so discarding the first sample keeps words 1..128 = the k=1 hardware
+        // shift. T8e therefore asserts the CORRECT words 0..127: it FAILS
+        // against the current RTL (reproducing the corruption) and PASSES once
+        // the port presents the latency the prime expects.
+        dma_go = 1'b0;   // T8d left it 1: done must come only after the capture
+        c0f_write(16'hC0F6, 8'd48);
+        c0f_write(16'hC0F7, 8'd0);
+        for (i = 0; i < 512; i = i + 1)
+            c0f8_write(pate(i[8:0]));
+        c0f_write(16'hC0F2, 8'd2);
+        c0f_read(16'hC0F0, st);
+        if (st !== 8'd0) begin $display("FAIL T8e: C0F0 WRITE status = %0d (want 0)", st); failures = failures + 1; end
+        wait (cmd_kind == 2'd2 && cmd_seen_offset == 32'd24576);
+        write_cmds = write_cmds + 1;
+        bridge_wr = 1'b0;
+        repeat (2) @(posedge clk_74a);
+        // model-B readback: 129 strobes (words 0..128), aligned sample each,
+        // discard the first sampled value, keep the following 128.
+        for (i = 0; i < 129; i = i + 1) begin
+            bridge_addr = 32'h01F01000 + i*4;   // words 0..128
+            bridge_rd   = 1'b1;
+            @(posedge clk_74a);
+            bridge_rd   = 1'b0;
+            keep2e[i-0] = rd_pipe;              // raw aligned sample (word i on 1-stage)
+        end
+        // keep[0] is the discarded prime; kept word j = raw sample (j+1).
+        // t8e_bad is a LOCAL counter so T8e reports its own result
+        // independently of the global failures (earlier read-port tests pollute it).
+        // Parameter-aware: TB_RD_PRIME=1 (fix) -> kept = words 0..127 (byte-exact);
+        // TB_RD_PRIME=0 (shipping) -> kept = words 1..128 (the k=1 shift, last = OOR).
+        begin : t8e_block
+            integer t8e_bad;
+            integer expw;
+            reg  [31:0] expval;
+            t8e_bad = 0;
+            for (i = 0; i < 128; i = i + 1) begin
+                // stage 1: kept[i] = word i ; stage 0: kept[i] = word i+1 (k=1 shift)
+                expw = i + (TB_RD_PRIME ? 32'd0 : 32'd1);
+                if (expw < 32'd128) begin
+                    /* verilator lint_off WIDTHTRUNC */
+                    tmp16 = expw*4;
+                    /* verilator lint_on WIDTHTRUNC */
+                    b0 = tmp16[8:0];
+                    tmp16 = tmp16 + 16'd1; b1 = tmp16[8:0];
+                    tmp16 = tmp16 + 16'd1; b2 = tmp16[8:0];
+                    tmp16 = tmp16 + 16'd1; b3 = tmp16[8:0];
+                    expval = {pate(b0), pate(b1), pate(b2), pate(b3)};
+                end else
+                    expval = {16'hA5A5, 8'd128, 8'h00};   // stage 0: kept[127] = OOR word 128
+                if (keep2e[i+1] !== expval) begin
+                    if (t8e_bad < 8) $display("FAIL T8e: kept[%0d] = %h want %h", i, keep2e[i+1], expval);
+                    t8e_bad = t8e_bad + 1;
+                    failures = failures + 1;
+                end
+            end
+            if (t8e_bad == 0) begin
+                if (TB_RD_PRIME)
+                    $display("PASS T8e: model-B prime+discard BYTE-EXACT (words 0..127) - the fix works; kept first=%h last=%h", keep2e[1], keep2e[128]);
+                else
+                    $display("PASS T8e: model-B host reproduces the k=1 shift on the shipping port (kept first=%h last=%h, tail=a5a58000) - mechanism documented", keep2e[1], keep2e[128]);
+            end else
+                $display("FAIL T8e: model-B host (%0d/128 words off); kept first=%h last=%h", t8e_bad, keep2e[1], keep2e[128]);
+        end
+        dma_go = 1'b1;
+        while (cpu_wait_hdd) @(negedge clk_14a);
+        #100;
+        if (hdv_wrcnt !== 8'd129) begin $display("FAIL T8e: hdv_wrcnt=%0d (want 129 = 128 data + 1 OOR flush)", hdv_wrcnt); failures = failures + 1; end
+        if (hdv_oobcnt !== 8'd1)  begin $display("FAIL T8e: hdv_oobcnt=%0d (want 1 = the single prime read at word 128)", hdv_oobcnt); failures = failures + 1; end
 
         // ---- T9: mixed-direction back-to-back (WP2.4) ----
         // The harness never tested mixed N-consecutive-direction sequences
@@ -701,13 +1005,32 @@ module tb_hdv_bridge;
         wait (cmd_kind == 2'd2 && cmd_seen_offset == 32'd22528);
         write_cmds = write_cmds + 1;
         // capture the 0x0184 stream again (the write leg must be exact too).
+        // (dma_go is 0 here - T9-A cleared it - so done fires only after the capture)
         // The sector buffer still holds Phase A's pat2(44) data (phase B
         // issues no C0F8 writes), so the stream is that pattern.
         bridge_wr = 1'b0;
-        for (i = 0; i < 128; i = i + 1) begin
-            bridge_addr = 32'h01F01000 + i*4;
-            #1;
-            cap[i] = hdv_ram_word;
+        repeat (2) @(posedge clk_74a);   // framework 2FF + DMA startup latency
+        // Stage-aware readback (like T8): at the 2-stage port use PRIME+
+        // DISCARD (129 reads, discard the leftover prime) so the kept 128 are
+        // words 0..127 byte-exact; the k=1 readback alone would miss word 0.
+        if (TB_RD_PRIME) begin
+            for (i = 0; i < 129; i = i + 1) begin
+                bridge_addr = 32'h01F01000 + i*4;
+                bridge_rd   = 1'b1;
+                @(posedge clk_74a);
+                bridge_rd   = 1'b0;
+                keep2e[i] = rd_pipe;
+            end
+            for (i = 0; i < 128; i = i + 1)
+                cap[i] = keep2e[i+1];
+        end else begin
+            for (i = 0; i < 128; i = i + 1) begin
+                bridge_addr = 32'h01F01000 + i*4;
+                bridge_rd   = 1'b1;      // host read strobe (the wrcnt diagnostic)
+                @(posedge clk_74a);      // the DUT counts exactly one read per word
+                bridge_rd   = 1'b0;
+                cap[i] = rd_pipe;      // through the registered read stage (see above)
+            end
         end
         for (i = 0; i < 128; i = i + 1) begin
             /* verilator lint_off WIDTHTRUNC */
@@ -764,7 +1087,7 @@ module tb_hdv_bridge;
         #1000;   // the wr_rise -> pend -> drop window is ~10 machine clocks
         if (hdv_state !== 3'd0) begin $display("FAIL T10: state=%0d after protected drop (want 0=IDLE)", hdv_state); failures = failures + 1; end
         if (cpu_wait_hdd) begin $display("FAIL T10: cpu_wait asserted on a dropped write"); failures = failures + 1; end
-        if (write_cmds !== 4) begin $display("FAIL T10: write_cmds=%0d (want 4: T4 + T8x2 + T9; the drop issues no 0x0184)", write_cmds); failures = failures + 1; end
+        if (write_cmds !== 7) begin $display("FAIL T10: write_cmds=%0d (want 7: T4 + T8a/b/c/d/e + T9; the drop issues no 0x0184)", write_cmds); failures = failures + 1; end
         // no stale pend: the next unprotected write must arm normally
         hdv_protect_74 = 1'b0;
         c0f_write(16'hC0F6, 8'd46);
@@ -806,10 +1129,11 @@ module tb_hdv_bridge;
         if (cpu_wait_hdd) begin $display("FAIL T11: cpu_wait still held after the timeout bound"); failures = failures + 1; end
         if (hdv_state !== 3'd0) begin $display("FAIL T11: state=%0d after timeout (want 0=IDLE)", hdv_state); failures = failures + 1; end
         if (!hdv_fault) begin $display("FAIL T11: hdv_fault not latched on a write-leg timeout"); failures = failures + 1; end
+        if (hdv_wrcnt !== 8'd0) begin $display("FAIL T11: hdv_wrcnt=%0d after timeout (want 0, the host never read)", hdv_wrcnt); failures = failures + 1; end
         #1000;   // bridge_err hold (15 x 74a) + 2FF sync reaches hdd
         c0f_read(16'hC0F1, st);
         if (st !== 8'h01) begin $display("FAIL T11: C0F1 after write timeout = %0d (want 1, not stale 00)", st); failures = failures + 1; end
-        if (write_cmds !== 5) begin $display("FAIL T11: write_cmds=%0d (want 5: T4 + T8x2 + T9 + T10; the timeout is issued but not completed)", write_cmds); failures = failures + 1; end
+        if (write_cmds !== 8) begin $display("FAIL T11: write_cmds=%0d (want 8: T4 + T8a/b/c/d/e + T9 + T10; the timeout is issued but not completed)", write_cmds); failures = failures + 1; end
         // recovery: the host answers again -> the next write completes
         // clean. The write arms the 0x0184 only AFTER its walk_out (~36us),
         // so wait for the state to reach WRITE first, then for completion.
@@ -844,7 +1168,7 @@ module tb_hdv_bridge;
         if (!cpu_wait_hdd) begin $display("FAIL T5: cpu_wait not asserted during in-flight fetch"); failures = failures + 1; end
         if (hdv_state !== 3'd1) begin $display("FAIL T5: state=%0d (want 1=FETCH)", hdv_state); failures = failures + 1; end
         if (hdv_fault) begin $display("FAIL T5: fault set before any timeout"); failures = failures + 1; end
-        // bounded wait for the timeout release (1024 x 13.47 ns ~ 14 us)
+        // bounded wait for the timeout release (8000 x 13.47 ns ~ 108 us)
         begin : t5wait
             integer w;
             for (w = 0; w < 3000 && cpu_wait_hdd; w = w + 1)

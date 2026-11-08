@@ -999,37 +999,40 @@ pdl_timer u_pdl (
 // the user is actively changing the option).
 reg  [31:0] cfg_j2k_dir_word = 32'd0;
 reg  [31:0] cfg_j2k_btn_word = 32'd0;
-reg  [31:0] cfg_media_word   = 32'd0;   // "Boot Media" (0x01F00010)
+reg  [31:0] cfg_hdd_word     = 32'd0;   // "HDD" combined (0x01F00010): media + write-protect
 reg  [31:0] cfg_joy_mode_word = 32'd0;  // "Joystick Mode" (0x01F00014)
-// Hard Disk Write Protect (PLAN_HDV_WRITE_2026-11-04, 0.3.3):
-// 1 = Protected (default) 0 = Writable. Initial value is 1 - the safe
-// state until the host has written the option (interact.json id 9 has
-// defaultval 1; the two agree, same convention as cfg_media_word).
-reg  [31:0] cfg_wp_word      = 32'd1;   // "HD Write Protect" (0x01F00018)
+// Combined "HDD" option (0x01F00010, 0.3.5): merges "Boot Media" (0/1/2) and
+// the retired "HD Write Protect" (0x01F00018) into one 5-value word - "Floppy"
+// takes the HD off the bus, so write-protect is moot there:
+//   0=Both,read-only (default) 1=Both,write 2=Floppy(no HD)
+//   3=HDD,read-only 4=HDD,write
+// Default 0 = the safe state (Both + read-only). Write-only (host writes at
+// boot, never reads back) - the 01F00xxx read-back wildcard stays in its
+// proven form (2026-10-25 disk-bisect: read-back mux arms broke disk loading).
 always @(posedge clk_74a) begin
     if (bridge_wr && bridge_addr == 32'h01F00008)
         cfg_j2k_dir_word <= bridge_wr_data;
     if (bridge_wr && bridge_addr == 32'h01F0000C)
         cfg_j2k_btn_word <= bridge_wr_data;
-    // Boot Media: write-only (host writes at boot, never reads back), so
-    // the 01F00xxx read-back wildcard stays in its proven form - the same
-    // safe pattern as cfg_j2k_* / cfg_colour_word (see the 2026-10-25
-    // disk-bisect: read-back mux arms broke disk loading on silicon).
-    // value: 0=Both 1=Floppy (HD card off the bus) 2=HDD (floppy ejected).
-    // Replaces the 0742 build's "Floppy Eject" id 7 (same address).
+    // Combined HDD (media + write-protect), value 0..4 (see above).
     if (bridge_wr && bridge_addr == 32'h01F00010)
-        cfg_media_word <= bridge_wr_data;
+        cfg_hdd_word <= bridge_wr_data;
     // Joystick Mode (BRIEF_JOY_RELATIVE_MODE): 0=Absolute (default) 1=Relative.
-    // write-only (same safe pattern as cfg_media_word - the 01F00xxx read-back
+    // write-only (same safe pattern as cfg_hdd_word - the 01F00xxx read-back
     // wildcard stays in its proven form; a new bridge_rd arm broke disk loading
     // on silicon in the 2026-10-25 bisect).
     if (bridge_wr && bridge_addr == 32'h01F00014)
         cfg_joy_mode_word <= bridge_wr_data;
-    // HD Write Protect (write-only, same safe pattern as the words above -
-    // the 01F00xxx read-back wildcard stays in its proven form).
-    if (bridge_wr && bridge_addr == 32'h01F00018)
-        cfg_wp_word <= bridge_wr_data;
 end
+// ---- Combined HDD decode (74a domain) ----
+// media (2 bits, feeds the existing media_m sync): 0/1->00, 2->01, 3/4->10,
+// so the pre-existing hd_off_m/eject consumers see 00=Both 01=Floppy 10=HDD.
+// protect (1 bit, 1=protected): writable for value 1 (Both) or 4 (HDD).
+wire [2:0] hdd_val       = cfg_hdd_word[2:0];
+wire [1:0] hdd_media_dec = (hdd_val == 3'd2) ? 2'b01
+                         : (hdd_val == 3'd3 || hdd_val == 3'd4) ? 2'b10
+                         : 2'b00;
+wire       hdd_protect   = ~((hdd_val == 3'd1) | (hdd_val == 3'd4));
 
 // Joystick Mode (BRIEF_JOY_RELATIVE_MODE): the relative-mode enable, synced
 // from the 74a-domain cfg_joy_mode_word[0] (0=Absolute, 1=Relative) into the
@@ -1180,7 +1183,7 @@ synch_3 #(.WIDTH(3)) u_j2k_btn_sync (
 // wiring (~0 selects everything, the eject level is 0).
 wire [1:0] media_m;
 synch_3 #(.WIDTH(2)) u_media_sync (
-    .i(cfg_media_word[1:0]), .o(media_m),
+    .i(hdd_media_dec), .o(media_m),
     .clk(clk_core_14318), .rise(), .fall()
 );
 wire hd_off_m = media_m[0];
@@ -1574,7 +1577,9 @@ parameter FP_DIAG = 1'b0;
 // _MODE): the debug text (HD/PC/DA + the new JOY line) is visible so the owner
 // can wiggle the stick and read the raw bytes. Revert to 1'b0 once the probe
 // verdict is in (feature build) or for the shipping build.
-parameter OVL_DEBUG = 1'b0;   // shipping (0.3.2): debug text/lines off; drive lamps stay (not OVL_DBG-gated)
+parameter OVL_DEBUG = 1'b0;   // SHIPPING (0.3.5): debug text/lines off; drive lamps stay.
+                              // (2026-11-07 the HDV K/W readout diagnostic was on for the hardware
+                              // re-test; reverted now that the RD_PRIME_STAGE fix is validated.)
 
 // Debug-line visibility window in machine clocks (14.318 MHz). The debug
 // lines (MT=/RD=, AC=/MO=, ST=/A=/F=, RQ=) are drawn only while this window
@@ -1872,10 +1877,10 @@ woz_mount_ctl woz_mc (
 // 0x0180/0x0184 against the deferload HDV slot (id 2), stalls the 6502 via
 // CPU_WAIT for the whole transfer, and walks the 512-byte sector buffer.
 // Write-through (0.3.3, PLAN_HDV_WRITE_2026-11-04): the protect level
-// comes from the "Hard Disk Write Protect" interact option (0x01F00018,
-// cfg_wp_word, PROTECTED BY DEFAULT). One 74a-domain source, two
-// consumers in different domains: hdv_bridge (74a) uses the raw word
-// below (it already runs on clk_74a - no sync); hdd (14M) uses the
+// comes from the combined "HDD" interact option (0x01F00010, cfg_hdd_word,
+// PROTECTED BY DEFAULT via the 0..4 decode). One 74a-domain source, two
+// consumers in different domains: hdv_bridge (74a) uses the raw decoded
+// bit below (it already runs on clk_74a - no sync); hdd (14M) uses the
 // synch_3 copy. The option is quasi-static (user toggles it from the
 // OSD); a transient mixed state while toggling can at worst drop one
 // hdd_write the hdd itself accepted - the bridge's drop branch consumes
@@ -1884,7 +1889,7 @@ woz_mount_ctl woz_mc (
 // returns 0x2B PROTECT) and the 0x0184 arm stays inert.
 wire hdv_protect_m;
 synch_3 #(.WIDTH(1)) u_hdv_protect_sync (
-    .i(cfg_wp_word[0]), .o(hdv_protect_m), .clk(clk_core_14318), .rise(), .fall()
+    .i(hdd_protect), .o(hdv_protect_m), .clk(clk_core_14318), .rise(), .fall()
 );
 wire        hdd_read, hdd_write;
 wire [7:0]  hdd_dout;
@@ -1897,6 +1902,8 @@ wire [31:0] hdv_ram_word;   // bridge readback window 0x01F01000-00F
 wire [2:0]  hdv_state;
 wire        hdv_fault;
 wire [7:0]  hdv_fetch_cnt;
+wire [7:0]  hdv_wrcnt_74;   // host read words of the last 0x0184 (want 128)
+wire [7:0]  hdv_oobcnt_74;  // out-of-window reads of the last 0x0184 (= host start offset k, 2026-11-06 diagnostic)
 wire        bridge_err_74;   // bridge drop/timeout fault pulse (74a)
 wire        bridge_err_m;    // 2FF-synced to the machine domain for hdd
 synch_3 #(.WIDTH(1)) u_bridge_err_sync (
@@ -1927,7 +1934,12 @@ hdd u_hdd (
     .ram_we         ( hdd_ram_we )
 );
 
-hdv_bridge u_hdv_bridge (
+// RD_PRIME_STAGE=1 (0.3.5 SHIPPING): 2-stage read port (model-B fix). Model B
+// (framework 129-strobe prime+discard) was confirmed on silicon: the fix build
+// wrote two folders byte-exact (see RELEASE_NOTES_0.3.5 / framework ticket
+// section 10). T8e in verilog/hdv_bridge proves 1 makes a priming host
+// byte-exact. OOB_ENCODE follows OVL_DEBUG (0 in shipping).
+hdv_bridge #(.OOB_ENCODE(OVL_DEBUG), .RD_PRIME_STAGE(1'b1)) u_hdv_bridge (
     .clk_74a        ( clk_74a ),
     .clk_14a        ( clk_core_14318 ),
     .reset_n        ( reset_n ),
@@ -1944,8 +1956,9 @@ hdv_bridge u_hdv_bridge (
     .target_dataslot_bridgeaddr ( target_dataslot_bridgeaddr ),
     .target_dataslot_length     ( target_dataslot_length ),
     .hdv_mounted    ( hdv_mounted_74 ),
-    // 74a domain: the raw word (see the domain note above the hdd instance)
-    .hdv_protect    ( cfg_wp_word[0] ),
+    // 74a domain: the decoded protect bit (see the domain note above the hdd instance)
+    .hdv_protect    ( hdd_protect ),
+    .bridge_rd      ( bridge_rd ),
     .hdd_ram_addr   ( hdd_ram_addr ),
     .hdd_ram_di     ( hdd_ram_di ),
     .hdd_ram_do     ( hdd_ram_do ),
@@ -1957,6 +1970,8 @@ hdv_bridge u_hdv_bridge (
     .hdv_state      ( hdv_state ),
     .hdv_fault      ( hdv_fault ),
     .hdv_fetch_cnt  ( hdv_fetch_cnt ),
+    .hdv_wrcnt      ( hdv_wrcnt_74 ),
+    .hdv_oobcnt     ( hdv_oobcnt_74 ),
     .bridge_err     ( bridge_err_74 )
 );
 
@@ -1968,15 +1983,17 @@ synch_3 #(.WIDTH(1)) u_hdd_wait_sync (
 
 // HDV bridge diagnostics for the on-screen debug line (74a -> 14M):
 // {cpu stalled now, fetch/write timeout fault, FSM state, last host err,
+// out-of-window read count of last 0x0184 (2026-11-06: want 0 - equals the
+// host's start offset k), host read words of last 0x0184 (want 128),
 // completed-fetch count}. The 10 s window renders it as
-// "HD=S F=F E=E N=NN M=M" (see sdram_status_overlay.v). Bit[15] is the
+// "HD=S F=F N=NN M=M W=NN K=NN" (see sdram_status_overlay.v). Bit[31] is the
 // HDV MOUNTED state (hdv_size_q != 0) - the decisive 2026-11-02 hardware
 // diagnostic: N=0+F=0+E=0+M=0 => every fetch dropped as not-mounted;
 // N=0+M=1 => the driver never armed a 0x0180 at all.
-wire [15:0] hd_dbg_74 = {hdv_mounted_74, hdv_fault, hdv_state,
-                         target_dataslot_err, hdv_fetch_cnt};
-wire [15:0] hd_dbg_m;
-synch_3 #(.WIDTH(16)) u_hd_dbg_sync (
+wire [31:0] hd_dbg_74 = {hdv_mounted_74, hdv_fault, hdv_state,
+                         target_dataslot_err, hdv_oobcnt_74, hdv_wrcnt_74, hdv_fetch_cnt};
+wire [31:0] hd_dbg_m;
+synch_3 #(.WIDTH(32)) u_hd_dbg_sync (
     .i(hd_dbg_74), .o(hd_dbg_m), .clk(clk_core_14318), .rise(), .fall()
 );
 
@@ -2031,7 +2048,9 @@ reg  [27:0] dbg_win_cnt = 28'd0;
 always @(posedge clk_core_14318)
     if (machine_reset) dbg_win_cnt <= 28'd0;
     else if (dbg_win_cnt != OVL_DBG_WIN_CYCLES) dbg_win_cnt <= dbg_win_cnt + 28'd1;
-wire        ovl_debug_en = (dbg_win_cnt != OVL_DBG_WIN_CYCLES);
+wire        ovl_debug_en = (dbg_win_cnt != OVL_DBG_WIN_CYCLES);   // SHIPPING (0.3.5):
+                                   // post-reset visibility window (drive lamps). The 2026-11-07
+                                   // always-on HDV diagnostic was reverted for the shipping build.
 
 sdram_status_overlay #(.SHOW_FP(FP_DIAG), .OVL_DBG(OVL_DEBUG)) ovl (
     .clk(clk_core_14318), .reset(machine_reset),

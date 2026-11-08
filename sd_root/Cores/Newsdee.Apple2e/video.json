@@ -7,6 +7,8 @@
                 "height": 192,
                 "aspect_w": 10,
                 "aspect_h": 9,
+                "dock_aspect_w": 10,
+                "dock_aspect_h": 9,
                 "rotation": 0,
                 "mirror": 0
             },
@@ -15,6 +17,8 @@
                 "height": 192,
                 "aspect_w": 10,
                 "aspect_h": 9,
+                "dock_aspect_w": 10,
+                "dock_aspect_h": 9,
                 "rotation": 0,
                 "mirror": 0
             },
@@ -23,8 +27,15 @@
                 "height": 192,
                 "aspect_w": 10,
                 "aspect_h": 9,
+                "dock_aspect_w": 10,
+                "dock_aspect_h": 9,
                 "rotation": 0,
                 "mirror": 0
+            }
+        ],
+        "display_modes": [
+            {
+                "id": "0x10"
             }
         ]
     }

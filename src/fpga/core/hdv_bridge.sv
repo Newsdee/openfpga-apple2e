@@ -53,12 +53,36 @@ module hdv_bridge #(
     // HD -> first C0F0 read -> stall that never ends).
     // NOTE: 28 bits max = 0x0FFFFFFF; 0x1000_0000 itself needs 29 bits.
     parameter [27:0] FETCH_TO = 28'h0FFFFFFF
+    , parameter OOB_ENCODE = 1'b0
+    // 2026-11-07 diagnostic (framework ticket refinement): 1 => out-of-window
+    // reads return {16'hA5A5, addr[9:2], 8'h00} -- the WORD INDEX of the
+    // out-of-window address -- instead of 0. In a corrupted HDV the tail
+    // words of each shifted sector then record the host's actual read
+    // addresses in order: k per transfer, monotonicity, skips -- all
+    // recoverable from the file, no on-screen readout needed. Shipping = 0
+    // (plain 0 return; the A/B evidence in the ticket uses this).
+    // 2026-11-07 (expert Problem 2, model B proven in sim by T8e): the
+    // framework's 0x0184 DMA PRIMES one beat against the documented read
+    // convention ("data may arrive up to the next read strobe later") and
+    // DISCARDS the first sampled value. With only the top-level
+    // bridge_rd_data stage of latency that first sample is already valid
+    // (word 0), so the prime discards a valid word and the kept 128 land
+    // shifted by k (the 0.3.3/0.3.4 hardware corruption; T8e reproduces it
+    // exactly in sim). One more clk_74a stage makes the primed sample the
+    // stale one, so the kept 128 align to 0..127. 0 = 1-stage port (0.3.4
+    // behavior); 1 = model-B 2-stage port, the 0.3.5 SHIPPING default
+    // (confirmed on silicon: byte-exact two-folder write). Kept LOCAL to
+    // hdv_ram_word: the global bridge_rd_data mux (apf_stream_video_top.v)
+    // is untouched - a read-back-mux change once broke disk loading on
+    // silicon.
+    , parameter RD_PRIME_STAGE = 1'b1
 ) (
     input  wire        clk_74a,        // bridge clock
     input  wire        clk_14a,        // machine clock (14.318)
     input  wire        reset_n,        // bridge reset, active low (74a)
 
     // host bridge (74a domain)
+    input  wire        bridge_rd,      // host read strobe (diagnostic: 0x0184 read count)
     input  wire        bridge_wr,
     input  wire [31:0] bridge_addr,
     input  wire [31:0] bridge_wr_data,
@@ -97,6 +121,8 @@ module hdv_bridge #(
     output wire [2:0]  hdv_state,      // command FSM state (0 idle .. 5 write)
     output wire        hdv_fault,      // a host command timed out (until reset or a clean completion)
     output wire [7:0]  hdv_fetch_cnt,  // completed 0x0180 fetches (saturates at 255)
+    output wire [7:0]  hdv_wrcnt,      // host 0x0184 read words of the LAST write (want 128)
+    output wire [7:0]  hdv_oobcnt,     // out-of-window (0x01F01200+) reads of the LAST write (= host start offset k)
 
     // media-fault pulse to hdd.v (74a domain; the top 2FF-syncs it to 14M
     // and hdd uses it to force reg_status, so C0F1 reports a dropped or
@@ -140,16 +166,50 @@ module hdv_bridge #(
             hdv_ram[wo_addr] <= wo_data;
     end
 
-    // host read port (74a, combinational): BE word for 0x0184 DMA reads
+    // host read port (74a, combinational): BE word for the 0x0184 DMA reads.
+    // 2026-11-06 (expert review of the SmartportHD corruption): the RAM is
+    // 512 bytes but the top-level decode arm is 0x01F01xxx (4 KB), and the
+    // word select below is only 7 bits - reads at 0x01F01200+ SILENTLY WRAPPED
+    // to word 0, so a host 0x0184 DMA that starts k words into the window
+    // (the framework's registered read port adds a 1-2 word pipeline offset
+    // to a bulk sequential read) received the sector cyclically rotated by
+    // 4k bytes (the 0.3.3/0.3.4 corruption: +8B/+4B sector rotations).
+    // Out-of-range reads now return the default 0 arm instead of wrapping.
     wire [6:0] rd_word  = bridge_addr[8:2];
+    wire       rd_oob   = (bridge_addr[11:9] != 3'b000);   // beyond the 512-B window
     wire [8:0] rd_byte0 = {rd_word, 2'b00};
     // BIG-ENDIAN readout, matching the write path above (bridge_endian_little
     // = 0): word[31:24] = first file byte of the group (hdv_ram[rd_byte0]),
     // word[7:0] = last (hdv_ram[rd_byte0+3]).
-    assign hdv_ram_word = {hdv_ram[rd_byte0],
+    // Out-of-window value: 0 (shipping) or the address's word index tagged
+    // with A5A5 (diagnostic build; see OOB_ENCODE).
+    wire [31:0] oob_val = OOB_ENCODE ? {16'hA5A5, bridge_addr[9:2], 8'h00}
+                                     : 32'h0000_0000;
+    wire [31:0] hdv_ram_word_c = rd_oob ? oob_val : {hdv_ram[rd_byte0],
                            hdv_ram[rd_byte0 + 9'd1],
                            hdv_ram[rd_byte0 + 9'd2],
                            hdv_ram[rd_byte0 + 9'd3]};
+
+    // 2026-11-07 (expert Problem 2, model B proven in sim by T8e): the
+    // framework's 0x0184 DMA PRIMES one beat against the documented read
+    // convention ("data may arrive up to the next read strobe later") and
+    // DISCARDS the first sampled value. With only the top-level
+    // bridge_rd_data stage of latency, that first sample is already valid
+    // (word 0), so the prime discards a valid word and the kept 128 land
+    // shifted by k (the 0.3.3/0.3.4 hardware corruption; T8e reproduces it
+    // exactly in sim). Presenting one more clk_74a stage makes the primed
+    // (discarded) sample the stale one, so the kept 128 align to 0..127.
+    // Kept LOCAL to hdv_ram_word: the global bridge_rd_data mux
+    // (apf_stream_video_top.v) is untouched - a read-back-mux change once
+    // broke disk loading on silicon (see its comment at ~line 1024).
+    // RD_PRIME_STAGE=1: register one clk_74a so the host-visible port
+    // presents 2 stages (the primed first sample is stale, the kept 128
+    // align). RD_PRIME_STAGE=0 (shipping): pure combinational = 0.3.4.
+    reg [31:0] hdv_ram_word_q;
+    always @(posedge clk_74a)
+        if (bridge_rd)
+            hdv_ram_word_q <= hdv_ram_word_c;
+    assign hdv_ram_word = RD_PRIME_STAGE ? hdv_ram_word_q : hdv_ram_word_c;
 
     // ------------------------------------------------------------------
     // CDC: 14M -> 74a (request pulses, walk_done pulse, walk_out bytes)
@@ -258,6 +318,27 @@ module hdv_bridge #(
         end
     end
 
+    // walk_out commit count (2026-11-05, HDV write-corruption fix):
+    // how many of the 512 walked bytes have committed into hdv_ram.
+    // The 0x0184 arm used to wait a FIXED one-bridge-clock guard after
+    // the walk-done edge (ST_ARM_WRITE) - but the last CDC byte write
+    // (byte 511) lands within the same bridge-clock window as the done
+    // edge, so on the real 14.318->74.25 async clocks the arm could beat
+    // the final commit (sim phases always lined up). The arm now waits
+    // for this count: a data handshake, not a timing guess. (Declared
+    // after qo_sync below - qo_rise must be declared before use.)
+    reg  [9:0] wo_landed;            // 0..512 (512 needs 10 bits)
+    // The arm fires only when the counter has reached 512 AND the write
+    // pulse is not in flight AND the walk has been running for at least
+    // one cycle (walk_out_req_d): the req_d term kills a same-cycle race
+    // at WALK_OUT entry - the reset pulse for this walk lands via NBA on
+    // the entry posedge, so the combinational done must NOT be allowed to
+    // sample the stale 512 from the previous walk on that same cycle
+    // (that is exactly the 2026-11-04/05 failure: 0x0184 armed with an
+    // unwritten sector buffer, host flush overwrote the HDV with stale
+    // data).
+    wire walk_out_done = (wo_landed == 10'd512) && !wo_wen && walk_out_req_74 && walk_out_req_d;
+
     // CDC: 74a -> 14M (walk-request LEVELS, bridge reset)
     // Sync-only reset synchronizer: rs_sync pins to 00 while reset_n=0 and
     // walks to 11 two cycles after reset_n rises. (An async-reset clause
@@ -273,6 +354,33 @@ module hdv_bridge #(
         rs_sync <= {rs_sync[0], reset_n};
     end
 
+    // walk_out commit count (definition; see the declaration above):
+    // increments on each CDC byte write (wo_wen), resets when the walk
+    // request LEVEL is rising. The reset must NOT use the qo_rise edge:
+    // that edge is the 2FF-synchronized view of the level and can land
+    // AFTER the first walk strobe (the level itself reaches the 74a side
+    // one cycle earlier) - a late reset would clear bytes already
+    // committed, or (worse) a missed edge would leave the stale 512 from
+    // the previous walk and arm 0x0184 before this walk has filled the
+    // RAM (the 2026-11-05 T8 failure). Resetting on the raw level rising
+    // edge is exact: it fires the same cycle the level appears, which is
+    // always before the first strobe (the 14M walker needs the level to
+    // propagate 2 machine clocks before it even starts counting).
+    reg walk_out_req_d;
+    always @(posedge clk_74a or negedge reset_n) begin
+        if (!reset_n) begin
+            wo_landed <= 10'd0;
+        end else if (walk_out_req_74 && !walk_out_req_d)
+            wo_landed <= 10'd0;      // walk (re)start
+        else if (wo_wen)
+            wo_landed <= wo_landed + 10'd1;
+    end
+    always @(posedge clk_74a or negedge reset_n) begin
+        if (!reset_n)
+            walk_out_req_d <= 1'b0;
+        else
+            walk_out_req_d <= walk_out_req_74;
+    end
     // ------------------------------------------------------------------
     // 14M domain: sector-buffer walkers (512 machine cycles each)
     // ------------------------------------------------------------------
@@ -364,8 +472,54 @@ module hdv_bridge #(
     reg  [27:0] to_cnt;
     reg        fault;
     reg [7:0]  fetch_cnt;
-    wire       in_host_cmd = (state == ST_FETCH) || (state == ST_WRITE);
-    wire       to_fire = in_host_cmd && (to_cnt == FETCH_TO - 28'd1);
+    // Every non-IDLE state is bounded by the timeout (2026-11-05): the
+    // walk states were previously unbounded - a lost walk-done edge hung
+    // cpu_wait_hdd FOREVER. Normal transfers are ~1 ms; the bound is 3.6 s.
+    wire       in_xfer = (state != ST_IDLE);
+    wire       to_fire = in_xfer && (to_cnt == FETCH_TO - 28'd1);
+
+    // host read-word count around ST_WRITE (2026-11-05 diagnostic): the
+    // framework must pull exactly 128 words per 0x0184. If a transfer
+    // times out (hdv_fault) with W<128, the host gave up mid-DMA and the
+    // file corruption is on the framework's interrupted-transfer side
+    // (the 2026-11-05 SmartportHD test: the write "never finished").
+    // The window spans ST_ARM_WRITE through ST_WRITE: the RAM is fully
+    // committed at the arm (that is the point of the commit-count fix),
+    // so early host reads during the arm cycle(s) are valid words and
+    // must count - the real framework's DMA latency is not guaranteed to
+    // be >=2 cycles. The clear is the ARM entry cycle (transition, not
+    // level) so an early read can never race it.
+    reg        [2:0] wr_state_d;
+    reg        [7:0] wr_read_cnt;
+    // out-of-range read counter (2026-11-06 diagnostic, expert review): a
+    // 0x0184 DMA that starts k words into the window performs exactly k
+    // out-of-range reads (addresses 0x01F01200+). Counting them MEASURES
+    // the host's start offset k on silicon (it varied 1-2 words between
+    // sectors in the corrupted images) - no framework source needed. The
+    // real fix (register-align or pre-shift by k) comes after measurement.
+    reg        [7:0] wr_oob_cnt;
+    wire         host_rd_ram = bridge_rd && (bridge_addr[31:12] == 20'h01F01);
+    wire         host_rd_oob = host_rd_ram && (bridge_addr[11:9] != 3'b000);
+    always @(posedge clk_74a)
+        wr_state_d <= state;
+    always @(posedge clk_74a or negedge reset_n) begin
+        if (!reset_n)
+            wr_read_cnt <= 8'd0;
+        else if (state == ST_ARM_WRITE && wr_state_d != ST_ARM_WRITE)
+            wr_read_cnt <= 8'd0;         // arm entry = start of a new 0x0184
+        else if (host_rd_ram && (state == ST_ARM_WRITE || state == ST_WRITE)
+                 && wr_read_cnt != 8'd255)
+            wr_read_cnt <= wr_read_cnt + 8'd1;
+    end
+    always @(posedge clk_74a or negedge reset_n) begin
+        if (!reset_n)
+            wr_oob_cnt <= 8'd0;
+        else if (state == ST_ARM_WRITE && wr_state_d != ST_ARM_WRITE)
+            wr_oob_cnt <= 8'd0;          // arm entry = start of a new 0x0184
+        else if (host_rd_oob && (state == ST_ARM_WRITE || state == ST_WRITE)
+                 && wr_oob_cnt != 8'd255)
+            wr_oob_cnt <= wr_oob_cnt + 8'd1;
+    end
 
     // bridge_err hold: a drop or timeout sets the hold to 15 x 74a cycles
     // (~202 ns = ~3 machine clocks, so the 2FF in the top always samples a
@@ -404,10 +558,10 @@ module hdv_bridge #(
             walk_in_req_74  <= (state == ST_WALK_IN);
             walk_out_req_74 <= (state == ST_WALK_OUT);
 
-            // timeout counter: runs only while a host command is in flight;
-            // saturates at the bound so to_fire stays a clean one-shot per
-            // entry (the fire branch drops the state to IDLE next cycle).
-            if (in_host_cmd)
+            // timeout counter: runs in every in-transfer state; saturates
+            // at the bound so to_fire stays a clean one-shot per entry (the
+            // fire branch drops the state to IDLE next cycle).
+            if (in_xfer)
                 to_cnt <= (to_cnt == FETCH_TO - 28'd1) ? to_cnt : to_cnt + 28'd1;
             else
                 to_cnt <= 28'd0;
@@ -476,13 +630,18 @@ module hdv_bridge #(
                 end
 
                 ST_WALK_OUT: begin
-                    if (wd_rise)
+                    // wait for the commit count (NOT the walk-done edge):
+                    // the 512th CDC write lands inside the same window as
+                    // the done-edge latch, so the edge could beat the data
+                    // (the 2026-11-05 corruption; see wo_landed above).
+                    if (walk_out_done)
                         state <= ST_ARM_WRITE;
                 end
 
                 ST_ARM_WRITE: begin
-                    // two-bridge-clock guard: the last walk_out bytes are
-                    // still landing through the CDC when wd_rise fires
+                    // one-bridge-clock settle before the arm pulse (all
+                    // 512 bytes are committed by walk_out_done; the guard
+                    // is pipeline margin, not a data dependency).
                     state <= ST_WRITE;
                     target_dataslot_slotoffset <= offset_q;
                     target_dataslot_write <= 1'b1;
@@ -508,5 +667,7 @@ module hdv_bridge #(
     assign hdv_state     = state;
     assign hdv_fault     = fault;
     assign hdv_fetch_cnt = fetch_cnt;
+    assign hdv_wrcnt     = wr_read_cnt;
+    assign hdv_oobcnt    = wr_oob_cnt;
 
 endmodule

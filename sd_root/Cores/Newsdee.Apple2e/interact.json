@@ -25,15 +25,23 @@
         "options": [
           {
             "value": 0,
-            "name": "Both"
+            "name": "Both, read-only"
           },
           {
             "value": 1,
-            "name": "Floppy"
+            "name": "Both, write"
           },
           {
             "value": 2,
-            "name": "HDD"
+            "name": "Floppy (no HD)"
+          },
+          {
+            "value": 3,
+            "name": "HDD, read-only"
+          },
+          {
+            "value": 4,
+            "name": "HDD, write"
           }
         ]
       },
@@ -150,26 +158,6 @@
           {
             "value": 2,
             "name": "Space / Return"
-          }
-        ]
-      },
-      {
-        "name": "Hard Disk Write Protect",
-        "id": 9,
-        "type": "list",
-        "enabled": true,
-        "persist": true,
-        "writeonly": true,
-        "defaultval": 1,
-        "address": "0x01F00018",
-        "options": [
-          {
-            "value": 1,
-            "name": "Protected"
-          },
-          {
-            "value": 0,
-            "name": "Writable"
           }
         ]
       }
