@@ -8,7 +8,7 @@ joystick and paddle support, a docked USB keyboard, and seven colour presets.
 > **New here?** Copy the `Cores/`, `Platforms/` and `Assets/` folders from this repo's
 > `sd_root/` to the root of your Pocket's SD card, drop a `.woz` floppy image on the
 > card, reboot into **Apple2e**, and select the floppy in Core Settings. It boots to the
-> Apple logo and a `Ready.` prompt. Everything else you need is a one-line description
+> Apple logo and a `]#` prompt. Everything else you need is a one-line description
 > further down.
 
 ## What it does
