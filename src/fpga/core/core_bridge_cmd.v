@@ -235,7 +235,7 @@ always @(posedge clk) begin
     
     
     b_datatable_wren <= 0;
-    b_datatable_addr <= bridge_addr >> 2;
+    b_datatable_addr <= bridge_addr[11:2];  // 10-bit datatable word addr (was bridge_addr >> 2 -> 32-bit truncation)
         
     if(bridge_wr) begin
         casex(bridge_addr)

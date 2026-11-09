@@ -113,7 +113,7 @@ module apple_composite_q17 #(
                      ? V_BLANK
                     : (video_sample ? V_WHITE : V_BLACK);
 
-  wire signed [15:0] comp_brightness = $signed(bright) * 32'sd32;
+  wire signed [15:0] comp_brightness = $signed(bright) * 16'sd32;  // 16-bit product (was 32'sd32 -> 32-bit truncation)
   wire [33:0] comp_contrast_prod = contrast * 34'd2857;
   // *2857/128: contrast is a Q16 volts-to-white gain with 2857 = unity
   // (NTSC 0.714 V white), so the neutral knob 128 must land exactly on 2857.

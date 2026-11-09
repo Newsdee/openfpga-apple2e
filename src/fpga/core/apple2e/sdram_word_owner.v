@@ -95,7 +95,7 @@ module sdram_word_owner (
     localparam CL_STORE = 2'd1;
     localparam CL_VERIFY= 2'd2;
     localparam CL_FETCH = 2'd3;
-    localparam CL_HOST_RD = 2'd4;   // W0 host bridge read
+    localparam CL_HOST_RD = 3'd4;   // W0 host bridge read (3 bits: 4 needs 3; the old 2'd4 was 0 = CL_NONE)
 
     reg         rst_n_s1;
 
@@ -143,7 +143,7 @@ module sdram_word_owner (
     // the port's own sync and mis-attributed a store write to a fetcher
     // whose level had just fallen (measured T9).
     reg        busy_d;
-    reg [1:0]  inflight;
+    reg [2:0]  inflight;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             rst_n_s1 <= 1'b0;

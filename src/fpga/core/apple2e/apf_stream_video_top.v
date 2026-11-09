@@ -1094,7 +1094,7 @@ reg  [31:0] a2k_size_q = 32'd0;
 reg  [31:0] hdv_size_q = 32'd0;  // HDV slot (id 2) size; 0 = not mounted
 reg  [9:0]  datatable_addr_r = 10'd0;
 always @(posedge clk_74a) begin
-    if (a2k_timer == 14'hFFFF) begin
+    if (a2k_timer == 14'h3FFF) begin
         a2k_timer <= 14'd0;
         if (a2k_ps == 3'd0) begin
             datatable_addr_r <= 10'd0;    // word 0 = entry 0 id
@@ -1718,24 +1718,26 @@ always @(posedge clk_core_14318)
 wire hdv_mount_rise = hdv_mounted_m && !hdv_mounted_d;
 
 // Settle: latch the mount edge, count HDV_REBOOT_SETTLE, then emit one pulse.
-localparam [23:0] HDV_REBOOT_SETTLE = 24'd29000000;   // ~203 ms @ 143.18 MHz
-reg  [23:0] hdv_settle_cnt;
+// 25 bits: 29,000,000 (~203 ms @ 143.18 MHz) needs 25 bits - the old 24-bit
+// literal silently truncated to ~12.2M (~112 ms).
+localparam [24:0] HDV_REBOOT_SETTLE = 25'd29000000;   // ~203 ms @ 143.18 MHz
+reg  [24:0] hdv_settle_cnt;
 reg         hdv_settle_pend;
 always @(posedge clk_core_14318 or posedge machine_reset_base) begin
     if (machine_reset_base) begin
-        hdv_settle_cnt  <= 24'd0;
+        hdv_settle_cnt  <= 25'd0;
         hdv_settle_pend <= 1'b0;
     end else if (hdv_mount_rise && !hdv_settle_pend) begin
         hdv_settle_pend <= 1'b1;
-        hdv_settle_cnt  <= 24'd0;
+        hdv_settle_cnt  <= 25'd0;
     end else if (hdv_settle_pend) begin
-        if (hdv_settle_cnt == (HDV_REBOOT_SETTLE - 24'd1))
+        if (hdv_settle_cnt == (HDV_REBOOT_SETTLE - 25'd1))
             hdv_settle_pend <= 1'b0;   // -> next cycle hdv_reboot_req pulses
         else
-            hdv_settle_cnt <= hdv_settle_cnt + 24'd1;
+            hdv_settle_cnt <= hdv_settle_cnt + 25'd1;
     end
 end
-wire hdv_reboot_req = hdv_settle_pend && (hdv_settle_cnt == (HDV_REBOOT_SETTLE - 24'd1));
+wire hdv_reboot_req = hdv_settle_pend && (hdv_settle_cnt == (HDV_REBOOT_SETTLE - 25'd1));
 
 // Power-on blanking: ignore every mount edge inside a short window after reset
 // release (the framework's initial WOZ + HDV load), and pre-arm reboot_ctl's

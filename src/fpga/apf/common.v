@@ -71,8 +71,8 @@ reg [WIDTH-1:0] stage_1;
 reg [WIDTH-1:0] stage_2;
 reg [WIDTH-1:0] stage_3;
 
-assign rise = (WIDTH == 1) ? (o & ~stage_3) : 1'b0;
-assign fall = (WIDTH == 1) ? (~o & stage_3) : 1'b0;
+assign rise = (WIDTH == 1) ? (o[0] & ~stage_3[0]) : 1'b0;
+assign fall = (WIDTH == 1) ? (~o[0] & stage_3[0]) : 1'b0;
 always @(posedge clk) 
    {stage_3, o, stage_2, stage_1} <= {o, stage_2, stage_1, i};
    

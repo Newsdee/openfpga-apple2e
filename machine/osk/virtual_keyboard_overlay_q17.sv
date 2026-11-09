@@ -1,8 +1,8 @@
 module virtual_keyboard_overlay #(
-	parameter integer PANEL_X = 4,
-	parameter integer PANEL_Y = 94,
-	parameter integer PANEL_WIDTH = 552,
-	parameter integer PANEL_HEIGHT = 98
+	parameter [9:0] PANEL_X = 10'd4,
+	parameter [8:0] PANEL_Y = 9'd94,
+	parameter [9:0] PANEL_WIDTH = 10'd552,
+	parameter [8:0] PANEL_HEIGHT = 9'd98
 ) (
 	input  wire        clk,
 	input  wire        reset,

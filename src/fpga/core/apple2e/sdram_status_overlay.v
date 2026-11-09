@@ -926,26 +926,26 @@ module sdram_status_overlay (
     // (bright = read, dark = spin), GREEN = HD read, WHITE = HD block
     // completed. Previously green/white mixed floppy+HD so the two media
     // could not be told apart.
-    localparam [23:0] LAMP_HOLD = 24'd20000000;   // ~140ms @ 143.18 MHz
-    reg  [23:0] hold_flr, hold_fls, hold_hd, hold_io;
+    localparam [24:0] LAMP_HOLD = 25'd20000000;   // ~140ms @ 143.18 MHz (25 bits: 20M needs 25)
+    reg  [24:0] hold_flr, hold_fls, hold_hd, hold_io;
     reg         act_flr, act_fls, act_hd, act_io;
     always @(posedge clk or posedge reset) begin
         if (reset) begin
             act_flr <= 1'b0; act_fls <= 1'b0; act_hd <= 1'b0; act_io <= 1'b0;
-            hold_flr <= 24'd0; hold_fls <= 24'd0; hold_hd <= 24'd0; hold_io <= 24'd0;
+            hold_flr <= 25'd0; hold_fls <= 25'd0; hold_hd <= 25'd0; hold_io <= 25'd0;
         end else begin
-            if (drv_ack) begin act_flr <= 1'b1; hold_flr <= 24'd0; end
+            if (drv_ack) begin act_flr <= 1'b1; hold_flr <= 25'd0; end
             else if (act_flr && hold_flr == LAMP_HOLD) act_flr <= 1'b0;
-            else if (act_flr) hold_flr <= hold_flr + 24'd1;
-            if (drv_active || drv_motor) begin act_fls <= 1'b1; hold_fls <= 24'd0; end
+            else if (act_flr) hold_flr <= hold_flr + 25'd1;
+            if (drv_active || drv_motor) begin act_fls <= 1'b1; hold_fls <= 25'd0; end
             else if (act_fls && hold_fls == LAMP_HOLD) act_fls <= 1'b0;
-            else if (act_fls) hold_fls <= hold_fls + 24'd1;
-            if (hd_rd_act || hd_wr_act) begin act_hd <= 1'b1; hold_hd <= 24'd0; end  // 0.3.3: HD write lights it too
+            else if (act_fls) hold_fls <= hold_fls + 25'd1;
+            if (hd_rd_act || hd_wr_act) begin act_hd <= 1'b1; hold_hd <= 25'd0; end  // 0.3.3: HD write lights it too
             else if (act_hd && hold_hd == LAMP_HOLD) act_hd <= 1'b0;
-            else if (act_hd) hold_hd <= hold_hd + 24'd1;
-            if (hd_io) begin act_io <= 1'b1; hold_io <= 24'd0; end
+            else if (act_hd) hold_hd <= hold_hd + 25'd1;
+            if (hd_io) begin act_io <= 1'b1; hold_io <= 25'd0; end
             else if (act_io && hold_io == LAMP_HOLD) act_io <= 1'b0;
-            else if (act_io) hold_io <= hold_io + 24'd1;
+            else if (act_io) hold_io <= hold_io + 25'd1;
         end
     end
 
