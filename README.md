@@ -154,3 +154,22 @@ this core, so they are not credited here.
 - **Release and milestone history:** [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
 - **Operating guide for contributors and agents:** [`AGENTS.md`](AGENTS.md).
 - Per-release notes: [`docs/RELEASE_NOTES_*`](docs/).
+
+## AI usage disclosure
+
+This core is a port of the Newsdee/MiSTer Apple IIe core: the 6502, NTSC colour,
+Disk II/WOZ and ProDOS hard-disk protocol are long-standing human-written RTL. Newsdee
+set the goals, architecture and priorities; **Qwen 3.8 (27B)** — occasionally
+**Qwen 3.8 Max** — did much of the day-to-day work on the Pocket integration (APF
+shell, host bridge, SDRAM transport, on-screen keyboard), the Verilator harnesses,
+and the documentation.
+
+Newsdee compiles and verifies every build before it ships — in simulation, including
+differential tests against the VHDL golden reference, and on real Pocket hardware
+(video checks, HDV write-and-recover captures, byte-exact image comparison).
+Regressions and their root causes are written up in `docs/` rather than quietly
+reverted.
+
+Under active development. Newsdee has curated the MiSTer FPGA Apple II core since 2021.
+
+We disclose it because you should know how the core you're running was built.
