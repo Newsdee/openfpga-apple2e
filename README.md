@@ -158,22 +158,14 @@ this core, so they are not credited here.
 ## AI usage disclosure
 
 This core is a port of the Newsdee/MiSTer Apple IIe core: the 6502, NTSC colour,
-Disk II/WOZ and ProDOS hard-disk protocol are long-standing human-written RTL.
-Newsdee sets the goals, architecture and priorities, and verifies every build.
-**Qwen 3.8 (27B)** — occasionally **Qwen 3.8 Max** — did much of the
-day-to-day work on the Pocket integration (APF shell, host bridge, SDRAM transport,
-on-screen keyboard), the Verilator harnesses, and the documentation.
+Disk II/WOZ and ProDOS hard-disk logic are long-standing human-written RTL.
+Newsdee sets the goals, architecture and priorities, and verifies every build;
+**Qwen 3.8 (27B)** — occasionally **Qwen 3.8 Max** — did much of the day-to-day
+work on the Pocket integration, the Verilator harnesses and the documentation.
 
-This core is under active development, with a commitment to improve it over time.
-Testing methodology:
-
-- **Simulation** — a full-machine Verilator smoke test, plus differential tests
-  against the VHDL golden reference (hard disk here; Disk II, keyboard and font
-  ROM in the sibling MiSTer repo, on the machine RTL this core ports
-  byte-identically — `check_machine_sync.sh` enforces that it cannot drift).
-- **Hardware** — every build is exercised on a real Pocket: video checks, HDV
-  write-and-recover captures, and byte-exact image comparison.
-- **Regressions** — root-caused and written up in `docs/`, not quietly reverted.
+Every build is run in Verilog simulation to confirm accuracy, and exercised on
+a real Pocket before it ships. Regressions are root-caused and written up in
+`docs/`, not quietly reverted.
 
 Newsdee has curated the MiSTer FPGA Apple II core since 2021. We disclose this
 because you should know how the core you're running was built.

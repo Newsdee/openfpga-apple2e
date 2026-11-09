@@ -89,6 +89,36 @@ See `verilog/README.md` for the full harness list (P0/P1/P2a/P2b, geometry probe
 Phase-2 streaming frame captures, the decimator pixel-coordinate check, keyboard-protocol
 regression, RAM-inference minimal repro in `ramtest/`).
 
+### Differential equivalence against a VHDL golden (example: `hdd_equivalence/`)
+
+Some modules were ported from the MiSTer core's VHDL, and their proof of correctness is
+a **differential harness**: the VHDL donor runs under GHDL as the golden, the Verilog
+candidate runs under Verilator, and both are driven through the same stimulus and compared
+field-by-field.
+
+`verilog/hdd_equivalence/` is the working example — `golden/hdd.vhd` is the donor (with the
+two same-clock processes that co-wrote `sector_buf` merged into one writer, which is
+behaviour-identical per VHDL semantics but required for Verilog's single-driver rule),
+`hdd_vhdl_tb.vhd` and `hdd_verilog_tb.sv` are the two testbenches, and `run_equivalence.ps1`
+drives both and compares. It sweeps STATUS / READ / WRITE / FORMAT and toggles `hdd_protect`,
+with explicit coverage gates so skipped VHDL metavalues (Verilator is two-state) cannot
+produce an empty pass.
+
+```powershell
+Set-Location verilog/hdd_equivalence
+.\run_equivalence.ps1              # or -CompareOnly to recheck existing traces
+```
+
+Known good: `HDD EQUIVALENCE PASS rows=7600 fields=128397 ignored_metavalues=803
+hdd_read=5 hdd_write=5`.
+
+The sibling repo `Apple-II-Verilog_MiSTer/module_tests/` holds the same kind of harness for
+the donor modules this core ports byte-identically (Disk II, keyboard, font ROM, dpram, and
+others). `machine/` is pinned to the donor and `check_machine_sync.sh` enforces that it
+cannot drift, so those results apply to this core too. See `AGENTS.md` for the GHDL 6 /
+Verilator 5.050 gotchas before building a new one — notably that GHDL 6 silently loses
+array-element writes when two processes write the same array signal.
+
 ## Core JSON files — single source of truth
 
 **All openFPGA manifest JSONs live ONLY in `sd_root/Cores/Newsdee.Apple2e/`**
