@@ -1,10 +1,10 @@
 # Resource utilization per component
 
-Reference breakdown of the shipping core, `apf_stream_video`, on the
+Reference breakdown of the shipping core, `apf_apple2`, on the
 **Cyclone V 5CEBA4F23C8**. Numbers come from the Quartus Prime 17.0.2 Lite fitter
 report, section **19 "Fitter Resource Utilization by Entity"**:
 
-`src/fpga/output_files_apple2e/apf_stream_video.fit.rpt`
+`src/fpga/output_files_apple2e/apf_apple2.fit.rpt`
 
 This is a **snapshot** of the fitter run **2026-11-08 17:15** (the `hdv_bridge`
 sector-RAM → M10K refactor). It is a tracked (not dated) reference document: refresh
@@ -60,7 +60,7 @@ shown where used. The "Instance" is the hierarchy name from the report.
 
 | Component | Instance | ALMs | LE (est.) | Registers | Block mem bits | M10Ks | DSP |
 |---|---|---:|---:|---:|---:|---:|---:|
-| **Whole core** | `apf_top_stream` | 8,947 | ~17,894 | 10,219 | 1,561,600 | 195 | 29 |
+| **Whole core** | `apf_top_apple2` | 8,947 | ~17,894 | 10,219 | 1,561,600 | 195 | 29 |
 | APF host bridge | `io_bridge_peripheral:ibs` | 81 | ~162 | 229 | — | 0 | 0 |
 | I/O pad controller | `io_pad_controller:ipm` | 101 | ~202 | 323 | — | 0 | 0 |
 | Core container | `stream_video_core_top:ic` | 8,743 | ~17,486 | 9,652 | 1,561,600 | 195 | 29 |
@@ -118,9 +118,9 @@ The core container holds everything below it. The meaningful per-block breakdown
 
 ## How to refresh
 ```
-quartus_sh --flow compile apf_stream_video
+quartus_sh --flow compile apf_apple2
 ```
-Then re-extract section 19 from `src/fpga/output_files_apple2e/apf_stream_video.fit.rpt`
+Then re-extract section 19 from `src/fpga/output_files_apple2e/apf_apple2.fit.rpt`
 (update the fitter-run date and the tables above). Keep the block memory total
 in view — it was 1,557,504 bits through 0.3.5 and became **1,561,600** after the
 `hdv_bridge` M10K refactor (+4,096 = the 2 M10K sector RAM); a further jump means

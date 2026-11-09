@@ -1,20 +1,16 @@
 @echo off
 rem ============================================================
-rem Phase 1 streaming-prototype build for Analogue Pocket
-rem (device 5CEBA4F23C8, Quartus Prime Lite/Standard, Cyclone V)
+rem Apple IIe Pocket core build (device 5CEBA4F23C8, Quartus Prime
+rem Lite/Standard, Cyclone V)
 rem
-rem EXPERIMENTAL - see docs/NES_REFERENCE_STREAMING_RECOMMENDATION_2026-10-19.md
-rem
-rem Compiles the apf_stream_video revision (top entity apf_top_stream), which
-rem streams the native Apple II raster (560x192 @ 14.318 MHz) straight to the
-rem APF DDR pad with NO frame buffer. Stages the result into a SEPARATE
-rem experimental core package (Newsdee.Apple2e) so the working
-rem Newsdee.Apple2e package is never touched.
+rem Compiles the apf_apple2 revision (top entity apf_top_apple2) - the
+rem shipping Apple IIe core - and stages the result into
+rem sd_root\Cores\Newsdee.Apple2e as bitstream.rbf_r.
 rem
 rem Requires: Quartus on PATH, MSYS2 UCRT64 python.
 rem
 rem To compile in the Quartus UI instead, open:
-rem   src\fpga\apf_stream_video.qsf
+rem   src\fpga\apf_apple2.qsf
 rem ============================================================
 setlocal
 
@@ -24,14 +20,14 @@ set "PY=C:\msys64\ucrt64\bin\python.exe"
 if not exist "%PY%" goto :missingpy
 
 set "PROTODIR=%REPO%\sd_root\Cores\Newsdee.Apple2e"
-set "RBFR_OUT=%REPO%\output\bitstream_streamvideo.rbf_r"
+set "RBFR_OUT=%REPO%\output\bitstream_apple2.rbf_r"
 set "RBFR_PKG=%PROTODIR%\bitstream.rbf_r"
-set "RBF_SRC=%REPO%\src\fpga\output_files_apple2e\apf_stream_video.rbf"
+set "RBF_SRC=%REPO%\src\fpga\output_files_apple2e\apf_apple2.rbf"
 
 cd /d "%REPO%\src\fpga"
 
-echo === [1/3] Quartus full compile (apf_stream_video) ===
-quartus_sh --flow compile apf_stream_video
+echo === [1/3] Quartus full compile (apf_apple2) ===
+quartus_sh --flow compile apf_apple2
 if errorlevel 1 goto :err
 
 if not exist "%RBF_SRC%" goto :errrbf
@@ -54,11 +50,10 @@ for %%M in (core.json data.json interact.json video.json input.json variants.jso
 )
 
 echo.
-echo DONE. Phase 1 streaming-prototype staged at %PROTODIR%
-echo   bitstream.rbf_r = freshly built apf_stream_video (reversed).
+echo DONE. Apple IIe core staged at %PROTODIR%
+echo   bitstream.rbf_r = freshly built apf_apple2 (reversed).
 echo   Copy "Cores\Newsdee.Apple2e" to the SD card root to test.
-echo   Fit report: %REPO%\src\fpga\output_files_apple2e\apf_stream_video.fit.summary
-echo   NOTE: this is the EXPERIMENTAL pattern build, not the working core.
+echo   Fit report: %REPO%\src\fpga\output_files_apple2e\apf_apple2.fit.summary
 endlocal
 pause
 exit /b 0

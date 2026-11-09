@@ -7,9 +7,7 @@
 // (24-bit RGB, with transparency) directly to the APF DDR pad on the
 // 14.318 MHz machine clock. No M10K, no PSRAM, no clock-domain crossing.
 //
-// NOT part of the working core. Compiled only by apf_stream_video.qsf
-// (top entity apf_top_stream). The working path (core_top + apf_video)
-// is untouched.
+// Compiled by apf_apple2.qsf (top entity apf_top_apple2).
 //
 `default_nettype none
 

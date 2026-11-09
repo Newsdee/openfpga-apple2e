@@ -3,7 +3,7 @@ rem ---------------------------------------------------------------------------
 rem repackage.bat -- turn a freshly-compiled .rbf into the Pocket bitstream
 rem and stage it in the core dir. Run AFTER a successful:
 rem     cd /d %ROOT%\src\fpga
-rem     quartus_sh --flow compile apf_stream_video
+rem     quartus_sh --flow compile apf_apple2
 rem It: 1) re-reverses the .rbf to .rbf_r, 2) stages it into the core dir,
 rem      3) prints the SHA-256 so a stale card bitstream is detectable.
 rem Then copy the whole Newsdee.Apple2e dir to the Pocket SD card.
@@ -12,7 +12,7 @@ setlocal
 set "ROOT=%~dp0"
 set "ROOT=%ROOT:~0,-1%"
 
-set "RBF=%ROOT%\src\fpga\output_files_apple2e\apf_stream_video.rbf"
+set "RBF=%ROOT%\src\fpga\output_files_apple2e\apf_apple2.rbf"
 set "DEST=%ROOT%\sd_root\Cores\Newsdee.Apple2e\bitstream.rbf_r"
 set "PY=C:\msys64\ucrt64\bin\python.exe"
 set "SCRIPT=%ROOT%\tools\rbf2rbf_r.py"

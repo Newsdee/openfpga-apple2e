@@ -17,7 +17,7 @@ the SD card root. There is exactly **one** live core package:
 
 | Folder | Core | Video path |
 |---|---|---|
-| `Cores/Newsdee.Apple2e` | **the live core** (build `apf_stream_video`) | Phase 2 streaming: native 560×192 @ 14.318 MHz RGB → APF DDR pad, full-colour OSK, colour presets |
+| `Cores/Newsdee.Apple2e` | **the live core** (build `apf_apple2`) | Phase 2 streaming: native 560×192 @ 14.318 MHz RGB → APF DDR pad, full-colour OSK, colour presets |
 
 Historical packages (do not build or ship): the earlier frame-buffer core (1-bit machine
 video → APF 400×512 @ 12.288 MHz) and the Phase-1 colour-bar prototype
@@ -36,7 +36,7 @@ must keep DE contiguous.
 
 ```
 src/fpga/            ONE active Quartus project:
-  apf_stream_video.qsf   streaming core (top apf_top_st), OSK, M0 SDRAM
+  apf_apple2.qsf   the Apple IIe core (top apf_top_apple2), OSK, M0 SDRAM
                          storage, status overlay - the only build (2026-10-20)
   apf/                 APF shell (template, unmodified)
   core/apple2e/        streaming top (apf_stream_video_top.v + apf_stream_video.v),
@@ -51,29 +51,29 @@ sd_root/             SD-card staging: Cores/Newsdee.Apple2e (live),
                      Cores/Developer.Core Template (development), Platforms
 output/              generated bitstream.rbf_r (gitignored)
 tools/rbf2rbf_r.py   .rbf -> .rbf_r (bit-reversal) converter
-apf_stream_video_build.bat   THE build: compile apf_stream_video -> reverse ->
+apf_apple2_build.bat   THE build: compile apf_apple2 -> reverse ->
                             stage into sd_root/Cores/Newsdee.Apple2e
 ```
 
 ## Build (Windows, Quartus 17.0.2 on PATH)
 
 ```bat
-:: The single active build: compile apf_stream_video + reverse + stage
+:: The single active build: compile apf_apple2 + reverse + stage
 :: into sd_root\Cores\Newsdee.Apple2e (the only core package).
-apf_stream_video_build.bat
+apf_apple2_build.bat
 
 :: or compile in the Quartus UI:
-src\fpga\apf_stream_video.qsf
+src\fpga\apf_apple2.qsf
 ```
 
-There is exactly one Quartus project (`apf_stream_video`). The earlier projects (basicassets
+There is exactly one Quartus project (`apf_apple2`). The earlier projects (basicassets
 skeleton, P2a frame-buffer core, Phase-1 prototype) were retired 2026-10-20 into
 `archive/quartus-legacy/` — they shared the `output_files_apple2e` output directory and
 their stale RBFs/reports were a bitstream-provenance hazard. Build variants are parameters
-of `apf_stream_video` (e.g. `DEC2X`), not new projects. See `archive/quartus-legacy/README.md`.
+of `apf_apple2` (e.g. `DEC2X`), not new projects. See `archive/quartus-legacy/README.md`.
 
 Streaming-core packaging: reverse the fresh
-`src/fpga/output_files_apple2e/apf_stream_video.rbf` with `tools/rbf2rbf_r.py` and copy it
+`src/fpga/output_files_apple2e/apf_apple2.rbf` with `tools/rbf2rbf_r.py` and copy it
 to `sd_root/Cores/Newsdee.Apple2e/bitstream.rbf_r`. The build does both steps.
 
 ## Sim (MSYS2 UCRT64)
@@ -105,7 +105,7 @@ leftovers from the `open-fpga/core-template` origin and had silently drifted: ro
 `data.json` had an empty `data_slots` (no disk slot at all), root `interact.json` had
 no "Reboot on load" option, and root `video.json` still declared a 320×240 scaler mode
 that contradicts the shipping native 560×192 streaming path. Nothing ever read them —
-`apf_stream_video_build.bat` only checks that the `sd_root` copies exist, and
+`apf_apple2_build.bat` only checks that the `sd_root` copies exist, and
 `repackage.bat` only touches the bitstream — so they were removed on 2026-10-24 rather
 than synced, because two copies is how they drifted in the first place.
 

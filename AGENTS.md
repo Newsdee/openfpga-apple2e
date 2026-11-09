@@ -28,7 +28,7 @@ newest `docs/PLAN_*.md` and `docs/BRIEF_*_KICKOFF_*.md`.
    ~1 minute instead of ~30.
 4. **`sd_root/Cores/Newsdee.Apple2e/` is the single source of truth**
    for all core manifest JSONs. There are deliberately no copies at the repo root;
-   `apf_stream_video_build.bat` **fails the build** if one reappears.
+   `apf_apple2_build.bat` **fails the build** if one reappears.
 5. **Do not commit unless asked. Do not start a full Quartus compile unless asked**
    — the owner runs those.
 6. **Preserve unrelated uncommitted work.** Multiple agents have worked this tree
@@ -61,8 +61,8 @@ newest `docs/PLAN_*.md` and `docs/BRIEF_*_KICKOFF_*.md`.
 ## Repository map
 
 ```
-src/fpga/                     Quartus project (revision apf_stream_video, top apf_top_stream)
-  apf_stream_video.qsf        source list - register every new file here
+src/fpga/                     Quartus project (revision apf_apple2, top apf_top_apple2)
+  apf_apple2.qsf        source list - register every new file here
   apf/                        Analogue APF shell (bridge, pad, ddio, build_id_gen.tcl)
   core/apple2e/               Pocket-specific integration + glue  <-- edit here
   output_files_apple2e/       reports, .sof/.rbf
@@ -80,7 +80,7 @@ sd_root/                      EXACT card layout - copy to the Pocket SD root
 docs/                         plans, briefs, expert reviews, handovers
 refs/                         reference material: basicassets/, nes-pocket/
 check_machine_sync.sh         pinned-file parity check vs the donor
-apf_stream_video_build.bat    full compile + stage; errors on root-level manifests
+apf_apple2_build.bat    full compile + stage; errors on root-level manifests
 repackage.bat                 bitstream-only repackaging
 ```
 
@@ -105,7 +105,7 @@ Measured on this design, same size, different cache state:
 
 Quartus's A&S cache is invalidated for a changed module **and everything
 instantiated above it**. `core/apple2e/apf_stream_video_top.v` sits directly under
-`apf_top_stream`, so **any edit to it costs a full ~30-minute synthesis.** Editing a
+`apf_top_apple2`, so **any edit to it costs a full ~30-minute synthesis.** Editing a
 leaf module (`pdl_timer.v`, `sdram_status_overlay.v`) does not.
 
 Consequences:
@@ -230,18 +230,18 @@ proceeding.
 
 ### Stage the bitstream
 
-A successful compile writes `output_files_apple2e/apf_stream_video.rbf`, but the
+A successful compile writes `output_files_apple2e/apf_apple2.rbf`, but the
 **card copy is separate**: `sd_root/Cores/Newsdee.Apple2e/bitstream.rbf_r`.
 It is easy to finish a build and leave the card stale. After an accepted build,
 verify the staged file's mtime and size actually moved:
 
 ```bash
 ls -l --time-style=+%m-%d_%H:%M:%S \
-  src/fpga/output_files_apple2e/apf_stream_video.rbf \
+  src/fpga/output_files_apple2e/apf_apple2.rbf \
   sd_root/Cores/Newsdee.Apple2e/bitstream.rbf_r
 ```
 
-`apf_stream_video_build.bat` performs the copy and validates the manifests; prefer
+`apf_apple2_build.bat` performs the copy and validates the manifests; prefer
 it over ad-hoc copying.
 
 ## The RAM-inference trap (has cost hours twice)
@@ -400,7 +400,7 @@ bash ../eol_guard.sh                    # CR-count drift vs HEAD
 > a whole session of falsely-reported "eol_guard clean" results (2026-10-25).
 
 Known recurring drift, all from Quartus rewriting files with CRLF: `apf/build_id.mif`
-(regenerated every build), `apf_stream_video.qsf`, `tools/ram_repro/ram_repro.qsf`.
+(regenerated every build), `apf_apple2.qsf`, `tools/ram_repro/ram_repro.qsf`.
 Check whether the diff is pure EOL or carries real content (`--numstat` vs
 `--numstat --ignore-all-space`); the `.qsf` legitimately gains a line per newly
 registered source file. Decide consciously whether to keep or revert the EOL churn.
@@ -414,7 +414,7 @@ equality**, never a substring — a label like `:errmanifest` also matches
 `goto :errmanifest` and will corrupt the file. Remove temporary scripts before
 finishing.
 
-Quartus may rewrite `apf_stream_video.qsf`; review such changes and keep only
+Quartus may rewrite `apf_apple2.qsf`; review such changes and keep only
 intentional settings. `apf/build_id.mif` and `.qws` files churn as build noise.
 Note the workspace-root `AGENTS.md` is **not version controlled** (the root is not
 a repo), so edits to it leave no diff trail — state explicitly what was changed.

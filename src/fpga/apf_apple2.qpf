@@ -1,0 +1,20 @@
+# -------------------------------------------------------------------------- #
+#
+# Quartus Prime project for the Apple IIe Analogue Pocket core.
+#
+# Compiles apf_apple2.qsf (top entity apf_top_apple2), the working Apple IIe
+# core (CPU + native video + WOZ floppy + writable HDV). This is the shipping
+# project: apf_apple2_build.bat / repackage.bat build from it and stage
+# bitstream.rbf_r into sd_root\Cores\Newsdee.Apple2e.
+#
+# (Historically named apf_stream_video during the Phase 1 streaming work;
+# renamed 2026-11-09 to reflect the machine, not the video path.)
+#
+# -------------------------------------------------------------------------- #
+
+QUARTUS_VERSION = "18.1"
+DATE = "Apple IIe Pocket core"
+
+# Revisions
+
+PROJECT_REVISION = "apf_apple2"

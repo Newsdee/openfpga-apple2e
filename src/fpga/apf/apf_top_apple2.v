@@ -41,7 +41,7 @@
 
 `default_nettype none
 
-module apf_top_stream (
+module apf_top_apple2 (
 ///////////////////////////////////////////////////
 // clock inputs 74.25mhz. not phase aligned, so treat these domains as asynchronous
 
