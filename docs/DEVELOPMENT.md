@@ -139,6 +139,7 @@ Tracked, undated docs:
 | `docs/DEVELOPMENT.md` | this file — build, layout, sim, JSON-manifest rules, doc policy |
 | `docs/CHANGELOG.md` | release and milestone history |
 | `docs/HDV_WRITE_FIX.md` | technical root cause + fix for the 0.3.5 HDV write fix |
+| `docs/RESOURCE_UTILIZATION.md` | per-component ALM/M10K/DSP/pin breakdown (snapshot; refresh after a footprint change) |
 | `docs/HARDWARE_CAPTURE_CHECKLIST.md` | how to capture hardware evidence |
 | `docs/OSK_KEYBOARD_FLOOD.md` | on-screen keyboard behaviour and its limits |
 | `docs/POCKET_BOOT_HARNESS.md` | the `verilog/pocket_boot/` simulation harness |

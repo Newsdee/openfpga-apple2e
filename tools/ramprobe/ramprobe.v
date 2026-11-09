@@ -16,6 +16,15 @@
 //     config (same family/device/toolchain): unregistered outputs,
 //     NEW_DATA_NO_NBE_READ, port B address/indata/wrcontrol = CLOCK1.
 //
+//   ramprobe_z - EXACT hdv_bridge config (2026-11-08, EXPERT_BRIEF_M10K_LATENCY):
+//     128 x 32, BIDIR_DUAL_PORT, DUAL clock (clock0=74a, clock1=14a as two
+//     separate nets), width_byteena_a=4 / width_byteena_b=4, outdata_reg_a/b
+//     UNREGISTERED, address_reg_b=CLOCK1, address_reg_a omitted. This is the
+//     size/mode/clock the 512x8 single-clock probes (x/y) did NOT cover; the
+//     question is whether Port A Input Registers still resolves "yes" (1-cycle
+//     read) at 128x32 dual-clock, or drops to "no" (0-cycle) - which would
+//     explain why hdv_bridge (unlike hdd) shifted on silicon.
+//
 // All RAM ports are exposed at the top level so the fitter cannot prune the
 // data path (the hdd_dout 1-bit truncation bug is exactly the failure mode
 // this probe must not repeat).
@@ -153,6 +162,81 @@ module ramprobe_y (
     defparam u_ram.address_reg_b                = "CLOCK1";
     defparam u_ram.indata_reg_b                 = "CLOCK1";
     defparam u_ram.wrcontrol_wraddress_reg_b    = "CLOCK1";
+    defparam u_ram.clock_enable_input_a         = "BYPASS";
+    defparam u_ram.clock_enable_input_b         = "BYPASS";
+    defparam u_ram.clock_enable_output_a        = "BYPASS";
+    defparam u_ram.clock_enable_output_b        = "BYPASS";
+    defparam u_ram.outdata_aclr_a               = "NONE";
+    defparam u_ram.outdata_aclr_b               = "NONE";
+    defparam u_ram.power_up_uninitialized       = "TRUE";
+    defparam u_ram.intended_device_family       = "Cyclone V";
+    defparam u_ram.lpm_type                     = "altsyncram";
+endmodule
+
+// ----------------------------------------------------------------------------
+// ramprobe_z - EXACT hdv_bridge config: 128x32, BIDIR_DUAL_PORT, DUAL clock
+// (clock0 = 74a, clock1 = 14a as two separate nets), 4-bit byte enables, the
+// shipping hdv_bridge defparams. Probe the fitter RAM Summary row for:
+//   Port A Input Registers  (yes = 1-cycle Port A read; no = 0-cycle)
+//   Port A Output Registers (expected no)
+// All ports exposed so the fitter cannot prune the data path.
+// ----------------------------------------------------------------------------
+module ramprobe_z (
+    input         clk_a,             // 74a (port A / host + walk_out)
+    input         clk_b,             // 14a (port B / walk_in)
+    input  [6:0]  address_a,
+    input  [6:0]  address_b,
+    input  [31:0] data_a,
+    input  [31:0] data_b,
+    input         wren_a,
+    input         wren_b,
+    input  [3:0]  byteena_a,
+    input  [3:0]  byteena_b,
+    output [31:0] q_a,
+    output [31:0] q_b
+);
+    altsyncram u_ram (
+        .address_a        (address_a),
+        .address_b        (address_b),
+        .clock0           (clk_a),
+        .clock1           (clk_b),
+        .data_a           (data_a),
+        .data_b           (data_b),
+        .wren_a           (wren_a),
+        .wren_b           (wren_b),
+        .q_a              (q_a),
+        .q_b              (q_b),
+        .aclr0            (1'b0),
+        .aclr1            (1'b0),
+        .addressstall_a   (1'b0),
+        .addressstall_b   (1'b0),
+        .byteena_a        (byteena_a),
+        .byteena_b        (byteena_b),
+        .clocken0         (1'b1),
+        .clocken1         (1'b1),
+        .clocken2         (1'b1),
+        .clocken3         (1'b1),
+        .rden_a           (1'b1),
+        .rden_b           (1'b1),
+        .eccstatus        ()
+    );
+    defparam u_ram.operation_mode               = "BIDIR_DUAL_PORT";
+    defparam u_ram.numwords_a                   = 128;
+    defparam u_ram.numwords_b                   = 128;
+    defparam u_ram.widthad_a                    = 7;
+    defparam u_ram.widthad_b                    = 7;
+    defparam u_ram.width_a                      = 32;
+    defparam u_ram.width_b                      = 32;
+    defparam u_ram.width_byteena_a              = 4;
+    defparam u_ram.width_byteena_b              = 4;
+    // ---- config Z: exact hdv_bridge defparams (2026-11-08) ---------------
+    defparam u_ram.outdata_reg_a                = "UNREGISTERED";
+    defparam u_ram.outdata_reg_b                = "UNREGISTERED";
+    defparam u_ram.read_during_write_mode_port_a = "NEW_DATA_NO_NBE_READ";
+    defparam u_ram.read_during_write_mode_port_b = "NEW_DATA_NO_NBE_READ";
+    defparam u_ram.address_reg_b                = "CLOCK1";
+    // port A: address_reg_a / indata_reg_a / wrcontrol_wraddress_reg_a
+    //         OMITTED (probe the default - the open question)
     defparam u_ram.clock_enable_input_a         = "BYPASS";
     defparam u_ram.clock_enable_input_b         = "BYPASS";
     defparam u_ram.clock_enable_output_a        = "BYPASS";
