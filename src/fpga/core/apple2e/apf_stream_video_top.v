@@ -1024,20 +1024,39 @@ wire [7:0]  joy;
 // felt "floaty" on hardware (the paddle overshoots before you release, reading
 // as inertia), so use the donor 1 ms period - half the step rate, snappier stop.
 // Re-tune upward (fewer ms) if it's now too sluggish.
+// BRIEF_JOYSTICK_ABSOLUTE_OFFCENTER (2026-11-09): the Pocket pad reports the
+// analog axes UNSIGNED, centred on 0x80; the byte-pinned joystick_input port
+// expects SIGNED, centred on 0. Flip the MSB of each left-stick axis byte so
+// rest (0x80) maps to 0 (centre). GUARD: an all-zero cont1_joy means a
+// digital-only pad / no analog data and must stay CENTRE (0) - without the
+// guard, 0x00 ^ 0x80 = 0x80 = -128 = pegged, which would break every digital
+// pad. (Pattern: openfpga-PCXT core_top.sv:1088-1092.) Only the left stick is
+// fed to the module; the right-stick bytes [31:16] pass through unchanged.
+// (Assuming the 0x80 rest value per the owner's go-ahead to test this build; the
+// brief's Step-1 hardware measurement is still the confirmation path.)
+wire [31:0] cont1_joy_c = (cont1_joy_m == 32'd0) ? 32'd0
+                    : {cont1_joy_m[31:16],
+                       cont1_joy_m[15:8] ^ 8'h80,
+                       cont1_joy_m[7:0]  ^ 8'h80};
+// Analog X Center: 3-bit X-axis rest trim, synced into the machine domain
+// (the config word + synch_3 are declared below; this wire is forward-referenced
+// by the u_joy instantiation).
+wire [2:0] joy_xcenter_m;
 joystick_input #(.RELATIVE_UPDATE_CYCLES(143182)) u_joy (
     .clk(joy_clk),
     .reset(machine_reset),
     .joystick_digital(joy_dig),
     // BRIEF_JOY_RELATIVE_MODE: feed the live left-stick bytes (donor convention
     // analog[15:8]=X, analog[7:0]=Y; cont1_joy [7:0]=X [15:8]=Y) and the
-    // Relative-mode enable. In Absolute the module ignores the analog bytes
-    // (d-pad snaps the paddles) so this is inert by default.
-    .joystick_analog({cont1_joy_m[7:0], cont1_joy_m[15:8]}),
+    // Relative-mode enable. NOTE: in Absolute the analog stick IS the primary
+    // paddle source (the D-pad only OVERRIDES it); the old "inert by default"
+    // comment was false and is why the off-centre bug survived review.
+    .joystick_analog({cont1_joy_c[7:0], cont1_joy_c[15:8]}),
     .paddle(8'h0),
     .swap_axes(1'b0),
     .paddle_as_x(1'b0),
     .paddle_as_y(1'b0),
-    .x_center(3'd0),
+    .x_center(joy_xcenter_m),
     .relative_mode(joy_rel_m),   // 0=Absolute (default) 1=Relative ("Joystick Mode")
     .joy_an(joy_an),
     .joy(joy)
@@ -1088,6 +1107,7 @@ reg  [31:0] cfg_j2k_dir_word = 32'd0;
 reg  [31:0] cfg_j2k_btn_word = 32'd0;
 reg  [31:0] cfg_hdd_word     = 32'd0;   // "HDD" combined (0x01F00010): media + write-protect
 reg  [31:0] cfg_joy_mode_word = 32'd0;  // "Joystick Mode" (0x01F00014)
+reg  [31:0] cfg_joy_xcenter_word = 32'd0;  // "Analog X Center" (0x01F0001C)
 // Combined "HDD" option (0x01F00010, 0.3.5): merges "Boot Media" (0/1/2) and
 // the retired "HD Write Protect" (0x01F00018) into one 5-value word - "Floppy"
 // takes the HD off the bus, so write-protect is moot there:
@@ -1110,6 +1130,11 @@ always @(posedge clk_74a) begin
     // on silicon in the 2026-10-25 bisect).
     if (bridge_wr && bridge_addr == 32'h01F00014)
         cfg_joy_mode_word <= bridge_wr_data;
+    // Analog X Center (MiSTer donor parity): 3-bit X-axis rest trim, values 0..7
+    // -> offsets 0/-16/-32/-48/-64/-72/+32/+48 (see joystick_input.sv). write-only
+    // (same safe pattern - no read-back arm; the 01F00xxx wildcard stays proven).
+    if (bridge_wr && bridge_addr == 32'h01F0001C)
+        cfg_joy_xcenter_word <= bridge_wr_data;
 end
 // ---- Combined HDD decode (74a domain) ----
 // media (2 bits, feeds the existing media_m sync): 0/1->00, 2->01, 3/4->10,
@@ -1128,6 +1153,14 @@ wire       hdd_protect   = ~((hdd_val == 3'd1) | (hdd_val == 3'd4));
 wire joy_rel_m;
 synch_3 #(.WIDTH(1)) s_joy_rel (
     .i(cfg_joy_mode_word[0]), .o(joy_rel_m), .clk(clk_core_14318)
+);
+
+// Analog X Center (MiSTer donor parity): 3-bit X-axis rest trim, synced into the
+// machine domain (joystick_input runs on clk_core_14318). Multi-bit sync (WIDTH 3)
+// so all 3 bits change together (no skew). Values 0..7 -> offsets
+// 0/-16/-32/-48/-64/-72/+32/+48 (donor joystick_input.sv).
+synch_3 #(.WIDTH(3)) s_joy_xcenter (
+    .i(cfg_joy_xcenter_word[2:0]), .o(joy_xcenter_m), .clk(clk_core_14318)
 );
 
 // ---- .a2k profile slot (2026-10-27, joy2key Phase 2) ----
