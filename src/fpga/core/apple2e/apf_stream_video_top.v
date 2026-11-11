@@ -408,6 +408,13 @@ always @(*) begin
         // path, while 0x01F02xxx-0x01F0Fxxx fall to default: 0.
         bridge_rd_data <= cfg_reboot_word;
     end
+    // WORK ITEM 0 transport probe RETIRED (2026-11-10): the openFPGA savestate
+    // transport is proven (base 0x40000000, size in bytes, big-endian, plain host
+    // BRIDGE read; word-0 loss is the APF's own 1-word read buffer - see
+    // docs/EXPERT_BRIEF_SAVESTATE_PROBE_2026-11-09.md). The 0x40xxxxxx ramp and the
+    // 0x41xxxxxx diagnostics are gone; savestate_supported is 0 below so the host
+    // does not offer Memories until the real savestate_manager lands and re-enables
+    // it with a registered blob (sacrificial-leading-word layout).
     endcase
 end
 
@@ -464,7 +471,89 @@ end
     wire            savestate_load_busy;
     wire            savestate_load_ok;
     wire            savestate_load_err;
-    
+
+    // (Work item 0 probe diagnostic retired 2026-11-10 - see the 0x40xxxxxx note
+    // in the bridge_rd_data mux above; the transport is proven and the real
+    // savestate_manager will present its blob from a registered source.)
+
+    // ---- WORK ITEM 0 (transport probe, THROWAWAY) --------------------------
+    // The savestate query nets above were declared but never driven, so the
+    // host read savestate_supported=0 and never offered Memories. Drive them
+    // now and answer the start/load handshakes with an immediate ack+ok (no
+    // real capture yet). The "blob" is backed by a pure address-derived ramp
+    // in the bridge_rd_data mux (the 0x40xxxxxx arm below) - NO SDRAM, NO
+    // manager. Triggering Memories + hexdumping Saves/ proves the base
+    // address, the size units and the byte order in one shot before we build
+    // the SDRAM blob + the real savestate_manager.
+    // INTERNAL-ONLY probe (not a shipping feature): revert this block and the
+    // 0x40xxxxxx arm when the real manager lands.
+    // Work item 0 probe RETIRED (2026-11-10): savestate support is OFF until the
+    // real savestate_manager lands (it will drive these with a registered blob).
+    // Keeping them 0 keeps Memories greyed out (no zeroed-blob saves).
+    assign savestate_supported    = 1'b0;
+    assign savestate_addr         = 32'd0;
+    assign savestate_size         = 32'd0;
+    assign savestate_maxloadsize  = 32'd0;
+
+    // Probe response per the documented contract (core_bridge_cmd.v:65-69):
+    //   ack  - assert for >=1 cycle after the rising edge of start/load
+    //   busy - assert while "in progress" (a few cycles, so a poll can read rc 1)
+    //   ok   - assert CONTINUOUSLY once done, and CLEAR when a new process starts
+    //
+    // BUG fixed here (2026-11-09): the first version used `ok <= start` (a
+    // follower). That is NOT sticky - savestate_start is cleared in ST_IDLE right
+    // after ST_DONE_CODE, so ok fell immediately after the command completed and
+    // every subsequent 0x00A0 poll computed host_resultcode 0 (never "done").
+    // The host polls 0x00A0 "until completion" and timed out -> "state saved"
+    // then "save failed". Fix: latch ok high from the cycle after the rising
+    // edge and hold it until the next rising edge (a new process clears it).
+    // ack is asserted one cycle AFTER the rising edge (core_bridge_cmd transitions
+    // ST_DONE_CODE on ack, so by that cycle the sticky ok latch is already high
+    // and the completion latches resultcode 2 (done) - and it stays 2 on every
+    // later poll). err stays 0.
+    reg  savestate_start_ok_latch, savestate_start_d1;
+    reg [2:0] savestate_start_busy_cnt;
+    always @(posedge clk_74a) begin
+        savestate_start_d1 <= savestate_start;
+        if (savestate_start && !savestate_start_d1) begin
+            savestate_start_ok_latch <= 1'b0;   // new process: clear ok (contract)
+            savestate_start_busy_cnt <= 3'd0;
+        end else begin
+            if (savestate_start_ok_latch || savestate_start)
+                savestate_start_ok_latch <= 1'b1;   // sticky once started
+            if (savestate_start_busy_cnt != 3'd5)
+                savestate_start_busy_cnt <= savestate_start_busy_cnt + 3'd1;
+        end
+    end
+    // ack tracks the sticky ok latch: core_bridge_cmd transitions ST_DONE_CODE
+    // on ack, so by the time ack is high the ok latch is already set and the
+    // completion latches resultcode 2 (done) - and it stays 2 on every later
+    // poll (that is the whole fix; the old follower ok fell after ST_IDLE).
+    assign savestate_start_ack  = savestate_start_ok_latch;
+    assign savestate_start_busy = (savestate_start_busy_cnt >= 3'd1) && (savestate_start_busy_cnt < 3'd4);
+    assign savestate_start_ok   = savestate_start_ok_latch;
+    assign savestate_start_err  = 1'b0;
+
+    // load quartet: identical sticky-ok behavior (0x00A4 uses the same contract)
+    reg  savestate_load_ok_latch, savestate_load_d1;
+    reg [2:0] savestate_load_busy_cnt;
+    always @(posedge clk_74a) begin
+        savestate_load_d1 <= savestate_load;
+        if (savestate_load && !savestate_load_d1) begin
+            savestate_load_ok_latch <= 1'b0;
+            savestate_load_busy_cnt <= 3'd0;
+        end else begin
+            if (savestate_load_ok_latch || savestate_load)
+                savestate_load_ok_latch <= 1'b1;
+            if (savestate_load_busy_cnt != 3'd5)
+                savestate_load_busy_cnt <= savestate_load_busy_cnt + 3'd1;
+        end
+    end
+    assign savestate_load_ack  = savestate_load_ok_latch;
+    assign savestate_load_busy = (savestate_load_busy_cnt >= 3'd1) && (savestate_load_busy_cnt < 3'd4);
+    assign savestate_load_ok   = savestate_load_ok_latch;
+    assign savestate_load_err  = 1'b0;
+
     wire            osnotify_inmenu;
 
 // bridge target commands
