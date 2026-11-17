@@ -101,6 +101,7 @@ module tb_bridge_storage;
         .savestate_addr     ( 32'd0 ),
         .savestate_size     ( 32'd0 ),
         .savestate_maxloadsize ( 32'd0 ),
+        .savestate_status   ( 32'd0 ),   // 2026-11-14: diag reg, 0 here (dataslot TB)
         .osnotify_inmenu    ( osnotify_inmenu ),
         .savestate_start    ( savestate_start ),
         .savestate_start_ack ( 1'b0 ),

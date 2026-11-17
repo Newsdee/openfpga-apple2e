@@ -244,19 +244,56 @@ ls -l --time-style=+%m-%d_%H:%M:%S \
 `apf_apple2_build.bat` performs the copy and validates the manifests; prefer
 it over ad-hoc copying.
 
-## The RAM-inference trap (has cost hours twice)
+## The RAM-inference trap (has cost hours three times)
 
 Quartus 17 will not infer block RAM from idioms that simulate correctly. Observed
 here:
 
 - An async-clear idiom produced **1,053,672 registers** instead of RAM.
 - A write-sweep with a **muxed write address** produced fitter **Error 276003**.
+- **A second read consumer that can't fold into the single-port write-first
+  template** (2026-11-14, `apple2e_ram_bank.v` savestate-manager read) -
+  TWO distinct poisons, both hit the same day, both diagnosed by expert
+  review against `tools/ram_repro_matrix`:
+  1. *Duplicate*: the manager read used a DISTINCT address expression from
+     the machine read (`ram[ss_ram_addr]` vs `ram[m_ram_addr_s]`). Quartus
+     did not infer a dual-port M10K; it **duplicated each bank** into a
+     second M10K cluster (4 x 64KiB = 2,097,152 bits instead of 1,048,576)
+     - a deterministic A&S fallback when the second read port can't be
+     merged and memory looks sufficient - pushing device memory to 83% ->
+     fitter **Error 11802** (RAM blocks placed 0/308). A&S looked perfectly
+     healthy; only the per-hierarchy memory table shows it.
+  2. *Uninferred*: with the address expressions unified (all accesses share
+     one expression), the SECOND READ STATEMENT ITSELF was the poison:
+     `if (ss_ram_rd) mgr_ram_rdata <= bank ? ram_aux[A] : ram_main[A]` - a
+     read-enable unrelated to the write-enable feeding a destination shared
+     across two arrays through a bank mux. Quartus's single-port write-first
+     template matcher can't fold it and emits the generic **276007
+     "uninferred due to asynchronous read logic"** on BOTH banks (the wording
+     is misleading - the read is synchronous in the source) -> register
+     explosion -> **A&S Error 276003**. A second same-address read with a
+     PRIVATE register (matrix u_g) or a distinct-address TDP read (u_h/u_j)
+     are untested until the 2026-11-14 matrix extension (u_g..u_j) runs.
+  Working shapes for a second reader (pending matrix verdict): the manager
+  read at its OWN address in a separate always block (TDP shape, u_j) if it
+  infers; otherwise explicit `altsyncram` TDP per bank (Option C - the repo's
+  proven 17.0.2-legal parameter templates apply: omit `ADDRESS_REG_*` /
+  `WRCONTROL_*` for unregistered, `"UNREGISTERED"` only legal for
+  `OUTDATA_REG_*`, write-first via fabric bypass on `q_a` NOT RDW params).
+  Verify RAM count in the map report's per-hierarchy memory table after any
+  edit near a RAM - especially when a previously-pruned client goes live
+  (pruned clients silently shrink the inferred port count: a design can fit
+  with a dead path and not fit with the same module alive).
 
 Proven-good shapes are in `tools/ram_repro_plain` and `tools/ram_repro_init`
-(3 registers, 524,288 block memory bits). Rule of thumb from `tools/ram_repro_matrix`:
-**a muxed write ADDRESS breaks inference; muxed DATA or an OR'd ENABLE are fine.**
-The shipping RAM-clear uses a bus-overlay sweep (`ram_sweep_ctl.v`) driving
-we/addr/aux through the normal bus so the RAM block stays plain single-port.
+(3 registers, 524,288 block memory bits). Precise rule from `tools/ram_repro_matrix`
+(corrected 2026-11-14 per expert review of the failing `m_mux_addr` case):
+**the poison is WRITE and READ using DIFFERENT address expressions on the same
+array** (`ram[wr_addr]` write vs `ram[waddr]` read). A MUXED address that BOTH
+the write and the read use (the October sweep shape, `m_ram_addr_f`) infers
+fine; muxed write DATA or an OR'd write ENABLE are fine.
+(The shipping RAM-clear works exactly this way: the sweep muxes the address
+on the _f nets, and the read uses the identical _f expression.)
 
 Symptom of the failure mode: a compile that runs for **hours** in the Fitter, not
 minutes. If the Fitter is thrashing, check the register count in `map.summary`
@@ -368,6 +405,21 @@ Environment facts (all previously cost time; see workspace-root `AGENTS.md`):
 - Export `VERILATOR_ROOT`, put `C:\msys64\ucrt64\bin` on `PATH`, and call
   `verilator_bin.exe` directly (the Perl wrapper is broken under MINGW64 Perl).
 - Run exes with CWD at the repo root — DUT `$readmemh` paths are CWD-relative.
+  The savestate TBs specifically need `verilog/real_1157_blob.hex` and
+  `verilog/rtl/roms/*.hex`; running the exe from `obj_dir/...` makes
+  `$readmemh` silently load all-zero data (Verilator prints
+  `%Warning: <file>:0: $readmem file not found`) and the sim then looks like
+  "writes never land" (2026-11-17, cost hours). The `run_tb_*.sh` runners
+  enforce the correct CWD — prefer them over manual exe invocation, and check
+  run logs for `$readmem file not found` before trusting data-level results.
+- **Any DUT port-list change must sweep ALL harness instantiations** (2026-11-17,
+  `word_op_start` lesson): TBs that instantiate the module DIRECTLY (not via a
+  wrapper like `sdram_storage`) silently keep the old port list; Verilator
+  ties the unconnected input to 0 (PINMISSING) and the resulting failure
+  appears far from the cause (a "catastrophic G0" that was actually an
+  unconnected `word_op_start`). After adding/removing a DUT port:
+  `grep -l "<module> " verilog/tb/*.sv`, wire the port in each, and check the
+  build log for `%Warning-PINMISSING`.
 - **Host AV kills freshly linked C++ exes.** Chain `rm <exe> && make && <exe>` in
   one command and run the most important tests first. If a one-line probe compile
   exits 1 with no output and no stderr, the AV block is active: stop retrying, fall

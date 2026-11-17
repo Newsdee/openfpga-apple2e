@@ -150,3 +150,10 @@ verilog/tb/*.log
 
 # --- HDV write-corruption debugging scratch (2026-11-07; scripts + report + HDV images) ---
 scratch_hdv_corrupt/
+
+# Verilator ladder build trees (obj_rr_* - standalone run_m0m1_regress runs)
+verilog/obj_rr_*/
+# Minirepro ledger outputs (regenerated per run; can be 100s of MB)
+verilog/ledger_g*.csv
+# Runtime-staged ROMs (run_tb_savestate_integration.sh copies from src/fpga/rtl/roms/)
+verilog/rtl/

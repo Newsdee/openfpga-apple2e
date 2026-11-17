@@ -41,7 +41,16 @@
 
 `default_nettype none
 
-module apf_top_apple2 (
+module apf_top_apple2
+    ///////////////////////////////////////////////////
+    // 2026-11-15 savestate-phase diagnostic switch. 1'b1 = build with the
+    // on-screen debug overlay (SS progress line + other debug lines) so a
+    // hardware save failure can be photographed. REVERT TO 1'b0 BEFORE ANY
+    // SHIPPING BUILD - a shipping core must not draw debug text.
+    #(
+        parameter OVL_SS_DIAG = 1'b1
+    ) (
+
 ///////////////////////////////////////////////////
 // clock inputs 74.25mhz. not phase aligned, so treat these domains as asynchronous
 
@@ -346,7 +355,7 @@ io_bridge_peripheral ibs (
 ///////////////////////////////////////////////////
 // instantiate the user core top-level
 
-stream_video_core_top ic (
+stream_video_core_top #(.OVL_SS_DIAG(OVL_SS_DIAG)) ic (
 
     // physical connections 
     //

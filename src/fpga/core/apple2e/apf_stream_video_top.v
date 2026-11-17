@@ -303,21 +303,35 @@ wire [1:0] mono_mode_sel  = colour_opt_m[1:0] + 2'd1;
 wire [1:0] display_mode_m  = colour_on_m ? 2'b00 : mono_mode_sel;
 wire [1:0] comp_preset_m   = colour_on_m ? colour_opt_m[1:0] : 2'b00;
 
-// cart is unused, so set all level translators accordingly
-// directions are 0:IN, 1:OUT
-assign cart_tran_bank3 = 8'hzz;
-assign cart_tran_bank3_dir = 1'b0;
+// dev key (cart slot) debug channel, 2026-11-15: the dev-key dongle maps
+// LED=cart_tran_bank0[5], UART TX=cart_tran_bank0[6], UART RX=pin31,
+// button=bank3[0] (inverted). debug_key.v drives the pads; devkey_uart.v
+// (74a) provides the 115200 tracer + savestate event lines. Bits [4]/[7]
+// of bank0 are constant outputs (tied high per the plan doc). See
+// DEVKEY_UART_INTEGRATION_2026-11-14.md.
+wire dk_uart_tx, dk_uart_rx, dk_led_s, dk_button;
+assign cart_tran_bank0[4] = 1'b1;
+assign cart_tran_bank0[7] = 1'b1;
+debug_key u_debug_key (
+    .clk                ( clk_74a ),
+    .cart_tran_bank0    ( cart_tran_bank0 ),
+    .cart_tran_bank0_dir( cart_tran_bank0_dir ),
+    .cart_tran_bank3    ( cart_tran_bank3 ),
+    .cart_tran_bank3_dir( cart_tran_bank3_dir ),
+    .cart_tran_pin31    ( cart_tran_pin31 ),
+    .cart_tran_pin31_dir( cart_tran_pin31_dir ),
+    .led                ( dk_led_s ),
+    .button             ( dk_button ),
+    .uart_tx            ( dk_uart_tx ),
+    .uart_rx            ( dk_uart_rx )
+);
 assign cart_tran_bank2 = 8'hzz;
 assign cart_tran_bank2_dir = 1'b0;
 assign cart_tran_bank1 = 8'hzz;
 assign cart_tran_bank1_dir = 1'b0;
-assign cart_tran_bank0 = 4'hf;
-assign cart_tran_bank0_dir = 1'b1;
 assign cart_tran_pin30 = 1'b0;      // reset or cs2, we let the hw control it by itself
 assign cart_tran_pin30_dir = 1'bz;
 assign cart_pin30_pwroff_reset = 1'b0;  // hardware can control this
-assign cart_tran_pin31 = 1'bz;      // input
-assign cart_tran_pin31_dir = 1'b0;  // input
 
 // link port is unused, set to input only to be safe
 // each bit may be bidirectional in some applications
@@ -408,6 +422,12 @@ always @(*) begin
         // path, while 0x01F02xxx-0x01F0Fxxx fall to default: 0.
         bridge_rd_data <= cfg_reboot_word;
     end
+    32'h40xxxxxx: begin
+        // W1 savestate blob window (0x40000000-0x40ffffff): the registered
+        // response from savestate_bridge (word-0 preloaded after each save -
+        // fixes the APF bridge's 1-word read-buffer first-burst loss).
+        bridge_rd_data <= br_rd_data;
+    end
     // WORK ITEM 0 transport probe RETIRED (2026-11-10): the openFPGA savestate
     // transport is proven (base 0x40000000, size in bytes, big-endian, plain host
     // BRIDGE read; word-0 loss is the APF's own 1-word read buffer - see
@@ -487,72 +507,301 @@ end
     // the SDRAM blob + the real savestate_manager.
     // INTERNAL-ONLY probe (not a shipping feature): revert this block and the
     // 0x40xxxxxx arm when the real manager lands.
-    // Work item 0 probe RETIRED (2026-11-10): savestate support is OFF until the
-    // real savestate_manager lands (it will drive these with a registered blob).
-    // Keeping them 0 keeps Memories greyed out (no zeroed-blob saves).
-    assign savestate_supported    = 1'b0;
-    assign savestate_addr         = 32'd0;
-    assign savestate_size         = 32'd0;
-    assign savestate_maxloadsize  = 32'd0;
+    // W1 (2026-11-12): real savestate_manager (PLAN_SAVESTATES_2026-11-09
+    // phase 3; EXPERT_BRIEF_SAVESTATE_MANAGER_2026-11-11). The host's
+    // 0x00A0/0x00A4 handshake is implemented by savestate_slot (the same
+    // sticky-ok contract the probe proved, now driven by the real manager);
+    // the blob lives in SDRAM word 0x400000 behind savestate_bridge's
+    // registered response (word-0 preload fixes the APF bridge's 1-word
+    // read-buffer first-burst loss).
+    wire        ss_stall, ss_machine_ce;
+    wire [9:0]  ss_ss_addr;
+    wire [63:0] ss_wdata, ss_rdata;
+    wire        ss_wren;
+    wire        ss_ram_bank;
+    wire [15:0] ss_ram_addr;
+    wire        ss_ram_rd, ss_ram_wr;
+    wire [7:0]  ss_ram_wdata;
+    wire        ss_ssrd_req;  wire [23:0] ss_ssrd_addr; wire ss_ssrd_done; wire [31:0] ss_ssrd_data;
+    wire        ss_sswr_req;  wire [23:0] ss_sswr_addr; wire [31:0] ss_sswr_data;
+    wire        ss_sswr_done, ss_sswr_busy;
+    wire        ss_port_wr_idle;
+    wire        ss_preload_req; wire ss_preload_done_74a;
+    wire [31:0] br_rd_data;   wire br_wr_drained_74a;
+    wire        br_rd_overflow_74a, br_wr_overflow_74a;
+    wire        ss_hr_req;    wire [23:0] ss_hr_addr; wire ss_hr_done; wire [31:0] ss_hr_data;
+    wire        br_hwr_req;   wire [23:0] br_hwr_addr; wire [31:0] br_hwr_data;
+    wire        br_hwr_done, br_hwr_busy;
+    wire        cpu_frozen;
 
-    // Probe response per the documented contract (core_bridge_cmd.v:65-69):
-    //   ack  - assert for >=1 cycle after the rising edge of start/load
-    //   busy - assert while "in progress" (a few cycles, so a poll can read rc 1)
-    //   ok   - assert CONTINUOUSLY once done, and CLEAR when a new process starts
-    //
-    // BUG fixed here (2026-11-09): the first version used `ok <= start` (a
-    // follower). That is NOT sticky - savestate_start is cleared in ST_IDLE right
-    // after ST_DONE_CODE, so ok fell immediately after the command completed and
-    // every subsequent 0x00A0 poll computed host_resultcode 0 (never "done").
-    // The host polls 0x00A0 "until completion" and timed out -> "state saved"
-    // then "save failed". Fix: latch ok high from the cycle after the rising
-    // edge and hold it until the next rising edge (a new process clears it).
-    // ack is asserted one cycle AFTER the rising edge (core_bridge_cmd transitions
-    // ST_DONE_CODE on ack, so by that cycle the sticky ok latch is already high
-    // and the completion latches resultcode 2 (done) - and it stays 2 on every
-    // later poll). err stays 0.
-    reg  savestate_start_ok_latch, savestate_start_d1;
-    reg [2:0] savestate_start_busy_cnt;
+    // ---- savestate diagnostics (2026-11-14) -> host-readable 0x4C ----
+    wire        ss_dbg_stall;
+    wire [3:0]  ss_dbg_retry;
+    wire [15:0] ss_dbg_word;
+    wire [8:0]  br_dbg_rd_hw;
+    wire        ss_busy_any = savestate_start_busy || savestate_load_busy;
+    wire        ss_done_any = savestate_start_ok   || savestate_load_ok;
+
+    // ---- 2026-11-16 savestate SSD/SSX serial debug (REVERT for shipping) ----
+    // The sswr/ssrd handshake lives in the sdram_ctrl_clk domain (slot FSMs
+    // on clk_ctrl; owner/port on ctrl_clk). A 1-cycle ctrl pulse is 7.5 ns
+    // vs a 13.5 ns 74a cycle, so the top cannot sample these in 74a and
+    // per-bit 2FF syncs would tear. Counters + edge detectors below are
+    // ctrl-domain; a frozen snapshot crosses to 74a once per ~10 Hz tick
+    // via a toggle handshake (EXPERT_BRIEF_SAVESTATE_SERIAL_DEBUG_
+    // PROPOSAL_2026-11-16 §B, review corrections applied).
+    wire [15:0] ss_dbg_slot_state;      // slot: mgr/st/retry/stall/inflight
+    wire [15:0] ss_dbg_storage_state;   // storage: port/owner state word
+
+    // Per-op progress counters (ctrl domain). Signal semantics (verified in
+    // RTL, do not assume symmetry):
+    //  sswr_req  = 1-cycle attempt pulse; retry re-pulses inflate it, so req
+    //              may exceed the accepted-op count by design (visible
+    //              retry pressure at the save tail)
+    //  sswr_done = 1-cycle pulse per completed op (owner word_done & SS_WR)
+    //  ssrd_req  = state level; falls/re-rises between a slot word's two
+    //              halves -> count RISING edges only (one per half-word op)
+    //  ssrd_done = 1-FF level held while ssrd_req (clears in the GAP) ->
+    //              count RISING edges only (one per half-word completion)
+    // Expected totals (128 KB RAM): save = (16 hdr + 11 reg + 16384 ram)
+    // x 2 = 32822 = 0x8036 SDRAM words; load = (2 hdr + 11 + 16384) x 2
+    // = 32794 = 0x801A. The blob ALLOCATION is 32832 = 0x8040 (5 reserved
+    // slot words the manager never writes).
+    reg [19:0] ssd_wr_req_c, ssd_wr_done_c, ssd_rd_req_c, ssd_rd_done_c;
+    reg        ssd_rd_req_d, ssd_rd_done_d;
+    reg        ss_busy_c0, ss_busy_c1, ss_busy_c2;   // busy sync (mach->ctrl)
+    reg [7:0]  ssd_cmd_c0, ssd_cmd_c1;               // cmd ctr sync (74a->ctrl)
+
+    // sticky: host command arriving while an op is already busy (the
+    // save-#4-during-#3-hang case). 74a domain: command pulses are 74a;
+    // busy is a slow level synced from the machine domain.
+    reg        savestate_start_d, savestate_load_d;
+    reg        ss_busy_74a_c0, ss_busy_74a_c1;
+    reg [7:0]  ssd_cmd_busy_c;
     always @(posedge clk_74a) begin
-        savestate_start_d1 <= savestate_start;
-        if (savestate_start && !savestate_start_d1) begin
-            savestate_start_ok_latch <= 1'b0;   // new process: clear ok (contract)
-            savestate_start_busy_cnt <= 3'd0;
+        savestate_start_d <= savestate_start;
+        savestate_load_d  <= savestate_load;
+        ss_busy_74a_c1 <= ss_busy_74a_c0;
+        ss_busy_74a_c0 <= ss_busy_any;
+        if (((savestate_start && !savestate_start_d) ||
+             (savestate_load  && !savestate_load_d)) && ss_busy_74a_c1)
+            ssd_cmd_busy_c <= (ssd_cmd_busy_c == 8'hFF) ? ssd_cmd_busy_c
+                                                        : ssd_cmd_busy_c + 8'd1;
+    end
+
+    always @(posedge sdram_ctrl_clk) begin
+        if (sdram_path_rst) begin
+            ssd_wr_req_c <= 20'd0; ssd_wr_done_c <= 20'd0;
+            ssd_rd_req_c <= 20'd0; ssd_rd_done_c <= 20'd0;
+            ssd_rd_req_d <= 1'b0; ssd_rd_done_d <= 1'b0;
+            ss_busy_c0 <= 1'b0; ss_busy_c1 <= 1'b0; ss_busy_c2 <= 1'b0;
+            ssd_cmd_c0 <= 8'd0;  ssd_cmd_c1 <= 8'd0;
         end else begin
-            if (savestate_start_ok_latch || savestate_start)
-                savestate_start_ok_latch <= 1'b1;   // sticky once started
-            if (savestate_start_busy_cnt != 3'd5)
-                savestate_start_busy_cnt <= savestate_start_busy_cnt + 3'd1;
+            // counters reset on manager ACCEPT (busy rising edge, synced),
+            // NOT on the host command pulse - a command arriving while busy
+            // must not zero the hanging op's evidence
+            ss_busy_c2 <= ss_busy_c1;
+            ss_busy_c1 <= ss_busy_c0;
+            ss_busy_c0 <= ss_busy_any;
+            if (ss_busy_c1 && !ss_busy_c2) begin
+                ssd_wr_req_c <= 20'd0; ssd_wr_done_c <= 20'd0;
+                ssd_rd_req_c <= 20'd0; ssd_rd_done_c <= 20'd0;
+            end else begin
+                if (ss_sswr_req)
+                    ssd_wr_req_c <= (ssd_wr_req_c == 20'hFFFFF) ? ssd_wr_req_c
+                                                               : ssd_wr_req_c + 20'd1;
+                if (ss_sswr_done)
+                    ssd_wr_done_c <= (ssd_wr_done_c == 20'hFFFFF) ? ssd_wr_done_c
+                                                                 : ssd_wr_done_c + 20'd1;
+                if (ss_ssrd_req && !ssd_rd_req_d)
+                    ssd_rd_req_c <= (ssd_rd_req_c == 20'hFFFFF) ? ssd_rd_req_c
+                                                               : ssd_rd_req_c + 20'd1;
+                if (ss_ssrd_done && !ssd_rd_done_d)
+                    ssd_rd_done_c <= (ssd_rd_done_c == 20'hFFFFF) ? ssd_rd_done_c
+                                                                 : ssd_rd_done_c + 20'd1;
+            end
+            ssd_rd_req_d  <= ss_ssrd_req;
+            ssd_rd_done_d <= ss_ssrd_done;
+            ssd_cmd_c1 <= ssd_cmd_c0;
+            ssd_cmd_c0 <= ssd_cmd_busy_c;   // rare changes; a torn increment
+                                            // cycle costs one snapshot only
         end
     end
-    // ack tracks the sticky ok latch: core_bridge_cmd transitions ST_DONE_CODE
-    // on ack, so by the time ack is high the ok latch is already set and the
-    // completion latches resultcode 2 (done) - and it stays 2 on every later
-    // poll (that is the whole fix; the old follower ok fell after ST_IDLE).
-    assign savestate_start_ack  = savestate_start_ok_latch;
-    assign savestate_start_busy = (savestate_start_busy_cnt >= 3'd1) && (savestate_start_busy_cnt < 3'd4);
-    assign savestate_start_ok   = savestate_start_ok_latch;
-    assign savestate_start_err  = 1'b0;
 
-    // load quartet: identical sticky-ok behavior (0x00A4 uses the same contract)
-    reg  savestate_load_ok_latch, savestate_load_d1;
-    reg [2:0] savestate_load_busy_cnt;
-    always @(posedge clk_74a) begin
-        savestate_load_d1 <= savestate_load;
-        if (savestate_load && !savestate_load_d1) begin
-            savestate_load_ok_latch <= 1'b0;
-            savestate_load_busy_cnt <= 3'd0;
+    // Frozen snapshot + toggle handshake (ctrl domain). Captured on a ~10 Hz
+    // ctrl tick, toggled on the same edge (payload valid from the next cycle;
+    // the 3FF below sees it settled), held frozen until the next tick.
+    wire [127:0] ssd_snap_src = {
+        8'd0,                    // [127:120] spare
+        ssd_cmd_c1,              // [119:112] cmd-while-busy
+        ssd_wr_req_c,            // [111:92]  save req attempts
+        ssd_wr_done_c,           // [91:72]   save done
+        ssd_rd_req_c,            // [71:52]   load req (rising edges)
+        ssd_rd_done_c,           // [51:32]   load done (rising edges)
+        ss_dbg_storage_state,    // [31:16]   port/owner state word
+        ss_dbg_slot_state         // [15:0]    mgr/slot state word
+    };
+    reg [127:0] ssd_snap_r;
+    reg         ssd_snap_tog_c;
+    reg [16:0]  ssd_tick_c;
+    wire        ssd_tick = (ssd_tick_c == 17'd13182);  // ~10.1 Hz at 133.12 MHz
+    always @(posedge sdram_ctrl_clk) begin
+        if (sdram_path_rst) begin
+            ssd_snap_r <= 128'd0; ssd_snap_tog_c <= 1'b0; ssd_tick_c <= 17'd0;
         end else begin
-            if (savestate_load_ok_latch || savestate_load)
-                savestate_load_ok_latch <= 1'b1;
-            if (savestate_load_busy_cnt != 3'd5)
-                savestate_load_busy_cnt <= savestate_load_busy_cnt + 3'd1;
+            if (ssd_tick) begin
+                ssd_tick_c <= 17'd0;
+                ssd_snap_r     <= ssd_snap_src;
+                ssd_snap_tog_c <= ~ssd_snap_tog_c;
+            end else begin
+                ssd_tick_c <= ssd_tick_c + 17'd1;
+            end
         end
     end
-    assign savestate_load_ack  = savestate_load_ok_latch;
-    assign savestate_load_busy = (savestate_load_busy_cnt >= 3'd1) && (savestate_load_busy_cnt < 3'd4);
-    assign savestate_load_ok   = savestate_load_ok_latch;
-    assign savestate_load_err  = 1'b0;
+
+    // 74a side of the crossing: 3FF on the toggle, latch the payload on the
+    // sampled rising edge (frozen >= 3 ctrl cycles, stable ~100 ms).
+    reg        ssd_tog_s0, ssd_tog_s1, ssd_tog_s2, ssd_tog_s2_d;
+    reg [127:0] ssd_snap_74;
+    always @(posedge clk_74a) begin
+        ssd_tog_s2 <= ssd_tog_s1;
+        ssd_tog_s1 <= ssd_tog_s0;
+        ssd_tog_s0 <= ssd_snap_tog_c;
+        ssd_tog_s2_d <= ssd_tog_s2;
+        if (ssd_tog_s2 && !ssd_tog_s2_d)
+            ssd_snap_74 <= ssd_snap_r;
+    end
+
+    // dev-key UART tracer (74a): observes live savestate save/load phases
+    // on hardware (the host side only sees busy/timeout). See
+    // DEVKEY_UART_INTEGRATION_2026-11-14.md and devkey_uart.v.
+    // DISCOVERY diagnostics (31 Hz /RD blink, A0-edge flash, /CS2 drive)
+    // ran once in the 23:07 discovery build and were REVERTED 2026-11-15
+    // after the finger fingerprint came up negative — see
+    // builds/2026-11-15_2307_discovery/NOTE.md. Re-enable
+    // #(.DISCOVERY(1)) only for a future board with correct UART routing.
+    // 2026-11-16: LED_TX=1 diagnostic — mirrors the uart_tx stream on the
+    // LED finger (/RD, bank0[5]) in addition to /WR. The discovery build
+    // proved A0 floats/storms and the old combinational LED re-radiated it
+    // (the 5.76 kHz "wall"); with the registered/debounced LED the /RD pad
+    // is clean, and if this dongle's CP210x RXD is on the /RD net the probe
+    // will finally decode the ID wall. REVERT (LED_TX=0) for shipping.
+    devkey_uart #(
+        .LED_TX   ( 1 )
+    ) u_devkey_uart (
+        .clk        ( clk_74a ),
+        .rst        ( ~reset_n ),
+        .ss_start   ( savestate_start ),
+        .ss_load    ( savestate_load ),
+        .ss_busy    ( ss_busy_any ),
+        .ss_ok      ( ss_done_any ),
+        .ss_err     ( savestate_start_err || savestate_load_err ),
+        .ss_status  ( savestate_status ),
+        .button     ( dk_button ),
+        .uart_rx    ( dk_uart_rx ),
+        .uart_tx    ( dk_uart_tx ),
+        .led        ( dk_led_s ),
+        .ssd_snap   ( ssd_snap_74 )            // 2026-11-16 SSD/SSX (REVERT)
+    );
+    // Layout (see core_bridge_cmd host_4C comment):
+    //   [15:0] word  [16] done  [17] busy  [18] stall
+    //   [19] rd_ovf  [20] wr_ovf  [24:21] retry  [28:25] rd_hw  [31:29] 0
+    wire [31:0] savestate_status = {
+        3'd0,
+        br_dbg_rd_hw[3:0],
+        ss_dbg_retry,
+        br_wr_overflow_74a,
+        br_rd_overflow_74a,
+        ss_dbg_stall,
+        ss_busy_any,
+        ss_done_any,
+        ss_dbg_word
+    };
+
+    savestate_slot ss_slot (
+        .clk_74a              ( clk_74a ),
+        .rst_74a              ( sdram_path_rst ),
+        .savestate_start      ( savestate_start ),
+        .savestate_load       ( savestate_load ),
+        .blob_wr_drained_74a  ( br_wr_drained_74a ),
+        .savestate_start_ack  ( savestate_start_ack ),
+        .savestate_start_busy ( savestate_start_busy ),
+        .savestate_start_ok   ( savestate_start_ok ),
+        .savestate_start_err  ( savestate_start_err ),
+        .savestate_load_ack   ( savestate_load_ack ),
+        .savestate_load_busy  ( savestate_load_busy ),
+        .savestate_load_ok    ( savestate_load_ok ),
+        .savestate_load_err   ( savestate_load_err ),
+        .preload_req          ( ss_preload_req ),
+        .clk_mach             ( clk_core_14318 ),
+        .rst_mach             ( ~machine_reset ),
+        .cpu_type             ( 1'b1 ),          // 65C02 (machine .cpu)
+        .cpu_frozen           ( cpu_frozen ),
+        .stall                ( ss_stall ),
+        .machine_ce           ( ss_machine_ce ),
+        .ss_addr              ( ss_ss_addr ),
+        .ss_wdata             ( ss_wdata ),
+        .ss_wren              ( ss_wren ),
+        .ss_rdata             ( ss_rdata ),
+        .ram_bank             ( ss_ram_bank ),
+        .ram_addr             ( ss_ram_addr ),
+        .ram_rd               ( ss_ram_rd ),
+        .ram_wr               ( ss_ram_wr ),
+        .ram_wdata            ( ss_ram_wdata ),
+        .ram_rdata            ( mgr_ram_rdata ),
+        .clk_ctrl             ( sdram_ctrl_clk ),
+        .rst_ctrl             ( ~sdram_path_rst ),
+        .ssrd_req             ( ss_ssrd_req ),
+        .ssrd_addr            ( ss_ssrd_addr ),
+        .ssrd_done            ( ss_ssrd_done ),
+        .ssrd_data            ( ss_ssrd_data ),
+        .sswr_req             ( ss_sswr_req ),
+        .sswr_addr            ( ss_sswr_addr ),
+        .sswr_data            ( ss_sswr_data ),
+        .sswr_done            ( ss_sswr_done ),
+        .sswr_busy            ( ss_sswr_busy ),
+        .port_wr_idle         ( ss_port_wr_idle ),
+        .dbg_sswr_stall       ( ss_dbg_stall ),
+        .dbg_sswr_retry       ( ss_dbg_retry ),
+        .dbg_word_idx         ( ss_dbg_word ),
+        .dbg_ss_state         ( ss_dbg_slot_state )   // 2026-11-16 SSD/SSX (REVERT)
+    );
+
+    savestate_bridge ss_bridge (
+        .clk_74a              ( clk_74a ),
+        .rst_74a              ( sdram_path_rst ),
+        .bridge_rd            ( bridge_rd ),
+        .bridge_wr            ( bridge_wr ),
+        .bridge_addr          ( bridge_addr ),
+        .bridge_wr_data       ( bridge_wr_data ),
+        .preload_req          ( ss_preload_req ),
+        .rd_data              ( br_rd_data ),
+        .preload_done_74a     ( ss_preload_done_74a ),
+        .wr_drained_74a       ( br_wr_drained_74a ),
+        .rd_overflow_74a      ( br_rd_overflow_74a ),
+        .wr_overflow_74a      ( br_wr_overflow_74a ),
+        .dbg_rd_hw            ( br_dbg_rd_hw ),
+        .clk_ctrl             ( sdram_ctrl_clk ),
+        .rst_ctrl             ( ~sdram_path_rst ),
+        .hr_req               ( ss_hr_req ),
+        .hr_addr              ( ss_hr_addr ),
+        .hr_done              ( ss_hr_done ),
+        .hr_data              ( ss_hr_data ),
+        .hwr_req              ( br_hwr_req ),
+        .hwr_addr             ( br_hwr_addr ),
+        .hwr_data             ( br_hwr_data ),
+        .hwr_done             ( br_hwr_done ),
+        .hwr_busy             ( br_hwr_busy ),
+        .port_wr_idle         ( ss_port_wr_idle )
+    );
+
+    // Blob: 131,328 bytes (32,832 SDRAM words) at SDRAM word 0x400000
+    // (16 MB); BRIDGE base 0x40000000. maxloadsize = blob + the host's
+    // extra leading word + header margin (host reads w1+4 bytes).
+    assign savestate_supported    = 1'b1;
+    assign savestate_addr         = 32'h4000_0000;
+    assign savestate_size         = 32'd131328;
+    assign savestate_maxloadsize  = 32'd135424;
 
     wire            osnotify_inmenu;
 
@@ -632,6 +881,7 @@ core_bridge_cmd icb (
     .savestate_addr         ( savestate_addr ),
     .savestate_size         ( savestate_size ),
     .savestate_maxloadsize  ( savestate_maxloadsize ),
+    .savestate_status       ( savestate_status ),
 
     .savestate_start        ( savestate_start ),
     .savestate_start_ack    ( savestate_start_ack ),
@@ -763,57 +1013,37 @@ end
 // (reboot_ctl holds cold_reset until done + HOLD), so hijacking the RAM
 // write port is safe: apple2 and disk_ii_woz are reset-gated. The
 // initial block is the power-on state only (file zero-fill).
-reg  [7:0]  ram_main [0:65535];
-reg  [7:0]  ram_aux  [0:65535];
-reg  [15:0] m_ram_do;
 wire [15:0] m_addr;
 wire [17:0] m_ram_addr;
 wire [7:0]  m_ram_di;
 wire        m_ram_aux;
 wire        m_ram_we;
 wire        ram_clear_m;
-
-// ---- sweep bus overlay (inference-safe; the RAM block never sees a
-//      conditional write address) ----
-wire        swp_we, swp_aux, swp_done;
-wire [15:0] swp_addr;
-wire [17:0] m_ram_addr_f = swp_we ? {2'b00, swp_addr} : m_ram_addr;
-wire [7:0]  m_ram_di_f   = swp_we ? 8'd0 : m_ram_di;
-wire        m_ram_aux_f  = swp_we ? swp_aux : m_ram_aux;
-wire        m_ram_we_f   = swp_we | m_ram_we;
-ram_sweep_ctl woz_sweep (
-    .clk(clk_core_14318),
-    .start(ram_clear_m),
-    .we(swp_we), .addr(swp_addr), .aux(swp_aux), .done(swp_done)
+wire [15:0] m_ram_do;
+wire [7:0]  mgr_ram_rdata;
+wire        swp_done;
+// W1 (2026-11-12): the RAM banks + sweep overlay + manager access moved
+// into apple2e_ram_bank.v (logic moved byte-faithfully, including the
+// inference-history comment above) so the savestate round-trip TB
+// (verilog/tb/tb_savestate_roundtrip.sv) instantiates the SHIPPING glue,
+// not a copy. The machine bus nets, swp_done (reboot_ctl .clr_done) and
+// m_ram_do (machine .ram_do) are unchanged.
+apple2e_ram_bank u_ram_bank (
+    .clk          ( clk_core_14318 ),
+    .m_ram_we     ( m_ram_we ),
+    .m_ram_addr   ( m_ram_addr ),
+    .m_ram_di     ( m_ram_di ),
+    .m_ram_aux    ( m_ram_aux ),
+    .m_ram_do     ( m_ram_do ),
+    .sweep_start  ( ram_clear_m ),
+    .sweep_done   ( swp_done ),
+    .ss_ram_bank  ( ss_ram_bank ),
+    .ss_ram_addr  ( ss_ram_addr ),
+    .ss_ram_rd    ( ss_ram_rd ),
+    .ss_ram_wr    ( ss_ram_wr ),
+    .ss_ram_wdata ( ss_ram_wdata ),
+    .mgr_ram_rdata( mgr_ram_rdata )
 );
-initial begin
-    // power-on RAM state (file zero-fill, 2026-10-25 Phase B): the nested
-    // 256x256 procedural loop cost ~19 min of single-threaded A&S CPU on
-    // the full core (probe evidence: tools/ram_repro_init 19:13 vs
-    // tools/ram_repro_file 1:28 for the identical one-bank RAM - the file
-    // form is ~13x faster). Canonical image: src/fpga/rtl/roms/
-    // ram_zero_64k.hex (65,536 x "00", LF, git-tracked, *.hex text eol=lf).
-    // Path is CWD-relative: Quartus runs from src/fpga; the sim runner
-    // stages the same file under its rtl/roms/ (verilog/pocket_boot/
-    // build.sh, with preflight). Configuration-time initialization only -
-    // a machine reset is NOT a reload of this file: the runtime clearing
-    // sweep (ram_sweep_ctl below) still clears both banks after every
-    // cold reset before the CPU is released.
-    $readmemh("rtl/roms/ram_zero_64k.hex", ram_main);
-    $readmemh("rtl/roms/ram_zero_64k.hex", ram_aux);
-end
-// ---- the proven M1 RAM shape: plain single-port per bank, write-first
-//      bypass - consumes the overlayed _f nets only ----
-always @(posedge clk_core_14318) begin
-    if (m_ram_we_f & ~m_ram_aux_f) begin
-        ram_main[m_ram_addr_f[15:0]] <= m_ram_di_f;
-        m_ram_do[7:0]              <= m_ram_di_f;
-    end else m_ram_do[7:0]  <= ram_main[m_ram_addr_f[15:0]];
-    if (m_ram_we_f & m_ram_aux_f) begin
-        ram_aux[m_ram_addr_f[15:0]] <= m_ram_di_f;
-        m_ram_do[15:8]            <= m_ram_di_f;
-    end else m_ram_do[15:8]  <= ram_aux[m_ram_addr_f[15:0]];
-end
 
 // ---- machine core (wiring mirrors the level-1 test harness) ----
 wire        m_clk2m;
@@ -1501,7 +1731,7 @@ apple2 d1 (
     .PHASE_ZERO(m_pz), .PHASE_ZERO_R(m_pzr), .PHASE_ZERO_F(m_pzf),
     .FLASH_CLK(blink_div[22]),
     .reset(machine_reset), .cpu(1'b1),
-    .STALL(1'b0),
+    .STALL(ss_stall),          // W1: savestate freeze (was 1'b0)
     .ADDR(m_addr), .ram_addr(m_ram_addr), .D(m_ram_di), .ram_do(m_ram_do),
     .aux(m_ram_aux), .PD(m_pd_mux), .CPU_WE(m_cpu_we),
     .IRQ_n(1'b1), .NMI_n(1'b1), .ram_we(m_ram_we),
@@ -1521,8 +1751,8 @@ apple2 d1 (
     .ioctl_download(1'b0), .ioctl_wr(1'b0), .saturn_5_inslot(1'b0),
     .speaker(m_spk),
     .DBG_T65_REGS(), .DBG_DI(), .DBG_ROM_ADDR(), .DBG_ROM_OUT(),
-    .ss_addr(10'b0), .ss_wdata(64'b0), .ss_wren(1'b0), .ss_rdata(),
-    .machine_ce(1'b1), .cpu_frozen(),
+    .ss_addr(ss_ss_addr), .ss_wdata(ss_wdata), .ss_wren(ss_wren), .ss_rdata(ss_rdata),
+    .machine_ce(ss_machine_ce), .cpu_frozen(cpu_frozen),   // W1: savestate manager
     .Z80_EN(1'b0), .Z80_A(16'b0), .Z80_DO(8'b0), .Z80_WE(1'b0), .CPU_DI()
 );
 
@@ -1698,6 +1928,12 @@ parameter FP_DIAG = 1'b0;
 // can wiggle the stick and read the raw bytes. Revert to 1'b0 once the probe
 // verdict is in (feature build) or for the shipping build.
 parameter OVL_DEBUG = 1'b0;   // SHIPPING (0.3.5): debug text/lines off; drive lamps stay.
+    // 2026-11-15: savestate-phase diagnostic build switch. Enables ONLY the
+    // on-screen overlay text (OVL_DBG) - the savestate SS progress line plus the
+    // other debug lines - WITHOUT touching hdv_bridge's OOB_ENCODE (that stays
+    // on OVL_DEBUG). The top (apf_top_apple2) passes its own OVL_SS_DIAG through;
+    // keep the shipping default 0 there and flip to 1 for a diagnostic build.
+    parameter OVL_SS_DIAG = 1'b0;
                               // (2026-11-07 the HDV K/W readout diagnostic was on for the hardware
                               // re-test; reverted now that the RD_PRIME_STAGE fix is validated.)
 
@@ -1776,7 +2012,30 @@ sdram_storage #(.FP_EN(FP_DIAG)) stor (
     .dram_cke        ( dram_cke ),
     .dram_ras_n      ( dram_ras_n ),
     .dram_cas_n      ( dram_cas_n ),
-    .dram_we_n       ( dram_we_n )
+    .dram_we_n       ( dram_we_n ),
+    // W1 savestate: the slot (ssrd/sswr) and the host bridge (hr/hwr) reach
+    // the SDRAM word port through the owner inside stor (2026-11-13 fix:
+    // these were left dangling, so savestate save/load would hang on hardware).
+    .ssrd_req        ( ss_ssrd_req ),
+    .ssrd_addr       ( ss_ssrd_addr ),
+    .ssrd_done       ( ss_ssrd_done ),
+    .ssrd_data       ( ss_ssrd_data ),
+    .sswr_req        ( ss_sswr_req ),
+    .sswr_addr       ( ss_sswr_addr ),
+    .sswr_data       ( ss_sswr_data ),
+    .sswr_done       ( ss_sswr_done ),
+    .sswr_busy       ( ss_sswr_busy ),
+    .hr_req          ( ss_hr_req ),
+    .hr_addr         ( ss_hr_addr ),
+    .hr_done         ( ss_hr_done ),
+    .hr_data         ( ss_hr_data ),
+    .hwr_req         ( br_hwr_req ),
+    .hwr_addr        ( br_hwr_addr ),
+    .hwr_data        ( br_hwr_data ),
+    .hwr_done        ( br_hwr_done ),
+    .hwr_busy        ( br_hwr_busy ),
+    .port_wr_idle    ( ss_port_wr_idle ),
+    .dbg_ss_state    ( ss_dbg_storage_state )   // 2026-11-16 SSD/SSX (REVERT)
 );
 
 // ---- Floppy M1: WOZ floppy machine (engine + transport + mount ctl) ----
@@ -2170,11 +2429,24 @@ reg  [27:0] dbg_win_cnt = 28'd0;
 always @(posedge clk_core_14318)
     if (machine_reset) dbg_win_cnt <= 28'd0;
     else if (dbg_win_cnt != OVL_DBG_WIN_CYCLES) dbg_win_cnt <= dbg_win_cnt + 28'd1;
-wire        ovl_debug_en = (dbg_win_cnt != OVL_DBG_WIN_CYCLES);   // SHIPPING (0.3.5):
-                                   // post-reset visibility window (drive lamps). The 2026-11-07
+// ---- savestate progress -> on-screen SS line (2026-11-15 save-fail phase ID) ----
+// savestate_status is assembled in the 74a domain (near the savestate wiring
+// above); sync it to the machine domain for the overlay. While a savestate op
+// is active (busy[17]) or has finished (done[16]) hold the overlay open so a
+// stuck walk FREEZES on the SS row (B/S/W=NNNN names the stalled word) and a
+// completed walk shows D=1 (bug is then in the host read phase). Debug builds
+// only - the SS row and every debug line are behind OVL_DEBUG in the overlay.
+wire [31:0] ss_status_m;
+synch_3 #(.WIDTH(32)) u_ss_status_sync (
+    .i(savestate_status), .o(ss_status_m), .clk(clk_core_14318), .rise(), .fall()
+);
+wire        ovl_ss_en = ss_status_m[17] || ss_status_m[16];   // busy | done
+wire        ovl_debug_en = (dbg_win_cnt != OVL_DBG_WIN_CYCLES) || ovl_ss_en;   // SHIPPING (0.3.5):
+                                   // post-reset visibility window (drive lamps) OR an active/
+                                   // finished savestate op (2026-11-15). The 2026-11-07
                                    // always-on HDV diagnostic was reverted for the shipping build.
 
-sdram_status_overlay #(.SHOW_FP(FP_DIAG), .OVL_DBG(OVL_DEBUG)) ovl (
+sdram_status_overlay #(.SHOW_FP(FP_DIAG), .OVL_DBG(OVL_DEBUG || OVL_SS_DIAG)) ovl (
     .clk(clk_core_14318), .reset(machine_reset),
     // sel_* (NTSC): RGB and its own blanking travel together - the overlay must
     // be positioned by the same blanking that produced the pixels.
@@ -2207,7 +2479,12 @@ sdram_status_overlay #(.SHOW_FP(FP_DIAG), .OVL_DBG(OVL_DEBUG)) ovl (
     // Step 0 stick-liveness probe: raw synced left-stick bytes + ever-moved latch
     .joy_x_dbg(cont1_joy_m[7:0]),
     .joy_y_dbg(cont1_joy_m[15:8]),
-    .joy_ever(joy_ever_m)
+    .joy_ever(joy_ever_m),
+    // savestate progress (2026-11-15): machine-domain sync of savestate_status
+    .ss_word(ss_status_m[15:0]),
+    .ss_busy(ss_status_m[17]),
+    .ss_done(ss_status_m[16]),
+    .ss_stall(ss_status_m[18])
 );
 
 

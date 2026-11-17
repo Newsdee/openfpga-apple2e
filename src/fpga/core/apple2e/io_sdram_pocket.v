@@ -64,7 +64,16 @@ output  reg     [31:0]  word_q,
 output  reg             word_busy,   // POCKET-DIFF: now actually asserted
 output  reg             word_done,      // POCKET-DIFF: write op complete
 output  reg             word_rd_valid,  // POCKET-DIFF: word_q complete
-output  reg             boot_done       // POCKET-DIFF: init complete
+output  reg             word_op_start,  // 2026-11-16: 1-cycle pulse at each word-op start (owner attribution)
+output  reg             boot_done,       // POCKET-DIFF: init complete
+
+    // 2026-11-16 savestate SSD/SSX serial debug (REVERT for shipping):
+    // port FSM state + write/read queue occupancy for the tracer's SSX
+    // line (a wedge at the save tail reads: state=IDLE, queues=00 while
+    // the slot still expects done = the finding-2/3 fingerprint).
+    output wire [5:0]   dbg_state,
+    output wire         dbg_wr_q,
+    output wire         dbg_rd_q
 );
 
     // BOOT_CYCLES: power-on delay before CKE/precharge (real: 30000 ~=
@@ -163,7 +172,11 @@ assign {phy_ras, phy_cas, phy_we} = cmd;
 synch_3 s1(reset_n, reset_n_s, controller_clk); 
 
     reg word_rd_queue;
-    reg word_wr_queue;
+    reg word_wr_queue = 1'b0;   // 2026-11-17: explicit init (persistence fix below removes the else-clear that used to zero it every low cycle)
+    // 2026-11-16 SSD/SSX taps (REVERT for shipping)
+    assign dbg_state = state;
+    assign dbg_wr_q  = word_wr_queue;
+    assign dbg_rd_q  = word_rd_queue;
     reg word_rd_arm_d, word_wr_arm_d;   // EDGE-LATCH arm tracking (M1)
     wire word_rd_s, word_rd_r;
     wire word_wr_s, word_wr_r;
@@ -182,6 +195,18 @@ synch_3 #(.WIDTH(32)) s5(word_data, word_data_s, controller_clk);
     reg             word_op;
     reg             bram_op;
     reg     [24:0]  addr;
+    // 2026-11-16 (savestate write-crosstalk fix): payload latched at op
+    // START (dequeue) and held for the whole op. The ST_WRITE_2/3 DQ
+    // phases previously drove phy_dq_out from the LIVE word_data input
+    // (the owner's wcap register, 2-3+ cycles after the addr latch). If
+    // the owner's wcap switched to another client's payload during the
+    // op's ACT/tRCD window (st<->sswr handoff edges re-arm/capture
+    // mid-flight - the minirepro's 1578/2000 orphan-op population), the
+    // DQ phase wrote the NEW client's data to the OLD client's address
+    // (sswr cells found holding st data; EXPERT_BRIEF_SAVESTATE_MINIREPRO
+    // TB §8.3/§8.6). Latching at start makes every op write its own
+    // start-time payload: replays become idempotent, crosstalk is gone.
+    reg     [31:0]  wr_data_r;
     wire    [9:0]   addr_col9_next_1 = addr[9:0] + 'h1;
     
     reg     [10:0]  length;
@@ -219,6 +244,7 @@ always @(posedge controller_clk) begin
     burstwr_ready <= 0;
     word_done <= 0;      // POCKET-DIFF: 1-cycle pulses
     word_rd_valid <= 0;
+    word_op_start <= 0;  // 2026-11-16: 1-cycle pulse at each word-op start
     
     enable_dq_read_5 <= enable_dq_read_4;
     enable_dq_read_4 <= enable_dq_read_3;
@@ -276,6 +302,7 @@ always @(posedge controller_clk) begin
         delay_boot <= 0;
         boot_done <= 0; // POCKET-DIFF
         issue_autorefresh <= 0;
+        word_wr_queue <= 0;   // 2026-11-17: deterministic reset (persistence fix)
         phy_dqm <= 2'b00;
         
         state <= ST_BOOT_0;
@@ -354,6 +381,7 @@ always @(posedge controller_clk) begin
             word_rd_queue <= 0;
             word_op <= 1;
             word_busy <= 1; // POCKET-DIFF
+            word_op_start <= 1;   // 2026-11-16: op-start pulse (owner attribution)
             addr <= word_addr << 1;
             
             length <= 2;
@@ -363,7 +391,9 @@ always @(posedge controller_clk) begin
             word_wr_queue <= 0;
             word_op <= 1;
             word_busy <= 1; // POCKET-DIFF
+            word_op_start <= 1;   // 2026-11-16: op-start pulse (owner attribution)
             addr <= word_addr << 1;
+            wr_data_r <= word_data_s;   // payload latched for ST_WRITE_2/3
             
             state <= ST_WRITE_0;
         end else 
@@ -407,7 +437,7 @@ always @(posedge controller_clk) begin
         phy_a <= addr[9:0]; // A0-A9 row address
         cmd <= CMD_WRITE;
         phy_dq_oe <= 1;
-        phy_dq_out <= word_data[31:16];//addr[15:0];//
+        phy_dq_out <= wr_data_r[31:16];//addr[15:0];//
         addr <= addr + 1'b1;
         
         state <= ST_WRITE_3;    
@@ -418,7 +448,7 @@ always @(posedge controller_clk) begin
         phy_a <= addr[9:0]; // A0-A9 row address
         cmd <= CMD_WRITE;
         phy_dq_oe <= 1;
-        phy_dq_out <= word_data[15:0];//16'hABCD; //
+        phy_dq_out <= wr_data_r[15:0];//16'hABCD; //
         addr <= addr + 1'b1;
         
         state <= ST_WRITE_4;    
@@ -585,8 +615,10 @@ always @(posedge controller_clk) begin
     
     // catch incoming events if fsm is busy - EDGE-LATCH queue
     // (POCKET-DIFF #5, M1): the queue latches on the RISING edge of the
-    // 3FF-synchronized level and clears on the falling edge. The original
-    // rise-pulse latch (1-cycle synch_3.rise) missed re-arms for clients
+    // 3FF-synchronized level. READ queue: also clears on the falling edge
+    // (original M1 semantics, unchanged). WRITE queue: falling edge does
+    // NOT clear (2026-11-17 H2 persistence fix, see the block below) -
+    // only the ST_IDLE dequeue clears. The original rise-pulse latch (1-cycle synch_3.rise) missed re-arms for clients
     // that hold their level across op boundaries (dead port: IDLE with
     // both clients armed, no queue); pure level-follow double-queues
     // back-to-back ops for a held level (corrupts the store's committed
@@ -606,10 +638,22 @@ always @(posedge controller_clk) begin
     end
     word_rd_arm_d <= word_rd_s;
     if (word_wr_s) begin
-        if (!word_wr_arm_d) word_wr_queue <= 1;
-    end else begin
-        word_wr_queue <= 0;
+        if (!word_wr_arm_d) word_wr_queue <= 1;   // rising edge: arm
     end
+    // H2 fix (2026-11-17): WRITE-QUEUE PERSISTENCE. The old falling-edge
+    // clear (else word_wr_queue <= 0) UN-QUEUED a pending op whenever the
+    // client's level fell before the port reached IDLE - the normal case
+    // for the bridge's hwr client, whose req is a 1-cycle pulse (level
+    // falls one cycle after it rises). The lost op then waited out the
+    // bridge's full 30.8 us watchdog before re-issue; at the documented
+    // 88-cycle/word host rate the 16-deep FIFO fills in ~19 us first
+    // -> wr_overflow on every hardware load (R2 reproduces it in sim).
+    // Now: set on rise, cleared ONLY by the ST_IDLE dequeue. Well-behaved
+    // clients (store/fetcher/verifier) drop their level only after their
+    // op is dequeued+done, so for them the fall sees an already-0 queue:
+    // no behavior change. The owner's wcap holds the pending op's
+    // addr/data until completion, so the deferred dequeue latches the
+    // correct values (addr / wr_data_r).
     word_wr_arm_d <= word_wr_s;
     if(burst_rd) begin
         burst_rd_queue <= 1;

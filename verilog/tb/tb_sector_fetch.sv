@@ -83,6 +83,7 @@ module tb_sector_fetch;
 
     wire        sdram_init_done;
     wire        ov_word_rd, ov_word_wr, ov_word_busy, ov_word_done, ov_word_rd_valid;
+    wire        ov_word_op_start;   // 2026-11-16: port op-start pulse -> owner attribution
     wire [23:0] ov_word_addr;
     wire [31:0] ov_word_data, ov_word_q;
 
@@ -121,6 +122,7 @@ module tb_sector_fetch;
         .word_busy        ( ov_word_busy ),
         .word_done        ( ov_word_done ),
         .word_rd_valid    ( ov_word_rd_valid ),
+        .word_op_start    ( ov_word_op_start ),
         .boot_done        ( sdram_init_done )
     );
 
@@ -168,6 +170,7 @@ module tb_sector_fetch;
         .word_busy  ( ov_word_busy ),
         .word_done  ( ov_word_done ),
         .word_rd_valid( ov_word_rd_valid ),
+        .word_op_start( ov_word_op_start ),
         .init_done  ( sdram_init_done ),
         .st_req     ( st_req ),
         .st_addr    ( st_addr ),

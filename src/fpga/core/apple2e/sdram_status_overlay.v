@@ -111,6 +111,16 @@ module sdram_status_overlay (
     , input  wire [7:0]  joy_x_dbg    // left stick X byte (cont1_joy[7:0])
     , input  wire [7:0]  joy_y_dbg    // left stick Y byte (cont1_joy[15:8])
     , input  wire        joy_ever     // stick ever left centre (OR-tree latch)
+    // ---- savestate progress (2026-11-15 hardware save-fail diagnostic) ----
+    // machine-domain (synced in the top). Line at rows 104..110, X0=460:
+    //   "SS W=NNNNN B#D#S#"  NNNNN = save-walk SDRAM word (0..0x7FFF/0x8000),
+    //   B = busy (walk in progress), D = done (walk finished), S = sswr_stall.
+    //   A stuck walk freezes on a row (S=1 or B=1, W=NNNNN names the word);
+    //   done=1 with the host still failing localizes the bug to the read phase.
+    , input  wire [15:0] ss_word
+    , input  wire        ss_busy
+    , input  wire        ss_done
+    , input  wire        ss_stall
     );
 
     // Show-window length in machine clocks (default = 5 s @ 14.318 MHz;
@@ -747,6 +757,46 @@ module sdram_status_overlay (
     assign pxjoy = !hbl && !vbl && in_xjoy && in_ljoy && cidxjoy_w < 10'd13 &&
                   cinyoy_w < 10'd5 && rjoybits[3'd4 - cinyoy_w[2:0]];
 
+    // line SS (2026-11-15 save-fail phase diagnostic): 15 chars at X0=440,
+    // rows 104..110: "SS W=NNNN B#D#S#". NNNN = save-walk SDRAM word (hex,
+    // 16-bit), B/D/S = busy/done/sswr_stall. Gated by OVL_DBG + debug_en like
+    // the other lines; the top holds debug_en open while a savestate op is
+    // active so a stuck walk freezes on this row and can be photographed.
+    wire [4:0] dss [0:14];
+    assign dss[0]  = GL_S;
+    assign dss[1]  = GL_S;
+    assign dss[2]  = GL_SP;
+    assign dss[3]  = GL_W;
+    assign dss[4]  = GL_EQ;
+    assign dss[5]  = hexg(ss_word[15:12]);
+    assign dss[6]  = hexg(ss_word[11:8]);
+    assign dss[7]  = hexg(ss_word[7:4]);
+    assign dss[8]  = hexg(ss_word[3:0]);
+    assign dss[9]  = 5'd12;   // 'B' (busy label)
+    assign dss[10] = ss_busy  ? 5'd1 : 5'd0;
+    assign dss[11] = 5'd14;   // 'D' (done label)
+    assign dss[12] = ss_done  ? 5'd1 : 5'd0;
+    assign dss[13] = GL_S;    // 'S' (stall label)
+    assign dss[14] = ss_stall ? 5'd1 : 5'd0;
+    wire        in_xss, in_lss;
+    wire [9:0]  cpxss, cidxss_w, cins_w;
+    wire [7:0]  rss_w;
+    wire [4:0]  gss;
+    wire [34:0] gss_bits;
+    wire [4:0]  rssbits;
+    wire        pxss;
+    assign in_xss   = (col >= 10'd440) && (col < 10'd530);
+    assign cpxss    = in_xss ? (col - 10'd440) : 10'd0;
+    assign cidxss_w = cpxss / 10'd6;
+    assign cins_w   = cpxss % 10'd6;
+    assign in_lss   = (row >= 8'd104) && (row < 8'd111);
+    assign rss_w    = in_lss ? (row - 8'd104) : 8'd0;
+    assign gss      = (in_lss && cidxss_w < 10'd15) ? dss[cidxss_w[3:0]] : 5'd0;
+    assign gss_bits = gf(gss);
+    assign rssbits  = gss_bits[34 - {2'b00, rss_w[2:0]} * 5'd5 -: 5];
+    assign pxss = !hbl && !vbl && in_xss && in_lss && cidxss_w < 10'd15 &&
+                  cins_w < 10'd5 && rssbits[3'd4 - cins_w[2:0]];
+
     // ---- image fingerprint readout (SHOW_FP-gated, M1 hardware-load diagnostic) ----
     // line 8:  24 chars at X0=406, rows 65..71: "W0=XXXXXXXX W1=XXXXXXXX"
     // line 9:  24 chars at X0=406, rows 73..79: "W2=XXXXXXXX W3=XXXXXXXX"
@@ -955,7 +1005,7 @@ module sdram_status_overlay (
     wire led_io  = st_io  && act_io;   // white = HD block completed
 
     wire ovl_px = mpx || px1 || px2 || px3 || px4 || px5 || px6 || px7 ||
-                  px8 || pxh || pxpc || pxda || px9 || px10 || px11 || dbg_px || pxjoy;
+                  px8 || pxh || pxpc || pxda || px9 || px10 || px11 || dbg_px || pxjoy || pxss;
     // J11 (2026-10-25): drawing is additionally gated by debug_en - clean
     // screen during gameplay, diagnostics visible at boot and while the
     // on-screen keyboard is up. J9: the drive LEDs always override in.

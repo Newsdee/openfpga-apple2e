@@ -109,7 +109,36 @@ module sdram_storage (
     output wire        dram_cke,
     output wire        dram_ras_n,
     output wire        dram_cas_n,
-    output wire        dram_we_n
+    output wire        dram_we_n,
+    // ---- W1 savestate clients (ctrl domain): routed to owner0 ----
+    // The savestate slot (mach/ctrl) and the host bridge (74a/ctrl) reach the
+    // SDRAM word port through the owner, same as the store clients. The top
+    // wires slot ssrd/sswr -> here -> owner0 ssrd/sswr, and bridge hr/hwr ->
+    // here -> owner0 hr/hwr. port_wr_idle is the owner's write-issue gate
+    // (high when SDRAM is initialized and no read level is armed); the top
+    // fans it to both the slot and the bridge (their pulse gates).
+    input  wire         ssrd_req,
+    input  wire [23:0]  ssrd_addr,
+    output wire         ssrd_done,
+    output wire [31:0]  ssrd_data,
+    input  wire         sswr_req,
+    input  wire [23:0]  sswr_addr,
+    input  wire [31:0]  sswr_data,
+    output wire         sswr_done,
+    output wire         sswr_busy,
+    input  wire         hr_req,
+    input  wire [23:0]  hr_addr,
+    output wire         hr_done,
+    output wire [31:0]  hr_data,
+    input  wire         hwr_req,
+    input  wire [23:0]  hwr_addr,
+    input  wire [31:0]  hwr_data,
+    output wire         hwr_done,
+    output wire         hwr_busy,
+    output wire         port_wr_idle,
+    // 2026-11-16 savestate SSD/SSX serial debug (REVERT for shipping):
+    // port/owner state word for the tracer's SSX line (all ctrl domain).
+    output wire [15:0]  dbg_ss_state
 );
 
     // Image-fingerprint diagnostics fan-out (M1): the top-level FP_DIAG
@@ -221,6 +250,18 @@ module sdram_storage (
     // M1 serialization: load (store) -> verify -> mounted fetch.
     wire        ov_st_busy, ov_st_done, ov_vr_done, ov_fc_active, ov_fc_done;
     wire        ov_word_rd, ov_word_wr, ov_word_busy, ov_word_done, ov_word_rd_valid;
+    wire        ov_word_op_start;   // 2026-11-16: port op-start pulse -> owner attribution
+    // 2026-11-16 SSD/SSX taps (REVERT for shipping)
+    wire [5:0] dbg_port_state;
+    wire       dbg_port_wr_q, dbg_port_rd_q;
+    wire [2:0] dbg_owner_inflight;
+    // SSD/SSX state word (REVERT for shipping):
+    //   [5:0] port FSM state   [6] port wr queue   [7] port rd queue
+    //   [10:8] owner in-flight client  [11] port_wr_idle
+    //   [12] owner word_wr level  [13] owner word_rd level  [15:14] spare
+    assign dbg_ss_state = {2'b0, ov_word_rd, ov_word_wr, port_wr_idle,
+                           dbg_owner_inflight, dbg_port_rd_q, dbg_port_wr_q,
+                           dbg_port_state};
     wire [23:0] ov_word_addr, ov_fc_addr;
     wire [31:0] ov_word_data, ov_word_q, ov_vr_data, ov_fc_data;
     wire [7:0]  ov_fc_gen, ov_fc_done_len, ov_fc_done_gen;
@@ -275,6 +316,7 @@ module sdram_storage (
         .word_busy  ( ov_word_busy ),
         .word_done  ( ov_word_done ),
         .word_rd_valid( ov_word_rd_valid ),
+        .word_op_start( ov_word_op_start ),
         .init_done  ( sdram_init_done ),
         .st_req     ( sw_word_wr ),
         .st_addr    ( sw_word_addr ),
@@ -293,7 +335,14 @@ module sdram_storage (
         .fc_done    ( ov_fc_done ),
         .fc_data    ( ov_fc_data ),
         .fc_done_len( ov_fc_done_len ),
-        .fc_done_gen( ov_fc_done_gen )
+        .fc_done_gen( ov_fc_done_gen ),
+        // W1 savestate clients (slot ssrd/sswr + bridge hr/hwr) + write gate
+        .ssrd_req   ( ssrd_req ),   .ssrd_addr ( ssrd_addr ),   .ssrd_done ( ssrd_done ),   .ssrd_data ( ssrd_data ),
+        .sswr_req   ( sswr_req ),   .sswr_addr ( sswr_addr ),   .sswr_data ( sswr_data ),   .sswr_done ( sswr_done ),   .sswr_busy ( sswr_busy ),
+        .hr_req     ( hr_req ),     .hr_addr   ( hr_addr ),     .hr_done   ( hr_done ),     .hr_data   ( hr_data ),
+        .hwr_req    ( hwr_req ),    .hwr_addr  ( hwr_addr ),    .hwr_data  ( hwr_data ),    .hwr_done  ( hwr_done ),    .hwr_busy  ( hwr_busy ),
+        .port_wr_idle( port_wr_idle ),
+        .dbg_inflight( dbg_owner_inflight )   // 2026-11-16 SSD/SSX (REVERT)
     );
 
     sdram_sector_fetch fetch0 (
@@ -698,7 +747,11 @@ co_st      <= CO_RES;
         .word_busy        ( ov_word_busy ),
         .word_done        ( ov_word_done ),
         .word_rd_valid    ( ov_word_rd_valid ),
-        .boot_done        ( sdram_init_done )
+        .word_op_start    ( ov_word_op_start ),
+        .boot_done        ( sdram_init_done ),
+        .dbg_state        ( dbg_port_state ),   // 2026-11-16 SSD/SSX (REVERT)
+        .dbg_wr_q         ( dbg_port_wr_q ),
+        .dbg_rd_q         ( dbg_port_rd_q )
     );
 
 endmodule

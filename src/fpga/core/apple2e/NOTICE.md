@@ -40,3 +40,42 @@ Line endings: CRLF throughout (as in the donor file) - do not normalize.
 - `joy[6]` (face X) is the "centre paddles" override applied in the top
   before the `pdl_timer`; `joy[4]/[5]/[7]` are PB0/PB1/PB2, merged with
   the OSK apple buttons into `GAMEPORT` (OSK-visible = gated to OSK).
+
+# savestate_manager.sv - donor import from the MiSTer Apple II core
+
+**Byte-identical** import of the MiSTer Apple II core savestate FSM
+(`Apple-II_MiSTer/rtl/savestates/savestate_manager.sv`). No modifications:
+the Pocket-side integration (slot <-> SDRAM owner bridge, handshake
+contract, word-0 preload) lives in `savestate_slot.v`, so the donor file
+stays diff-able against the upstream tree.
+
+```
+source: E:/MiSTer/Apple-II_FPGAdev/Apple-II_MiSTer/rtl/savestates/savestate_manager.sv
+donor head at import (2026-11-11): 96881ff-era (Apple-II_MiSTer working tree)
+```
+
+## SHA-256 pin (verified 2026-11-11)
+
+| File                   | SHA-256                                                        | Status          |
+|------------------------|----------------------------------------------------------------|-----------------|
+| `savestate_manager.sv` | `b03fde24fbf64342d293afcbf1dc4a2f1cc8e68ffe4a6a68a0e189ca8d3cb52f` | byte-identical |
+
+Re-verify:
+
+```bash
+sha256sum src/fpga/core/apple2e/savestate_manager.sv
+# expect b03fde24fbf64342d293afcbf1dc4a2f1cc8e68ffe4a6a68a0e189ca8d3cb52f
+cmp src/fpga/core/apple2e/savestate_manager.sv \r
+    E:/MiSTer/Apple-II_FPGAdev/Apple-II_MiSTer/rtl/savestates/savestate_manager.sv
+```
+
+Line endings: CRLF throughout (as in the donor file) - do not normalize.
+
+## Integration notes (Pocket side)
+
+- Instantiated in `savestate_slot.v` (machine domain). Its `ss_*` ports
+  match the pinned `machine/apple2.v` exactly; `ram_*` connect to the
+  top-level `ram_main`/`ram_aux` arrays.
+- The `slot_*` port is re-targeted from the donor `savestate_ddr` to the
+  SDRAM blob (word base 0x400000) via the `sdram_word_owner` clients
+  `ss_rd`/`ss_wr`. See `docs/EXPERT_BRIEF_SAVESTATE_MANAGER_2026-11-11.md`.

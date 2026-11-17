@@ -59,6 +59,7 @@ input   wire            savestate_supported,
 input   wire    [31:0]  savestate_addr,
 input   wire    [31:0]  savestate_size,
 input   wire    [31:0]  savestate_maxloadsize,
+input   wire    [31:0]  savestate_status,  // live progress/status (read at 0x4C)
 
 output  reg             osnotify_inmenu,
 
@@ -142,11 +143,29 @@ end
     reg     [31:0]  host_44;
     reg     [31:0]  host_48;
     reg     [31:0]  host_4C;    
+
+    // 2026-11-14: live savestate progress/status, readable at 0x4C at any
+    // time (independent of the 0x00A0/0x00A4 command handlers). Layout:
+    //   [15:0] active save-walk SDRAM word index (slot mirror)
+    //   [16]   manager done (start_ok | load_ok)
+    //   [17]   manager busy (start_busy | load_busy)
+    //   [18]   sswr_stall (fatal: save walk gave up)
+    //   [19]   rd-FIFO overflow sticky   [20] wr-FIFO overflow sticky
+    //   [24:21] sswr retry snapshot
+    //   [28:25] rd-FIFO high-water occupancy
+    always @(posedge clk)
+        host_4C <= savestate_status;
     
     reg             host_cmd_start;
     reg     [15:0]  host_cmd_startval;
     reg     [15:0]  host_cmd;
     reg     [15:0]  host_resultcode;
+    // registered request-hold for the savestate request waits (2026-11-16,
+    // EXPERT_BRIEF_SAVESTATE_WEDGE_MACH_SIDE §9 Step 2): the ack-based exit
+    // is gated on the registered request so a parameter change mid-wait
+    // cannot alter the exit decision
+    reg     ss_start_req_q;
+    reg     ss_load_req_q;
     
 localparam  [3:0]   ST_IDLE         = 'd0;
 localparam  [3:0]   ST_PARSE        = 'd1;
@@ -195,6 +214,8 @@ initial begin
     rtc_valid <= 0;
     savestate_start <= 0;
     savestate_load <= 0;
+    ss_start_req_q  <= 0;
+    ss_load_req_q   <= 0;
     osnotify_inmenu <= 0;
     
     status_setup_done_queue <= 0;
@@ -316,6 +337,8 @@ always @(posedge clk) begin
         dataslot_update <= 0;
         savestate_start <= 0;
         savestate_load <= 0;
+        ss_start_req_q  <= 0;
+        ss_load_req_q   <= 0;
         
         // there is no queueing. pocket will always make sure any outstanding host
         // commands are finished before starting another
@@ -413,8 +436,11 @@ always @(posedge clk) begin
             if(host_20[0]) begin
                 // Request Start!
                 savestate_start <= 1;
-                // stay in this state until ack'd
-                if(savestate_start_ack) begin
+                ss_start_req_q  <= 1'b1;   // register the request-hold
+                // stay in this state until ack'd (gated on the registered
+                // request: the slot ack is now per-command and never stale
+                // - 2026-11-16)
+                if(ss_start_req_q & savestate_start_ack) begin
                     hstate <= ST_DONE_CODE;
                 end
             end else begin
@@ -435,8 +461,11 @@ always @(posedge clk) begin
             if(host_20[0]) begin
                 // Request Load!
                 savestate_load <= 1;
-                // stay in this state until ack'd
-                if(savestate_load_ack) begin
+                ss_load_req_q  <= 1'b1;    // register the request-hold
+                // stay in this state until ack'd (gated on the registered
+                // request: the slot ack is now per-command and never stale
+                // - 2026-11-16)
+                if(ss_load_req_q & savestate_load_ack) begin
                     hstate <= ST_DONE_CODE;
                 end
             end else begin

@@ -26,11 +26,30 @@ set "RBF_SRC=%REPO%\src\fpga\output_files_apple2e\apf_apple2.rbf"
 
 cd /d "%REPO%\src\fpga"
 
+rem --- Quartus PATH: use PATH if present, else the known 17.0.2 install ---
+where quartus_sh >nul 2>nul
+if errorlevel 1 (
+    if exist "C:\intelfpga_lite\17.0\quartus\bin64\quartus_sh.exe" (
+        set "PATH=C:\intelfpga_lite\17.0\quartus\bin64;%PATH%"
+    ) else (
+        echo Quartus not found on PATH or at C:\intelfpga_lite\17.0\quartus\bin64
+        exit /b 1
+    )
+)
+
 echo === [1/3] Quartus full compile (apf_apple2) ===
 quartus_sh --flow compile apf_apple2
 if errorlevel 1 goto :err
 
 if not exist "%RBF_SRC%" goto :errrbf
+
+rem --- W1 RAM-inference gate (2026-11-14, docs/EXPERT_BRIEF_RAM_BANK_
+rem      INFERENCE_2026-11-14.md): u_ram_bank must infer as exactly
+rem      2 x 64KiB M10Ks - catches the silent 4-RAM duplication (fit
+rem      11802) and the uninferred-register-explosion (A&S 276003)
+rem      failure classes before a fit cycle is spent. ---
+"%PY%" "%REPO%\tools\ram_bank_map_check.py" "%REPO%\src\fpga\output_files_apple2e\apf_apple2.map.rpt"
+if errorlevel 1 goto :err
 
 echo === [2/3] Convert raw .rbf -^> APF .rbf_r ===
 if not exist "%REPO%\output" mkdir "%REPO%\output"

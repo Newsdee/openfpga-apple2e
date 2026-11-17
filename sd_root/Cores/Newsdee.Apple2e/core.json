@@ -13,14 +13,14 @@
         "framework": {
             "target_product": "Analogue Pocket",
             "version_required": "2.0",
-            "sleep_supported": false,
+            "sleep_supported": true,
             "dock": {
                 "supported": true,
                 "analog_output": false
             },
             "hardware": {
                 "link_port": false,
-                "cartridge_adapter": -1
+                "cartridge_adapter": 0
             }
         },
         "cores": [
