@@ -7,6 +7,17 @@ at-a-glance index.
 
 ## Releases
 
+### 0.3.6 — 2026-11-18
+**Savestate save/load.**
+
+The Pocket's native savestate flow now works: save the running machine
+from the host menu and load it back later. Three load/save defects
+found during bring-up (a save command-path race, a host-rate write
+overflow on load, and a one-word load-alignment error) are fixed and
+hardware-validated; the diagnostic infrastructure that found them is
+compile-flagged out of this build. See
+[`RELEASE_NOTES_0.3.6.md`](RELEASE_NOTES_0.3.6.md).
+
 ### 0.3.5 — 2026-11-08
 **Writable HDV (working) + combined Boot Media option.**
 
