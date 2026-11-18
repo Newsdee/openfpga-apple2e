@@ -882,15 +882,17 @@ module tb_savestate_minirepro;
       for (w = 0; w < 33554432; w = w + 1)
         if (m0.mem[w] === 16'h9F9E && m0.mem[w + 1'b1] === 16'h9D9C)
           $display("G0-DBG cell idx=%0d (ba=%0d row=%0d col=%0d word=%0d)", w, w[24:23], w[22:10], w[9:0], w >> 1);
-      // 4) transport write (host one-word-behind form) - legal sequence for
-      //    load: the load reads at BLOB_BASE+1, so the state must be shifted
-      //    into place by the host transport first (a bare save->load is NOT
-      //    a legal sequence - see ssrd_base_sum +1 note in savestate_slot)
-      wr_src[0] = 32'd0;
-      for (w = 1; w < 2001; w = w + 1) wr_src[w] = exp_sdram_word(w - 16'd1);
-      host_wr_burst(16'd0, 16'd2001, wr_src, to);
+      // 4) transport write (observed host form, 2026-11-17 SS HD capture):
+      //    the host's load-write STRIPS the file's stale leading word, so
+      //    window k <- saved[k] - the window becomes word-identical to the
+      //    save-time window, which the manager's load now reads from
+      //    BLOB_BASE (same base as save; the 2026-11-15 +1 base was a
+      //    file-only decode, off by one word). Use the just-verified
+      //    rd_rets (the saved blob, incl. its counter word).
+      for (w = 0; w < 2000; w = w + 1) wr_src[w] = rd_rets[w];
+      host_wr_burst(16'd0, 16'd2000, wr_src, to);
       check("G0 transport write drained", to < 400000);
-      // 5) load (expect ok - state now sits at B+1 as the load expects)
+      // 5) load (expect ok - window == save-time window, load base = B)
       load_op("G0-load", 1'b0);
       check("G0 load ok", ss_load_err === 1'b0);
       // 6) hwr alone: 1000 writes + drain + memory compare
@@ -956,11 +958,10 @@ module tb_savestate_minirepro;
         end
       $display("     (%s rd mismatches: %0d)", tag, mism);
       check({tag, " host rd words exact"}, mism == 0);
-      // transport write (host form: window k <- stored[k], one-word-behind)
-      wr_src[0] = 32'd0;
-      for (w = 1; w < n; w = w + 1) wr_src[w] = blob_save[w-1];
-      wr_src[n] = blob_save[n-1];
-      host_wr_burst(16'd0, n[15:0] + 16'd1, wr_src, to);
+      // transport write (observed host form, 2026-11-17 SS HD): window k
+      // <- saved[k] (stale word stripped) - window == save-time window.
+      for (w = 0; w < n; w = w + 1) wr_src[w] = blob_save[w];
+      host_wr_burst(16'd0, n[15:0], wr_src, to);
       check({tag, " transport write drained"}, to < 400000);
       check({tag, " no rd overflow"}, rd_overflow_74a === 1'b0);
       check({tag, " no wr overflow"}, wr_overflow_74a === 1'b0);

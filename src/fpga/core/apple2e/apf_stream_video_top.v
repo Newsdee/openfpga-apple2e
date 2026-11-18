@@ -551,6 +551,9 @@ end
     // via a toggle handshake (EXPERT_BRIEF_SAVESTATE_SERIAL_DEBUG_
     // PROPOSAL_2026-11-16 §B, review corrections applied).
     wire [15:0] ss_dbg_slot_state;      // slot: mgr/st/retry/stall/inflight
+    wire [63:0] ss_dbg_hdr0;            // 2026-11-17 SS HD (REVERT for shipping)
+    wire [63:0] ss_dbg_hdr1;            // 2026-11-17 SS HD (REVERT for shipping)
+    wire [1:0]  ss_dbg_errcode;         // 2026-11-17 SS HD (REVERT for shipping)
     wire [15:0] ss_dbg_storage_state;   // storage: port/owner state word
 
     // Per-op progress counters (ctrl domain). Signal semantics (verified in
@@ -701,7 +704,10 @@ end
         .uart_rx    ( dk_uart_rx ),
         .uart_tx    ( dk_uart_tx ),
         .led        ( dk_led_s ),
-        .ssd_snap   ( ssd_snap_74 )            // 2026-11-16 SSD/SSX (REVERT)
+        .ssd_snap   ( ssd_snap_74 ),         // 2026-11-16 SSD/SSX (REVERT)
+        .ss_hd0     ( ss_dbg_hdr0 ),         // 2026-11-17 SS HD (REVERT)
+        .ss_hd1     ( ss_dbg_hdr1 ),         // 2026-11-17 SS HD (REVERT)
+        .ss_hd_err  ( ss_dbg_errcode )       // 2026-11-17 SS HD (REVERT)
     );
     // Layout (see core_bridge_cmd host_4C comment):
     //   [15:0] word  [16] done  [17] busy  [18] stall
@@ -764,7 +770,10 @@ end
         .dbg_sswr_stall       ( ss_dbg_stall ),
         .dbg_sswr_retry       ( ss_dbg_retry ),
         .dbg_word_idx         ( ss_dbg_word ),
-        .dbg_ss_state         ( ss_dbg_slot_state )   // 2026-11-16 SSD/SSX (REVERT)
+        .dbg_ss_state         ( ss_dbg_slot_state ),   // 2026-11-16 SSD/SSX (REVERT)
+        .dbg_hdr0             ( ss_dbg_hdr0 ),         // 2026-11-17 SS HD (REVERT)
+        .dbg_hdr1             ( ss_dbg_hdr1 ),         // 2026-11-17 SS HD (REVERT)
+        .dbg_errcode          ( ss_dbg_errcode )       // 2026-11-17 SS HD (REVERT)
     );
 
     savestate_bridge ss_bridge (
@@ -1934,6 +1943,11 @@ parameter OVL_DEBUG = 1'b0;   // SHIPPING (0.3.5): debug text/lines off; drive l
     // on OVL_DEBUG). The top (apf_top_apple2) passes its own OVL_SS_DIAG through;
     // keep the shipping default 0 there and flip to 1 for a diagnostic build.
     parameter OVL_SS_DIAG = 1'b0;
+
+    // 2026-11-17 diagnostic-build overlay trim (see sdram_status_overlay):
+    // 1 = SS liveness line only. The top (apf_top_apple2) passes its own
+    // copy through; shipping default 0.
+    parameter OVL_SS_ONLY = 1'b0;
                               // (2026-11-07 the HDV K/W readout diagnostic was on for the hardware
                               // re-test; reverted now that the RD_PRIME_STAGE fix is validated.)
 
@@ -2446,7 +2460,8 @@ wire        ovl_debug_en = (dbg_win_cnt != OVL_DBG_WIN_CYCLES) || ovl_ss_en;   /
                                    // finished savestate op (2026-11-15). The 2026-11-07
                                    // always-on HDV diagnostic was reverted for the shipping build.
 
-sdram_status_overlay #(.SHOW_FP(FP_DIAG), .OVL_DBG(OVL_DEBUG || OVL_SS_DIAG)) ovl (
+sdram_status_overlay #(.SHOW_FP(FP_DIAG), .OVL_DBG(OVL_DEBUG || OVL_SS_DIAG),
+                       .OVL_SS_ONLY(OVL_SS_ONLY)) ovl (
     .clk(clk_core_14318), .reset(machine_reset),
     // sel_* (NTSC): RGB and its own blanking travel together - the overlay must
     // be positioned by the same blanking that produced the pixels.

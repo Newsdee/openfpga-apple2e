@@ -352,6 +352,13 @@ module tb_savestate_integration;
   end
   initial if ($test$plusargs("UPTAP")) up_tap_en = 1'b1;
 
+  // 2026-11-17: host load-write model selector (see the G5/UNPACED notes).
+  // Default (0) = OBSERVED hardware host (SS HD capture): strips the file's
+  // stale leading word, window k <- stored[k+1]. +CONTRACT = the old
+  // documented (wrong) model: window k <- stored[k] with the stale at W0.
+  reg contract = 1'b0;
+  initial if ($test$plusargs("CONTRACT")) contract = 1'b1;
+
   reg [15:0] c_hwr_done = 0;             // hwr_done rising edges
   reg        hwr_done_d1 = 0;
   always @(posedge clk_ctrl)
@@ -447,6 +454,13 @@ module tb_savestate_integration;
   // earlier "poisoned" reading was the 600-vs-592 parse error. Staged as
   // verilog/real_1157_blob.hex (one byte per line, $readmemh format)
   reg [7:0] real_blob [0:131331];
+  // H6 reproduction (2026-11-17): real 592-byte SPA1 host header (file offset
+  // 0..591, staged as verilog/real_hdr_592.hex). If the host firmware streams
+  // the .sta from file offset 0 instead of the 592-byte-aligned blob section,
+  // the window receives this header first and the blob lands shifted +148
+  // words. Hardware 2026-11-17 11:34 build: loads fail fast with wr_ovf
+  // CLEAR - consistent with this shape.
+  reg [7:0] real_hdr [0:591];
   reg [15:0] c_pre = 0;
   reg        pre_d1 = 0;
   always @(posedge clk_74a) begin
@@ -723,6 +737,7 @@ module tb_savestate_integration;
     #1000;
     por_done = 1'b1;   // SDRAM power-on settle (mirrors tb_sector_fetch)
     $readmemh("real_1157_blob.hex", real_blob);
+    $readmemh("real_hdr_592.hex", real_hdr);
     while (!stor_init_done) @(negedge clk_74a);
     repeat (50) @(negedge clk_74a);
 
@@ -738,16 +753,30 @@ module tb_savestate_integration;
       integer k, to;
       reg [31:0] d;
       reg [15:0] gap;
+      integer hshift, widx;
       gap = $test$plusargs("UNPACED_FAST") ? 16'd1 : 16'd88;
-      $display("UNPACED: writing 32833-word blob at gap=%0d clk_74a (posted, no backpressure)...", gap);
-      for (k = 0; k < 32833; k = k + 1)
-        host_wr_unpaced(k[15:0], {real_blob[4*k], real_blob[4*k+1],
+      hshift = $test$plusargs("HDRSHIFT") ? 1 : 0;
+      if (hshift)
+      if (hshift)
+        $display("UNPACED+HDRSHIFT: writing 148 hdr words + 32833 blob words at gap=%0d (firmware offset-0 copy hypothesis)...", gap);
+      else if (contract)
+        $display("UNPACED+CONTRACT: writing 32833-word blob window k <- stored[k] (stale@W0, old documented model) at gap=%0d...", gap);
+      else
+        $display("UNPACED: writing 32832-word stripped blob window k <- stored[k+1] (observed host, 2026-11-17 SS HD) at gap=%0d (posted, no backpressure)...", gap);
+      if (hshift)
+        for (k = 0; k < 148; k = k + 1)
+          host_wr_unpaced(k[15:0], {real_hdr[4*k], real_hdr[4*k+1],
+                                    real_hdr[4*k+2], real_hdr[4*k+3]}, gap);
+      for (k = contract ? 0 : 1; k < 32833; k = k + 1) begin
+        widx = k - (contract ? 0 : 1) + (hshift ? 148 : 0);
+        host_wr_unpaced(widx[15:0], {real_blob[4*k], real_blob[4*k+1],
                                   real_blob[4*k+2], real_blob[4*k+3]}, gap);
+      end
       to = 0;
       while (!wr_drained_74a && to < 4000000) begin @(negedge clk_74a); to = to + 1; end
       $display("UNPACED: drain to=%0d drained=%b wr_ovf=%b", to, wr_drained_74a, wr_overflow_74a);
-      host_rd(16'd4, d);
-      $display("UNPACED: window word 4 (MAGIC) = %08h expect 41324c31", d);
+      host_rd(contract ? 16'd4 : 16'd3, d);
+      $display("UNPACED: window word %0d (MAGIC) = %08h expect 41324c31", contract ? 4 : 3, d);
       // localize the landing: scan the window for the MAGIC word and the
       // size word (real readback path, not the artifact-prone model probe)
       begin
@@ -774,7 +803,20 @@ module tb_savestate_integration;
                to, ss_load_ok, ss_load_err, u_slot.u_mgr.state);
       $display("UNPACED-VERDICT gap=%0d wr_ovf=%b load_ok=%b load_err=%b magic_ok=%b",
                gap, wr_overflow_74a, ss_load_ok, ss_load_err, (d === 32'h41324C31));
-      if (wr_overflow_74a === 1'b0 && ss_load_ok === 1'b1 && ss_load_err === 1'b0)
+      if (hshift) begin
+        // H6 reproduction: hardware shows SS LD -> immediate SS ERR with
+        // wr_ovf CLEAR. Offset-0 streaming puts the SPA1 header in window
+        // words 0..147 (word 4 = 0x672575BE, not MAGIC); the manager's size
+        // check then reads header word 2 (0x54030200 > SS_SIZE_DWORDS) and
+        // fails before the walk - no overflow possible (only ~33k words).
+        $display("HDRSHIFT-VERDICT wr_ovf=%b load_ok=%b load_err=%b w4=%08h (hdr word 4 expect 0a000000)",
+                 wr_overflow_74a, ss_load_ok, ss_load_err, d);
+        if (wr_overflow_74a === 1'b0 && ss_load_ok === 1'b0 && ss_load_err === 1'b1)
+          $display("HDRSHIFT-RESULT REPRODUCED");
+        else
+          $display("HDRSHIFT-RESULT UNEXPECTED");
+      end
+      else if (wr_overflow_74a === 1'b0 && ss_load_ok === 1'b1 && ss_load_err === 1'b0)
         $display("UNPACED-RESULT PASS");
       else
         $display("UNPACED-RESULT FAIL");
@@ -959,16 +1001,14 @@ module tb_savestate_integration;
     shadow_live[0] = 64'hFFFF_FFFF_FFFF_FFFF;
     shadow_live[3] = 64'hFFFF_FFFF_FFFF_FFFF;
 
-    // host writes the G1 blob back through the window using the REAL host
-    // transport (2026-11-15): stored = [stale, w0, w1, ..., w32831] (the
-    // host's one-word-behind latch), window k <- stored[k]. With the
-    // manager's +1 load mapping, B+1..B+32832 becomes exactly the saved
-    // blob - the only layout the hardware host can produce.
-    $display("G3: writing 32833-word blob through the host window (transport form)...");
-    host_wr(16'd0, 32'd0);                   // stored[0] = stale slot
-    for (w = 1; w < 32832; w = w + 1)
-      host_wr(w[15:0], blob_save[w-1]);
-    host_wr(16'd32832, blob_save[32831]);    // stored[32832]
+    // host writes the G1 blob back through the window in the OBSERVED
+    // transport form (2026-11-17 SS HD capture): the host's load-write
+    // strips the file's stale leading word, window k <- saved[k]. The
+    // window becomes word-identical to the save-time window, which the
+    // manager's load reads from BLOB_BASE (same base as save).
+    $display("G3: writing 32832-word blob through the host window (stripped transport form)...");
+    for (w = 0; w < 32832; w = w + 1)
+      host_wr(w[15:0], blob_save[w]);
     check("G3 no wr overflow", wr_overflow_74a === 1'b0);
 
     load_op("G3", 1'b0);
@@ -995,41 +1035,55 @@ module tb_savestate_integration;
     check("G4 preload fired exactly once (save only)", c_pre === 16'd1);
 
     // ================= G5: the REAL Pocket SD save now LOADS =============
-    // Feed the exact 32,833 words of the 11:57 .sta blob through the host
-    // window (hwr), then load. Its layout is [stale][counter][size]
-    // [{ver,cpu}][MAGIC][RAM...] - a valid save of the real machine. With
-    // the +1 ssrd mapping the manager must ACCEPT it and restore the real
-    // machine's RAM. (On the pre-fix bitstream this same file was rejected
-    // - the original "loading failed" - because the load read from B
-    // instead of B+1.)
+    // Feed the 32,832 words of the 11:57 .sta blob (STALE WORD STRIPPED -
+    // the observed hardware host behavior, 2026-11-17 SS HD capture)
+    // through the host window (hwr), then load. File layout is
+    // [stale][counter][size][{ver,cpu}][MAGIC][RAM...]; the host's
+    // load-write strips the stale word, so the window becomes
+    // [counter][size][{ver,cpu}][MAGIC][RAM...] at W0.. - exactly the
+    // save-time window, which the manager's load now reads from BLOB_BASE
+    // (the 2026-11-15 +1 base was a file-only decode, off by one word;
+    // it made hardware loads fail with fail_code 2 - see the SS HD brief).
+    // +CONTRACT restores the old documented model (stale at W0), which the
+    // corrected load base now REJECTS (header reads {counter,stale}/
+    // {vercpu,size}).
     begin
       integer k;
+      integer widx;
       reg [31:0] d;
       reg [7:0] r;
-      $display("G5: writing the real 115718 blob (32833 words) through the host window...");
-      for (k = 0; k < 32833; k = k + 1)
-        host_wr(k[15:0], {real_blob[4*k], real_blob[4*k+1],
+      $display("G5: writing the real 115718 blob (%0d words, %s) through the host window...",
+               contract ? 32833 : 32832, contract ? "contract model" : "stripped (observed host)");
+      for (k = contract ? 0 : 1; k < 32833; k = k + 1) begin
+        widx = k - (contract ? 0 : 1);
+        host_wr(widx[15:0], {real_blob[4*k], real_blob[4*k+1],
                           real_blob[4*k+2], real_blob[4*k+3]});
+      end
       check("G5 no wr overflow", wr_overflow_74a === 1'b0);
       // sanity: the window now holds the host-transported layout
       host_rd(16'd0, d);
-      check("G5 window word 0 = stale (0)", d === 32'd0);
-      host_rd(16'd2, d);
-      check("G5 window word 2 = size (0x8040)", d === 32'h00008040);
-      host_rd(16'd4, d);
-      check("G5 window word 4 = MAGIC", d === 32'h41324C31);
-      load_op("G5-real", 1'b0);
-      check("G5 real-file load ok", ss_load_err === 1'b0);
-      // machine RAM must match the file's RAM contents (spot checks). File
-      // word k = save word k-1. main 64-bit word r: LO = save word 64+2r
-      // (bytes 8r..8r+3), HI = 65+2r (bytes 8r+4..8r+7). main[77] = 8*9+5
-      // -> HI of r=9 -> save word 83 -> file word 84, byte 1 -> [23:16].
-      host_rd(16'd84, d);
+      check("G5 window word 0 = counter (2) / stale (0)",
+            (contract && d === 32'd0) || (!contract && d === 32'd2));
+      host_rd(contract ? 16'd2 : 16'd1, d);
+      check("G5 window word (contract?2:1) = size (0x8040)", d === 32'h00008040);
+      host_rd(contract ? 16'd4 : 16'd3, d);
+      check("G5 window word (contract?4:3) = MAGIC", d === 32'h41324C31);
+      load_op("G5-real", contract ? 1'b1 : 1'b0);   // contract model: expect REJECT now
+      if (contract)
+        check("G5 real-file load rejected (contract model)", ss_load_err === 1'b1);
+      else
+        check("G5 real-file load ok", ss_load_err === 1'b0);
+      // machine RAM must match the file's RAM contents (spot checks).
+      // Stripped window: Wk = save word k (window == save-time window).
+      // main 64-bit word r: LO = save word 64+2r (bytes 8r..8r+3),
+      // HI = 65+2r (bytes 8r+4..8r+7). main[77] = 8*9+5 -> HI of r=9 ->
+      // save word 83 -> W83, byte 1 -> [23:16].
+      host_rd(16'd83, d);
       mb_read(r, 16'd77, 1'b0);
       check("G5 main[77] == real-file byte", r === d[23:16]);
       // aux 64-bit word r: LO = save word 32832+2r. aux[4242] = 8*530+2 ->
-      // LO of r=530 -> save word 33892 -> file word 33893, byte 2 -> [15:8].
-      host_rd(16'd33893, d);
+      // LO of r=530 -> save word 33892 -> W33892, byte 2 -> [15:8].
+      host_rd(16'd33892, d);
       mb_read(r, 16'd4242, 1'b1);
       check("G5 aux[4242] == real-file byte", r === d[15:8]);
       check("G5 manager busy released", u_slot.u_mgr.busy === 1'b0);
@@ -1060,13 +1114,12 @@ module tb_savestate_integration;
       // corrupt the live state (so the load is observable)
       mb_write(16'd77, 8'h00, 1'b0);
       mb_write(16'd4242, 8'h00, 1'b1);
-      // host transport write (same form as G3; the blob differs from G1's
-      // only in the counter word - the RAM/shadow refilled identically)
-      host_wr(16'd0, 32'd0);
-      host_wr(16'd1, d);
-      for (k = 2; k < 32832; k = k + 1)
-        host_wr(k[15:0], blob_save[k-1]);
-      host_wr(16'd32832, blob_save[32831]);
+      // host transport write (observed form, 2026-11-17: stripped - Wk <-
+      // saved[k]; the blob differs from G1's only in the counter word - the
+      // RAM/shadow refilled identically)
+      host_wr(16'd0, d);                    // W0 = save2's counter (live word 0)
+      for (k = 1; k < 32832; k = k + 1)
+        host_wr(k[15:0], blob_save[k]);
       check("G6 no wr overflow", wr_overflow_74a === 1'b0);
       load_op("G6", 1'b0);
       check("G6 no err", ss_load_err === 1'b0);

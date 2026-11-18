@@ -103,8 +103,9 @@ MODE="${1:-}"
 rc=$?
 tail -30 "$MD/run.log"
 case "$MODE" in
-  +UNPACED*) MARKER="UNPACED-RESULT PASS" ;;
-  *)         MARKER="SAVESTATE INTEGRATION TB: PASS" ;;
+  *HDRSHIFT*) MARKER="HDRSHIFT-RESULT REPRODUCED" ;;
+  +UNPACED*)  MARKER="UNPACED-RESULT PASS" ;;
+  *)          MARKER="SAVESTATE INTEGRATION TB: PASS" ;;
 esac
 if grep -q "$MARKER" "$MD/run.log"; then
     echo "## RUN PASS (exit $rc)"

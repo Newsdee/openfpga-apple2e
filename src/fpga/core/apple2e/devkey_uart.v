@@ -75,6 +75,15 @@ module devkey_uart #(
     input  wire        ss_ok,      // start_ok | load_ok
     input  wire        ss_err,     // start_err | load_err
     input  wire [31:0] ss_status,  // the host_4C live word
+    // 2026-11-17 SS HD: load-header dump on SS ERR (REVERT for shipping).
+    // Snapshot of the two 64-bit header word pairs the manager read from
+    // the blob window + its error_code (0 none, 1 rejected, 2 invalid/empty,
+    // 3 incompatible). Discriminates H6 (host streamed the .sta from file
+    // offset 0: sshd0[63:32]=0x54030200, sshd1[63:32]=0x672575BE) from H4
+    // (nothing landed: both 0) on a load failure.
+    input  wire [63:0] ss_hd0,
+    input  wire [63:0] ss_hd1,
+    input  wire [1:0]  ss_hd_err,
     // 2026-11-16 savestate SSD/SSX serial debug (REVERT for shipping):
     // ctrl-domain snapshot (counters + state words) already crossed to 74a
     // via the toggle handshake in apf_stream_video_top.
@@ -368,10 +377,22 @@ module devkey_uart #(
                      && ev_err_l;
     wire sel_ok    = (gen_state == 2'b00) && !ev_start_l && !ev_load_l
                      && !ev_err_l && ev_ok_l;
+    // 2026-11-17 SS HD: fires once, right after the EV_ERR line for the
+    // same failed load (ev_sshd_l clears when this event is consumed).
+    // Gated on txf_empty: the 28-char burst must not land on a FIFO that
+    // still holds the previous line, or the 64-byte TX FIFO drops bytes
+    // (observed: 13 drops, truncated line, at 115200 baud).
+    wire sel_sshd  = (gen_state == 2'b00) && !ev_start_l && !ev_load_l
+                     && !ev_err_l && ev_sshd_l && txf_empty;
+    reg        ev_sshd_l;
+    reg [63:0] sshd0_s, sshd1_s;
+    reg [1:0]  sshd_e_s;
     always @(posedge clk) begin
         if (rst) begin
             ev_start_l <= 1'b0; ev_load_l <= 1'b0;
             ev_ok_l    <= 1'b0; ev_err_l  <= 1'b0;
+            ev_sshd_l  <= 1'b0;
+            sshd0_s    <= 64'd0; sshd1_s <= 64'd0; sshd_e_s <= 2'd0;
             ss_start_d1 <= 1'b0; ss_load_d1 <= 1'b0;
         end else begin
             ss_start_d1 <= ss_start;
@@ -380,6 +401,12 @@ module devkey_uart #(
             ev_load_l  <= ss_load_rise  | (ev_load_l  & ~sel_load);
             ev_err_l   <= (ss_busy_fall && ss_err)  | (ev_err_l & ~sel_err);
             ev_ok_l    <= (ss_busy_fall && !ss_err) | (ev_ok_l  & ~sel_ok);
+            ev_sshd_l  <= (ss_busy_fall && ss_err)  | (ev_sshd_l & ~sel_sshd);
+            if (ss_busy_fall && ss_err) begin   // snapshot header words
+                sshd0_s  <= ss_hd0;
+                sshd1_s  <= ss_hd1;
+                sshd_e_s <= ss_hd_err;
+            end
         end
     end
     // (The earlier done_err/done_ok latches were one fall late: they were
@@ -497,9 +524,10 @@ module devkey_uart #(
                EV_BTN  = 4'd10,
                EV_RXB  = 4'd11,
                EV_SSD  = 4'd12,   // 2026-11-16: save/load progress counters
-               EV_SSX  = 4'd13;   // 2026-11-16: port/owner/mgr state word
+               EV_SSX  = 4'd13,   // 2026-11-16: port/owner/mgr state word
+               EV_SSHD = 4'd14;   // 2026-11-17: load header dump (REVERT)
 
-    reg [7:0]  line [0:35];
+    reg [7:0]  line [0:47];   // 2026-11-17: widened 36->48 for SS HD headroom
     reg [3:0]  ev_r;
     reg [5:0]  len_r;
     reg [5:0]  idx_r;
@@ -745,6 +773,49 @@ module devkey_uart #(
                     default: char_for = 8'h0A;
                 endcase
             end
+            EV_SSHD: begin
+                // "SS HD " + hex8(sshd0_s[63:32]) + " " + hex8(sshd1_s[63:32])
+                //        + " E" + dec(sshd_e_s) + CRLF  (28 chars)
+                // 2026-11-17: kept <= 29 chars (SSD length) so the 64-byte TX
+                // FIFO does not drop bytes at 115200 baud (the 44-char full
+                // 64-bit dump overflowed it: 45 drops, lines desynced).
+                // sshd0_s[63:32] = size_dwords, sshd1_s[63:32] = MAGIC field:
+                //   H6 (host streams .sta from file offset 0):
+                //     54030200 672575BE E2
+                //   H4 (nothing landed):  00000000 00000000 E2
+                //   good blob (no fail):  00008040 41324C31 (line never emitted)
+                case (i)
+                    5'd0:  char_for = 8'h53;   // S
+                    5'd1:  char_for = 8'h53;   // S
+                    5'd2:  char_for = 8'h20;   // sp
+                    5'd3:  char_for = 8'h48;   // H
+                    5'd4:  char_for = 8'h44;   // D
+                    5'd5:  char_for = 8'h20;   // sp
+                    5'd6:  char_for = hexc(sshd0_s[63:60]);
+                    5'd7:  char_for = hexc(sshd0_s[59:56]);
+                    5'd8:  char_for = hexc(sshd0_s[55:52]);
+                    5'd9:  char_for = hexc(sshd0_s[51:48]);
+                    5'd10: char_for = hexc(sshd0_s[47:44]);
+                    5'd11: char_for = hexc(sshd0_s[43:40]);
+                    5'd12: char_for = hexc(sshd0_s[39:36]);
+                    5'd13: char_for = hexc(sshd0_s[35:32]);
+                    5'd14: char_for = 8'h20;   // sp
+                    5'd15: char_for = hexc(sshd1_s[63:60]);
+                    5'd16: char_for = hexc(sshd1_s[59:56]);
+                    5'd17: char_for = hexc(sshd1_s[55:52]);
+                    5'd18: char_for = hexc(sshd1_s[51:48]);
+                    5'd19: char_for = hexc(sshd1_s[47:44]);
+                    5'd20: char_for = hexc(sshd1_s[43:40]);
+                    5'd21: char_for = hexc(sshd1_s[39:36]);
+                    5'd22: char_for = hexc(sshd1_s[35:32]);
+                    5'd23: char_for = 8'h20;   // sp
+                    5'd24: char_for = 8'h45;   // E
+                    5'd25: char_for = 8'h30 + sshd_e_s;   // '0' + code
+                    5'd26: char_for = 8'h0D;
+                    5'd27: char_for = 8'h0A;
+                    default: char_for = 8'h0A;
+                endcase
+            end
             EV_ID: begin
                 // "ID " + hex8(ss_status) + " d" + hex2(tx_drop) + CRLF
                 case (i)
@@ -854,6 +925,9 @@ module devkey_uart #(
             end else if (sel_err) begin
                 gen_state <= 2'b01; ev_r <= EV_ERR;
                 len_r <= 6'd8; idx_r <= 6'd0;
+            end else if (sel_sshd) begin
+                gen_state <= 2'b01; ev_r <= EV_SSHD;
+                len_r <= 6'd28; idx_r <= 6'd0;
             end else if (sel_ok) begin
                 gen_state <= 2'b01; ev_r <= EV_OK;
                 len_r <= 6'd7; idx_r <= 6'd0;

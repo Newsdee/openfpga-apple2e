@@ -163,26 +163,24 @@ module tb_savestate_roundtrip;
     end
   endtask
 
-  // 2026-11-15: emulate the real Pocket host's blob transport between a
-  // SAVE and a LOAD (decoded from real .sta files + the probe brief's
-  // host-protocol round): the host's read burst latches ONE WORD BEHIND
-  // (APF read buffer): stored = [stale, data(B), data(B+1), ...
-  // data(B+32831)], and the host's load-write puts stored[k] back at B+k.
-  // Net effect on SDRAM: word 0 <- stale(0); word k <- old word k-1
-  // (k = 1..32832). The manager's LOAD now reads from B+1 (ssrd +1
-  // mapping in savestate_slot), so B+1..B+32832 after transport is exactly
-  // the saved blob - the only layout the hardware host can produce.
+  // 2026-11-15 -> 2026-11-17 (SS HD capture, corrected): emulate the real
+  // Pocket host's blob transport between a SAVE and a LOAD. The host's
+  // save-read latches ONE WORD BEHIND (APF read buffer): file section =
+  // [stale, data(B), ..., data(B+32831)]. The host's load-write STRIPS the
+  // stale word and restores data(B+k) at B+k. Net effect on SDRAM:
+  // word k <- old word k (k = 0..32831) - the window after transport is
+  // word-identical to the save-time window, which the manager's LOAD reads
+  // from BLOB_BASE (same base as save; the 2026-11-15 +1 base was a
+  // file-only decode, off by one word - see the SS HD brief).
   reg [31:0] htmp [0:32831];
   task host_transport(input string tag);
     integer k;
     begin
       for (k = 0; k < 32832; k = k + 1)
         htmp[k] = sdram_read(k[15:0]);
-      sdram_write(16'd0, 32'd0);              // stored[0] = stale slot
-      for (k = 1; k < 32832; k = k + 1)
-        sdram_write(k[15:0], htmp[k-1]);
-      sdram_write(16'd32832, htmp[32831]);    // stored[32832]
-      $display("%s: host transport applied (stale@0, shift +1)", tag);
+      for (k = 0; k < 32832; k = k + 1)
+        sdram_write(k[15:0], htmp[k]);       // stripped: Wk <- saved[k]
+      $display("%s: host transport applied (stale stripped, Wk <- saved[k])", tag);
     end
   endtask
 
@@ -803,36 +801,37 @@ module tb_savestate_roundtrip;
     check("T2 resaved blob == T1 blob (round-trip closed)", nloop == 0);
 
     // ================= T3: LOAD error taxonomy =================
-    // post-transport layout (host shift +1): word 0 = stale slot, word 1
-    // = counter, word 2 = SS_SIZE_DWORDS, word 3 = {version, reserved,
-    // cpu}, word 4 = MAGIC (the +1 mapping's header reads: slot0 [63:32]
-    // = word 2, slot1 [63:32] = word 4, slot1 [31:24] = word 3[31:24],
-    // slot1 [0] = word 3[0])
+    // post-transport layout (observed host, 2026-11-17: stale stripped):
+    // word 0 = counter, word 1 = SS_SIZE_DWORDS, word 2 = {version,
+    // reserved, cpu}, word 3 = MAGIC. The BLOB_BASE mapping's header
+    // reads: slot0 [63:32] = word 1 (size), slot1 [63:32] = word 3
+    // (MAGIC), slot1 [31:24] = word 2[31:24] (ver), slot1 [0] = word 2[0]
+    // (cpu).
     host_transport("T3");
     // bad magic
-    sdram_write(4, 32'hDEAD_BEEF);
+    sdram_write(3, 32'hDEAD_BEEF);
     load_op("T3a", 1'b1);
     check("T3a bad magic -> err", ss_load_err === 1'b1);
-    sdram_write(4, 32'h41324C31);
+    sdram_write(3, 32'h41324C31);
     // bad version
-    sdram_write(3, 32'h0200_0001);
+    sdram_write(2, 32'h0200_0001);
     load_op("T3b", 1'b1);
     check("T3b bad version -> err", ss_load_err === 1'b1);
-    sdram_write(3, 32'h0100_0001);
+    sdram_write(2, 32'h0100_0001);
     // bad cpu
-    sdram_write(3, 32'h0100_0000);
+    sdram_write(2, 32'h0100_0000);
     load_op("T3c", 1'b1);
     check("T3c bad cpu -> err", ss_load_err === 1'b1);
-    sdram_write(3, 32'h0100_0001);
+    sdram_write(2, 32'h0100_0001);
     // zero size
-    sdram_write(2, 32'd0);
+    sdram_write(1, 32'd0);
     load_op("T3d", 1'b1);
     check("T3d zero size -> err", ss_load_err === 1'b1);
     // oversized
-    sdram_write(2, 32'd32833);
+    sdram_write(1, 32'd32833);
     load_op("T3e", 1'b1);
     check("T3e oversized -> err", ss_load_err === 1'b1);
-    sdram_write(2, 32'd32832);
+    sdram_write(1, 32'd32832);
     // failed loads left the machine intact
     begin
       reg [7:0] r;

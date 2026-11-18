@@ -15,6 +15,10 @@ module tb_devkey_uart;
     // input). Layout: {8 spare, 8 cmd-while-busy, 20 wr_req, 20 wr_done,
     // 20 rd_req, 20 rd_done, 16 storage state, 16 slot state}.
     reg [127:0] ssd_snap = 128'h0;
+    // 2026-11-17 SS HD: source of the load-header dump snapshot
+    reg [63:0] ss_hd0 = 0;
+    reg [63:0] ss_hd1 = 0;
+    reg [1:0]  ss_hd_err = 0;
     reg button = 0;
     reg host_tx = 1;
     wire uart_tx, uart_rx, led;
@@ -37,6 +41,7 @@ module tb_devkey_uart;
         .clk(clk), .rst(rst), .ss_start(ss_start), .ss_load(ss_load),
         .ss_busy(ss_busy), .ss_ok(ss_ok), .ss_err(ss_err), .ss_status(ss_status),
         .ssd_snap(ssd_snap),
+        .ss_hd0(ss_hd0), .ss_hd1(ss_hd1), .ss_hd_err(ss_hd_err),
         .button(key_button), .uart_rx(uart_rx), .uart_tx(uart_tx), .led(led)
     );
 
@@ -46,6 +51,7 @@ module tb_devkey_uart;
         .clk(clk), .rst(rst), .ss_start(ss_start), .ss_load(ss_load),
         .ss_busy(ss_busy), .ss_ok(ss_ok), .ss_err(ss_err), .ss_status(ss_status),
         .ssd_snap(ssd_snap),
+        .ss_hd0(ss_hd0), .ss_hd1(ss_hd1), .ss_hd_err(ss_hd_err),
         .button(key_button), .uart_rx(uart_rx), .uart_tx(mirror_tx),
         .led(mirror_led)
     );
@@ -205,7 +211,21 @@ module tb_devkey_uart;
         repeat (10) @(negedge clk);
         ss_busy = 0;
         expect_line("SS ERR", mark);
+        // 2026-11-17 SS HD: a failed load also emits the load-header dump
+        // line one scan after SS ERR (snapshot taken at the ss_busy fall
+        // while ss_err is high; error_code 2 = invalid/empty).
+        ss_hd0    = 64'h00008040_00000002;
+        ss_hd1    = 64'h41324C31_01000001;
+        ss_hd_err = 2'b10;
+        ss_busy = 1;
+        pulse_command(0);
+        ss_err = 1;
+        repeat (10) @(negedge clk);
+        ss_busy = 0;
+        expect_line("SS ERR", mark);
+        expect_line("SS HD 00008040 41324C31 E2", mark);
         ss_err = 0;
+        ss_hd0 = 0; ss_hd1 = 0; ss_hd_err = 0;
         $display("PASS save/load event and completion lines");
 
         // 2026-11-16: SSD/SSX progress/state lines + mid-build event latch.

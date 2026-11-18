@@ -146,6 +146,15 @@ module sdram_status_overlay (
     // window and are not covered by SHOW_FP.
     parameter OVL_DBG = 1'b0;
 
+    // 2026-11-17 diagnostic-build trim. 1 = draw ONLY the SS liveness line
+    // (pxss: "SS W=NNNN B#D#S#") and constant-gate every other text pipeline
+    // (the fitter elides them - ~1.8K ALMs in the 23:19 fit); the detail has
+    // moved to the devkey UART (SSD/SSX/SS HD lines report the same
+    // registers and much more). 0 = every pipeline as before. Only meaningful
+    // with OVL_DBG=1 (the rgb_out white-gate); shipping (OVL_DBG=0) already
+    // trims all text, so this only shrinks diagnostic builds.
+    parameter OVL_SS_ONLY = 1'b0;
+
     // ---- glyph codes ----
     // 0-9 -> 0-9, A=11 B=12 C=13 D=14 E=15 F=16, O=17 K=18 R=19 I=20
     // L=21 V=22 T=23 S=24 '='=25 ' '=26 N=27, M=28
@@ -1004,8 +1013,11 @@ module sdram_status_overlay (
     wire led_mot_dark = st_mot && act_fls;   // dark   red = floppy SPIN (active/motor)
     wire led_io  = st_io  && act_io;   // white = HD block completed
 
-    wire ovl_px = mpx || px1 || px2 || px3 || px4 || px5 || px6 || px7 ||
-                  px8 || pxh || pxpc || pxda || px9 || px10 || px11 || dbg_px || pxjoy || pxss;
+    // 2026-11-17: OVL_SS_ONLY=1 keeps just the SS liveness line (pxss);
+    // the other pipelines constant-gate to 0 and are fitter-elided.
+    wire ovl_px_full = mpx || px1 || px2 || px3 || px4 || px5 || px6 || px7 ||
+                px8 || pxh || pxpc || pxda || px9 || px10 || px11 || dbg_px || pxjoy;
+    wire ovl_px = OVL_SS_ONLY ? pxss : (ovl_px_full || pxss);
     // J11 (2026-10-25): drawing is additionally gated by debug_en - clean
     // screen during gameplay, diagnostics visible at boot and while the
     // on-screen keyboard is up. J9: the drive LEDs always override in.

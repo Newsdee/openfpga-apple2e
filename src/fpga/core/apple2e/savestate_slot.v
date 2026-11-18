@@ -10,15 +10,21 @@
 //    owner clients CL_SS_RD (level read) and CL_SS_WR (pulse write). One
 //    64-bit slot word = TWO SDRAM words (low 32 bits first): SAVE writes
 //    slot_addr a -> SDRAM {BLOB_BASE + 2a, BLOB_BASE + 2a + 1}; LOAD reads
-//    slot_addr a -> SDRAM {BLOB_BASE + 1 + 2a, BLOB_BASE + 2 + 2a} - the +1
-//    word is the host's transport shift (2026-11-15, decoded from real .sta
-//    files + the EXPERT_BRIEF_SAVESTATE_PROBE host-protocol round):
-//    the host's read burst latches ONE WORD BEHIND (APF read buffer):
-//    stored blob = [stale, data(B), data(B+1), ..., data(B+32831)], and the
-//    host's load-write puts stored[k] back at B+k. So after a host
-//    round-trip the savestate sits at B+1.. (word B = the stale slot), and
-//    the manager's load must read from B+1. The save keeps writing at B:
-//    its word B (the counter) becomes the file's stored[1].
+//    slot_addr a -> SDRAM {BLOB_BASE + 2a, BLOB_BASE + 2a + 1} - SAME base
+//    as save (2026-11-17, corrected by the first direct window observation,
+//    devkey "SS HD" dump on the 22:45 diagnostic build):
+//    the host's save-read latches ONE WORD BEHIND (APF read buffer), so the
+//    .sta file section is [stale, data(B), data(B+1), ..., data(B+32831)];
+//    the host's load-write STRIPS the stale word and restores data(B+k)
+//    at B+k. The window after a host round-trip is therefore word-identical
+//    to the save-time window, and the manager's load reads the same words
+//    the save wrote (base B). The 2026-11-15 B+1 base - decoded from file
+//    contents alone, assuming the host restores stored[k] at B+k including
+//    the stale word - was off by one: on hardware the manager then read
+//    {vercpu,size} where {size,counter} belongs and {RAM0,MAGIC} where
+//    {MAGIC,vercpu} belongs -> fail_code 2, instant ERR, no overflow
+//    (SS HD 01000001 00000000). See EXPERT_BRIEF_SAVESTATE_LOAD_WROVF
+//    _HYPOTHESES_2026-11-17.md section 9.
 //  * core_bridge_cmd handshake contract (proven on hardware by the W0 probe,
 //    EXPERT_BRIEF_SAVESTATE_PROBE rounds 1-3b): ack one cycle after the
 //    start/load rising edge; ok/err latched on manager completion, held
@@ -71,6 +77,10 @@ module savestate_slot (
     // 2026-11-16 savestate SSD/SSX serial debug (REVERT for shipping):
     // ctrl-domain state word for the tracer's SSX line.
     output wire [15:0] dbg_ss_state,
+    // 2026-11-17 SS HD: load-header words + manager error_code (REVERT for shipping)
+    output wire [63:0] dbg_hdr0,
+    output wire [63:0] dbg_hdr1,
+    output wire [1:0]  dbg_errcode,
     // ---- machine domain ----
     input  wire        clk_mach,
     input  wire        rst_mach,             // active-LOW (machine reset)
@@ -110,6 +120,7 @@ module savestate_slot (
     // ======================================================================
     wire        mgr_busy_m, mgr_done_m, mgr_err_m;
     wire [1:0]  mgr_errcode_m;
+    wire [1:0]  mgr_last_fail_m;   // 2026-11-17 SS HD: sticky fail code
     wire        mgr_request_save, mgr_request_load;
     wire [14:0] mgr_slot_addr_m;
     wire        mgr_slot_rd, mgr_slot_wr;
@@ -131,7 +142,10 @@ module savestate_slot (
         .done(mgr_done_m),
         .error(mgr_err_m),
         .error_code(mgr_errcode_m),
+        .last_fail_code(mgr_last_fail_m),
         .dbg_state(mgr_dbg_state_m),
+        .dbg_hdr0(dbg_hdr0),
+        .dbg_hdr1(dbg_hdr1),
         .locked_cpu_type(),
         .ss_addr(ss_addr),
         .ss_wdata(ss_wdata),
@@ -253,12 +267,14 @@ module savestate_slot (
                                        // manager (corrupted shadow/RAM).
     wire ssrd_addr_stable_c = (ssrd_addr_c == ssrd_addr_d1);
     wire [23:0] ssrd_word_hi_c = ssrd_base_c + 24'd1;
-    // +1 word: the host's load-write places the blob at B.. with stored[0]
-    // (its stale first-latch word) at B, so the savestate proper sits at
-    // B+1 (2026-11-15; see the header's host-transport note). The SAVE
-    // (sswr) base is NOT shifted - it writes at B and the host's one-word
-    // behind latch captures it as the file's word 1.
-    wire [24:0] ssrd_base_sum  = {1'b0, BLOB_BASE + 24'd1} + {9'd0, ssrd_addr_c, 1'b0};
+    // Load base = BLOB_BASE (same as save): the host's load-write strips
+    // the stale first-latch word and restores data(B+k) at B+k, so the
+    // window after a host round-trip equals the save-time window and the
+    // load reads exactly the words the save wrote (2026-11-17 SS HD
+    // evidence; see the header's host-transport note). The SAVE (sswr)
+    // base is B as well; the host's one-word-behind read latch captures
+    // it as the file's word 1 (after its stale word 0).
+    wire [24:0] ssrd_base_sum  = {1'b0, BLOB_BASE} + {9'd0, ssrd_addr_c, 1'b0};
     always @(posedge clk_ctrl) begin
         ssrd_lvl_c   <= {ssrd_lvl_c[0], mgr_slot_rd};
         // 2FF vector sync (mach -> ctrl): the manager holds slot_addr
@@ -463,6 +479,7 @@ module savestate_slot (
     //   [10:7] sswr_retry         [11:10] ssrd_st     [13:12] sswr_st
     //   [15] spare
     wire [4:0] mgr_dbg_state_m;
+    assign dbg_errcode = mgr_last_fail_m;   // 2026-11-17 SS HD (sticky; error_code is a 1-cycle pulse)
     assign dbg_ss_state = {1'b0, sswr_st, ssrd_st, sswr_retry,
                            sswr_stall, sswr_inflight, mgr_dbg_state_m};
     assign dbg_word_idx   = sswr_addr[15:0];

@@ -15,6 +15,9 @@ module savestate_manager (
   output reg         done,
   output reg         error,
   output reg  [1:0]  error_code,  // 0 none, 1 rejected, 2 invalid/empty, 3 incompatible
+  output reg  [63:0] dbg_hdr0,    // 2026-11-17 SS HD: last header read 0 ({size,counter})
+  output reg  [63:0] dbg_hdr1,    // SS HD: last header read 1 ({MAGIC,{ver,cpu}})
+  output reg  [1:0]  last_fail_code,  // SS HD: sticky last FAIL code (0 = none yet; REVERT for shipping)
   output reg         locked_cpu_type,
 
   output reg  [9:0]  ss_addr,
@@ -167,6 +170,8 @@ module savestate_manager (
       pack_word <= 64'd0;
       load_word <= 64'd0;
       header0_read <= 64'd0;
+      dbg_hdr0    <= 64'd0;
+      dbg_hdr1    <= 64'd0;
       ss_counter <= 32'd1;
     end else begin
       case (state)
@@ -255,11 +260,13 @@ module savestate_manager (
         LOAD_HEADER0: begin
           if (slot_ready) begin
             header0_read <= slot_rdata;
+            dbg_hdr0     <= slot_rdata;   // SS HD: capture header word pair 0
             state <= LOAD_HEADER1;
           end
         end
         LOAD_HEADER1: begin
           if (slot_ready) begin
+            dbg_hdr1 <= slot_rdata;   // SS HD: capture header word pair 1
             // word 1 = {MAGIC, version, reserved[23:1], cpu}; word 0 = {size, counter}.
             // Empty slot or non-state word 1 -> 2 (invalid/empty); wrong version or
             // CPU -> 3 (incompatible); bad size -> 2 (invalid). Counter is ignored.
@@ -360,5 +367,18 @@ module savestate_manager (
         end
       endcase
     end
+  end
+
+  // SS HD (REVERT for shipping): sticky copy of the last FAIL code.
+  // error_code and fail_code are one-cycle pulses (cleared at the top of
+  // the main always block every cycle), so the devkey's edge-sampled latch
+  // (ss_busy_fall && ss_err, 2+ cycles after FAIL) always reads 0. This
+  // register holds the code until the next failure, so the "SS HD" line
+  // prints the true reject code (2 = invalid/empty, 3 = incompatible).
+  always @(posedge clk) begin
+    if (reset)
+      last_fail_code <= 2'd0;
+    else if (state == FAIL)
+      last_fail_code <= fail_code;
   end
 endmodule

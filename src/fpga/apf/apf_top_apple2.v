@@ -48,7 +48,12 @@ module apf_top_apple2
     // hardware save failure can be photographed. REVERT TO 1'b0 BEFORE ANY
     // SHIPPING BUILD - a shipping core must not draw debug text.
     #(
-        parameter OVL_SS_DIAG = 1'b1
+        parameter OVL_SS_DIAG = 1'b1,
+        // 2026-11-17: overlay trim - in diagnostic builds draw ONLY the SS
+        // liveness line ("SS W=NNNN B#D#S#") on screen; the devkey UART
+        // (SSD/SSX/SS HD) carries the rest. REVERT TO 1'b0 WITH
+        // OVL_SS_DIAG BEFORE ANY SHIPPING BUILD.
+        parameter OVL_SS_ONLY = 1'b1
     ) (
 
 ///////////////////////////////////////////////////
@@ -355,7 +360,7 @@ io_bridge_peripheral ibs (
 ///////////////////////////////////////////////////
 // instantiate the user core top-level
 
-stream_video_core_top #(.OVL_SS_DIAG(OVL_SS_DIAG)) ic (
+stream_video_core_top #(.OVL_SS_DIAG(OVL_SS_DIAG), .OVL_SS_ONLY(OVL_SS_ONLY)) ic (
 
     // physical connections 
     //
