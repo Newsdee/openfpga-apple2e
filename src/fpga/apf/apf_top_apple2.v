@@ -47,13 +47,17 @@ module apf_top_apple2
     // on-screen debug overlay (SS progress line + other debug lines) so a
     // hardware save failure can be photographed. REVERT TO 1'b0 BEFORE ANY
     // SHIPPING BUILD - a shipping core must not draw debug text.
+    // SHIPPING (2026-11-18): savestate-phase diagnostic switches OFF.
+    // OVL_SS_DIAG/OVL_SS_ONLY = 0: no overlay text (the rgb_out white-gate
+    // dies with the parameter). DEVKEY_DIAG = 0: no devkey serial console
+    // (devkey_uart module + all DUT tap ports stay in the tree; only the
+    // instantiation is gated). To rebuild a diagnostic bitstream flip all
+    // three to 1 - the full diagnostic tree is git commit fbccf45 (and the
+    // staged builds/2026-11-18_0954_ovlssonly).
     #(
-        parameter OVL_SS_DIAG = 1'b1,
-        // 2026-11-17: overlay trim - in diagnostic builds draw ONLY the SS
-        // liveness line ("SS W=NNNN B#D#S#") on screen; the devkey UART
-        // (SSD/SSX/SS HD) carries the rest. REVERT TO 1'b0 WITH
-        // OVL_SS_DIAG BEFORE ANY SHIPPING BUILD.
-        parameter OVL_SS_ONLY = 1'b1
+        parameter OVL_SS_DIAG = 1'b0,
+        parameter OVL_SS_ONLY = 1'b0,
+        parameter DEVKEY_DIAG = 1'b0
     ) (
 
 ///////////////////////////////////////////////////
@@ -360,7 +364,8 @@ io_bridge_peripheral ibs (
 ///////////////////////////////////////////////////
 // instantiate the user core top-level
 
-stream_video_core_top #(.OVL_SS_DIAG(OVL_SS_DIAG), .OVL_SS_ONLY(OVL_SS_ONLY)) ic (
+stream_video_core_top #(.OVL_SS_DIAG(OVL_SS_DIAG), .OVL_SS_ONLY(OVL_SS_ONLY),
+                       .DEVKEY_DIAG(DEVKEY_DIAG)) ic (
 
     // physical connections 
     //

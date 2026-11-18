@@ -631,6 +631,12 @@ end
         end
     end
 
+    // 2026-11-18: DEVKEY_DIAG-gated (shipping = gone). The ~10 Hz ssd_snap
+    // CDC path and the devkey_uart console form ONE unit (the console is
+    // the only consumer of the snapshot) and live in ONE generate scope -
+    // Quartus 17 does not resolve identifiers across sibling generate
+    // scopes (Error 10162 on the split-scope version).
+    generate if (DEVKEY_DIAG) begin : g_devkey_diag
     // Frozen snapshot + toggle handshake (ctrl domain). Captured on a ~10 Hz
     // ctrl tick, toggled on the same edge (payload valid from the next cycle;
     // the 3FF below sees it settled), held frozen until the next tick.
@@ -709,6 +715,14 @@ end
         .ss_hd1     ( ss_dbg_hdr1 ),         // 2026-11-17 SS HD (REVERT)
         .ss_hd_err  ( ss_dbg_errcode )       // 2026-11-17 SS HD (REVERT)
     );
+    end
+    else begin : g_no_devkey
+        // Shipping: no console. UART TX pad held at mark (1), LED off;
+        // dk_button/dk_uart_rx from debug_key stay unconnected (elided).
+        assign dk_uart_tx = 1'b1;
+        assign dk_led_s   = 1'b0;
+    end
+    endgenerate
     // Layout (see core_bridge_cmd host_4C comment):
     //   [15:0] word  [16] done  [17] busy  [18] stall
     //   [19] rd_ovf  [20] wr_ovf  [24:21] retry  [28:25] rd_hw  [31:29] 0
@@ -1948,6 +1962,15 @@ parameter OVL_DEBUG = 1'b0;   // SHIPPING (0.3.5): debug text/lines off; drive l
     // 1 = SS liveness line only. The top (apf_top_apple2) passes its own
     // copy through; shipping default 0.
     parameter OVL_SS_ONLY = 1'b0;
+
+    // 2026-11-18: shipping gate for the dev-key serial console. 1 =
+    // instantiate devkey_uart (115200 tracer + SSD/SSX/SS HD savestate
+    // event lines) plus the ~10 Hz ssd_snap CDC path; 0 = shipping: no
+    // console (dk_uart_tx tied to UART mark, dk_led off). The devkey_uart
+    // module and all DUT tap ports stay in the tree (TBs keep compiling);
+    // only the instantiation is gated. The top (apf_top_apple2) passes its
+    // own copy through.
+    parameter DEVKEY_DIAG = 1'b0;
                               // (2026-11-07 the HDV K/W readout diagnostic was on for the hardware
                               // re-test; reverted now that the RD_PRIME_STAGE fix is validated.)
 

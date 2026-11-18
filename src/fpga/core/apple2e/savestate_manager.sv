@@ -44,6 +44,13 @@ module savestate_manager (
   // SERIAL_DEBUG_PROPOSAL).
   output wire [4:0]  dbg_state
 );
+
+  // 2026-11-18: shipping gate for the SS HD latches (dbg_hdr0/1,
+  // last_fail_code). 0 = latches hold their reset value (0); 1 = capture
+  // (diagnostic builds). The ports stay in the interface so testbenches are
+  // unaffected; re-enable by passing .SS_DBG(1) at the slot's manager
+  // instance when a future diagnostic build needs the header readout.
+  parameter SS_DBG = 1'b0;
   localparam [31:0] MAGIC = 32'h41324C31;
   localparam [15:0] USED_WORDS = 16'd16416;        // 64-bit slot words 0..16415
   localparam [31:0] SS_SIZE_DWORDS = 32'd32832;    // payload in 32-bit units = 2 * USED_WORDS
@@ -260,13 +267,13 @@ module savestate_manager (
         LOAD_HEADER0: begin
           if (slot_ready) begin
             header0_read <= slot_rdata;
-            dbg_hdr0     <= slot_rdata;   // SS HD: capture header word pair 0
+            if (SS_DBG) dbg_hdr0 <= slot_rdata;   // SS HD (gated; shipping holds 0)
             state <= LOAD_HEADER1;
           end
         end
         LOAD_HEADER1: begin
           if (slot_ready) begin
-            dbg_hdr1 <= slot_rdata;   // SS HD: capture header word pair 1
+            if (SS_DBG) dbg_hdr1 <= slot_rdata;   // SS HD (gated; shipping holds 0)
             // word 1 = {MAGIC, version, reserved[23:1], cpu}; word 0 = {size, counter}.
             // Empty slot or non-state word 1 -> 2 (invalid/empty); wrong version or
             // CPU -> 3 (incompatible); bad size -> 2 (invalid). Counter is ignored.
@@ -378,7 +385,7 @@ module savestate_manager (
   always @(posedge clk) begin
     if (reset)
       last_fail_code <= 2'd0;
-    else if (state == FAIL)
+    else if (SS_DBG && state == FAIL)
       last_fail_code <= fail_code;
   end
 endmodule
