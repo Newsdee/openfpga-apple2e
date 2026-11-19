@@ -29,6 +29,7 @@ module speaker_i2s (
     input  wire        spk_bit,   // 1-bit speaker (machine domain, m_spk)
     input  wire        mb_in_m,   // Mockingboard inslot option (machine domain)
     input  wire [1:0]  mb_gain_m, // MB volume slider 00 off / 01 1x / 10 2x / 11 3x (machine domain)
+    input  wire [1:0]  spk_gain_m, // beeper volume slider 00 1x / 01 2x / 10 3x / 11 4x (machine domain)
     input  wire [9:0]  mb_l,      // MB O_AUDIO_L 10-bit sample sum (machine domain)
     input  wire [9:0]  mb_r,      // MB O_AUDIO_R 10-bit sample sum (machine domain)
     input  wire [9:0]  fs_l,      // floppy sound LEFT amplitude 0..1023 (machine dom, 0 = idle)
@@ -136,6 +137,7 @@ module speaker_i2s (
     reg        mb_vld_s1 = 1'b0, mb_vld_s2 = 1'b0;
     reg        mb_in_s1, mb_in_s2;
     reg [1:0]  mb_gain_s1, mb_gain_s2;
+    reg [1:0]  spk_gain_s1, spk_gain_s2;
     always @(posedge mclk) begin
         duty_s1 <= spk_avg;
         duty_s2 <= duty_s1;
@@ -155,6 +157,7 @@ module speaker_i2s (
         end
         mb_in_s1 <= mb_in_m;  mb_in_s2 <= mb_in_s1;
         mb_gain_s1 <= mb_gain_m;  mb_gain_s2 <= mb_gain_s1;
+        spk_gain_s1 <= spk_gain_m;  spk_gain_s2 <= spk_gain_s1;
     end
 
     wire [ 9:0] d_in  = duty_s2;                       // 0..512 (raw unsigned)
@@ -247,6 +250,17 @@ module speaker_i2s (
     wire [15:0] mb_term_r = mb_in_s2 ? mb_word_r : 16'd0;
     wire signed [16:0] spk_s17_l = {spk_word[15], spk_word};
     wire signed [16:0] spk_s17_r = {spk_word[15], spk_word};
+    // Beeper volume slider (spk_gain_s2): 00 = x1 (today's exact word),
+    // 01 = x2, 10 = x3, 11 = x4. Exact 17-bit forms: max |spk_word| is
+    // 8192 (d_sdiff16 << 5), so x4 = 32768 still fits 17-bit signed.
+    // The final sum widens to 18 bits because x4 beeper + x48 MB +
+    // floppy can reach 32768 + 32767 + 8184 = 73,719 (17-bit max 65,535).
+    wire signed [16:0] spk_x2_l = spk_s17_l << 1;                 // -16384..+16384
+    wire signed [16:0] spk_x3_l = spk_s17_l + (spk_s17_l << 1);    // -24576..+24576
+    wire signed [16:0] spk_x4_l = spk_s17_l << 2;                  // -32768..+32768
+    wire signed [16:0] spk_g17_l = spk_gain_s2[1] ? (spk_gain_s2[0] ? spk_x3_l : spk_x4_l)
+                                            : (spk_gain_s2[0] ? spk_x2_l : spk_s17_l);
+    wire signed [16:0] spk_g17_r = spk_g17_l;   // mono speaker: same both channels
     wire signed [16:0] mbt_s17_l = {mb_term_l[15], mb_term_l};
     wire signed [16:0] mbt_s17_r = {mb_term_r[15], mb_term_r};
     // Floppy term: unsigned amplitude x8 (0..8184, always non-negative
@@ -255,12 +269,26 @@ module speaker_i2s (
     wire [15:0]  fs_word_r = {3'b000, fs_r_c, 3'b000};
     wire signed [16:0] fs_s17_l = {1'b0, fs_word_l};   // 17-bit, exact: fs is unsigned (positive addend)
     wire signed [16:0] fs_s17_r = {1'b0, fs_word_r};   // 17-bit, exact
-    wire signed [16:0] sum_l = spk_s17_l + mbt_s17_l + fs_s17_l;
-    wire signed [16:0] sum_r = spk_s17_r + mbt_s17_r + fs_s17_r;
-    wire [15:0] out_l16 = (sum_l > 17'sd32767 ? 16'sd32767 :
-                           (sum_l < -17'sd32768 ? 16'h8000 : sum_l[15:0]));
-    wire [15:0] out_r16 = (sum_r > 17'sd32767 ? 16'sd32767 :
-                           (sum_r < -17'sd32768 ? 16'h8000 : sum_r[15:0]));
+    // 18-bit sum: the 17-bit signed addends sign-extend with THEIR SIGN
+    // BIT (a constant-0 prefix would flip negative addends positive -
+    // found 2026-11-19: the MB negative rail became +32768 and the beeper
+    // negative half flipped to the positive rail). fs is unsigned (the
+    // floppy amplitude, top bit always 0) so its 0-prefix is exact.
+    wire signed [17:0] sum_l = {spk_g17_l[16], spk_g17_l} + {mbt_s17_l[16], mbt_s17_l} + {1'b0, fs_s17_l};
+    wire signed [17:0] sum_r = {spk_g17_r[16], spk_g17_r} + {mbt_s17_r[16], mbt_s17_r} + {1'b0, fs_s17_r};
+    // 18-bit to 16-bit SATURATE, sign-magnitude form (unsigned compares
+    // only - Verilator 5.050 evaluates signed-looking comparisons on this
+    // sum UNSIGNED, and the old 17-bit code hid that: -32768 has the same
+    // top bit in 17 and 18 bits).
+    //   sum > +32767  <=> bit17==0 and mag[16:0] > 17'd32767
+    //   sum < -32768  <=> bit17==1 and |sum| > 32768, where
+    //   |sum| = (bits - 2^17) - 1 = ~bits[16:0] + 1  (bit17 discarded)
+    wire [16:0] sum_mag_l = ~sum_l[16:0] + 17'd1;
+    wire [15:0] out_l16 = (sum_l[17] ? (sum_mag_l > 17'd32768 ? 16'h8000 : sum_l[15:0])
+                                     : (sum_l[16:0] > 17'd32767 ? 16'sd32767 : sum_l[15:0]));
+    wire [16:0] sum_mag_r = ~sum_r[16:0] + 17'd1;
+    wire [15:0] out_r16 = (sum_r[17] ? (sum_mag_r > 17'd32768 ? 16'h8000 : sum_r[15:0])
+                                     : (sum_r[16:0] > 17'd32767 ? 16'sd32767 : sum_r[15:0]));
 
     // ------------------------------------------------------------------
     // 3. I2S shift-out: 16 active + 16 dummy bits per channel

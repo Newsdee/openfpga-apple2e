@@ -34,10 +34,12 @@ module tb_floppy_sound_chain;
     reg        reset = 1'b1;
     reg        fs_en = 1'b0;
     reg        drv_motor = 1'b0, drv_step = 1'b0, drv_trk0 = 1'b0, drv_io = 1'b0;
+    reg [1:0]  fs_gain = 2'd0;    // donor gain: 0=x1, 1=x2, 2=x4 (C5)
+    reg [1:0]  spk_gain = 2'd0;   // beeper slider: 0=x1, 1=x2, 3=x4 (C6)
     wire [9:0] fs_l, fs_r;
 
     floppy_sound u_fs (
-        .clk(clk), .reset(reset), .enable(fs_en), .gain(2'd0), .pan(2'd3),
+        .clk(clk), .reset(reset), .enable(fs_en), .gain(fs_gain), .pan(2'd3),
         .drive1_motor(drv_motor), .drive2_motor(1'b0),
         .drive1_io(drv_io), .drive2_io(1'b0),
         .drive1_step(drv_step), .drive2_step(1'b0),
@@ -48,11 +50,16 @@ module tb_floppy_sound_chain;
     reg        spk_on = 1'b0;
     reg [14:0] beep_cnt = 15'd0;
     reg        spk_bit = 1'b0;
+    // 50% square at 2 kHz (period 7160 machine clocks). NOTE: the original
+    // generator never cleared spk_bit (beep_cnt reset at 7158, before the
+    // 7159 toggle test) - a DC-on beeper, whose duty tracker converges to
+    // d_in=512 and yields exactly 0 words (found 2026-11-19 when the C6
+    // beeper-gain check measured all-zero swings).
     always @(posedge clk) begin
         if (spk_on) begin
-            if (spk_bit && beep_cnt != 15'd7158) beep_cnt <= beep_cnt + 15'd1;
+            if (beep_cnt != 15'd7159) beep_cnt <= beep_cnt + 15'd1;
             else beep_cnt <= 15'd0;
-            spk_bit <= (beep_cnt == 15'd7159) ? 1'b0 : 1'b1;    // ~1 kHz
+            spk_bit <= (beep_cnt < 15'd3580);
         end else begin
             beep_cnt <= 15'd0;
             spk_bit  <= 1'b0;
@@ -75,6 +82,7 @@ module tb_floppy_sound_chain;
     speaker_i2s u_spk (
         .clk_14m(clk), .spk_bit(spk_bit),
         .mb_in_m(mb_gate), .mb_gain_m(mb_gain), .mb_l(mb_l), .mb_r(mb_r),
+        .spk_gain_m(spk_gain),
         .fs_l(fs_l), .fs_r(fs_r),
         .mclk(mclk), .sclk(sclk), .lrck(i2s_lrck), .dac(i2s_dac)
     );
@@ -87,7 +95,7 @@ module tb_floppy_sound_chain;
     reg        dec_lrck_r = 1'b0;
     reg [15:0] w_l = 16'd0, w_r = 16'd0;
     integer    word_idx = 0;
-    localparam integer WMAX = 16384;
+    localparam integer WMAX = 32768;
     reg [15:0] w_l_hist [0:WMAX-1];
     reg [15:0] w_r_hist [0:WMAX-1];
     always @(negedge sclk) begin
@@ -242,7 +250,10 @@ module tb_floppy_sound_chain;
         // ~190k clocks/step and its ~+16 DC would floor the sum at
         // -32,752, masking the exact -32,768 rail). With only MB+speaker
         // the sum crosses both rails exactly.
-        spk_on = 1'b1;
+        // C4: saturating mix - MB x48 rail transients ONLY (the beeper is
+        // C6's job; with a real 2 kHz square its +/-9k..16k words would
+        // mask the exact negative rail).
+        spk_on = 1'b0;
         mb_gate = 1'b1;
         mb_gain = 2'b11;
         fs_en = 1'b0;                               // donor state -> 0 immediately
@@ -261,6 +272,79 @@ module tb_floppy_sound_chain;
         check("C4 saturating mix: reaches -32768 rail", (pmin == -32768));
         check("C4 saturating mix: no wrap (max word jump < 40000)", (mj < 40000));
 
+        // C5: floppy gain ladder - the donor's internal scale_gain
+        // (x1/x2/x4, saturation at 1023) via its gain port. The motor
+        // hum is a near-constant ~16 count level, so reading the donor's
+        // fs_l output DIRECTLY (the gain is applied inside the donor)
+        // gives phase-free, exact ratios. (The I2S window of C2/C3 stays
+        // valid at x1 - C5 runs after them.)
+        spk_on = 1'b0;
+        mb_gate = 1'b0;
+        fs_en = 1'b1;
+        drv_motor = 1'b1;
+        fs_gain = 2'd0;                       // x1
+        repeat (1_000_000) @(negedge clk);     // C4's fs_en=0 RESET the donor -
+                                              // re-ramp the motor envelope
+                                              // (~190k clocks/step) to steady
+        hum1 = 0;
+        for (i = 0; i < 30_000; i = i + 1) begin
+            @(negedge clk);
+            if (fs_l > hum1) hum1 = fs_l;
+        end
+        fs_gain = 2'd1;                       // x2
+        repeat (10_000) @(negedge clk);
+        hum2 = 0;
+        for (i = 0; i < 30_000; i = i + 1) begin
+            @(negedge clk);
+            if (fs_l > hum2) hum2 = fs_l;
+        end
+        fs_gain = 2'd2;                       // x4
+        repeat (10_000) @(negedge clk);
+        hum4 = 0;
+        for (i = 0; i < 30_000; i = i + 1) begin
+            @(negedge clk);
+            if (fs_l > hum4) hum4 = fs_l;
+        end
+        $display("C5 hum ladder: x1=%0d x2=%0d x4=%0d", hum1, hum2, hum4);
+        check("C5 floppy x1 hum present (peak >= 2)", (hum1 >= 2));
+        check("C5 floppy x2 gain ~2.0x the x1 hum",
+              (hum2 * 100 > 180 * hum1) && (hum2 * 100 < 220 * hum1));
+        check("C5 floppy x4 gain ~4.0x the x1 hum",
+              (hum4 * 100 > 370 * hum1) && (hum4 * 100 < 430 * hum1));
+
+        // C6: beeper gain slider - x1/x2/x4 on the speaker term (the gain
+        // stage multiplies the DC-removed beep AFTER the duty tracker, so
+        // no re-convergence). 1 kHz square in the I2S words (>= 3 cycles
+        // per 300-word window) -> stable swing, exact ratios. MB and
+        // floppy are off; no clamp interaction (4096 x4 = 16384 < rail).
+        spk_on = 1'b1;
+        fs_en = 1'b0;
+        drv_motor = 1'b0;
+        spk_gain = 2'd0;                      // x1
+        repeat (60_000) @(negedge clk);       // duty tracker settles
+        idxG0 = word_idx;
+        repeat (44_700) @(negedge clk);       // 300 words
+        measure_pp(idxG0, idxG0 + 299, pmax, pmin);
+        bswap1 = pmax - pmin; pmx1 = pmax; pmn1 = pmin;
+        spk_gain = 2'd1;                      // x2
+        repeat (10_000) @(negedge clk);
+        idxG0 = word_idx;
+        repeat (44_700) @(negedge clk);
+        measure_pp(idxG0, idxG0 + 299, pmax, pmin);
+        bswap2 = pmax - pmin; pmx2 = pmax; pmn2 = pmin;
+        spk_gain = 2'd3;                      // x4
+        repeat (10_000) @(negedge clk);
+        idxG0 = word_idx;
+        repeat (44_700) @(negedge clk);
+        measure_pp(idxG0, idxG0 + 299, pmax, pmin);
+        bswap4 = pmax - pmin; pmx4 = pmax; pmn4 = pmin;
+        $display("C6 beeper swings: x1=%0d x2=%0d x4=%0d", bswap1, bswap2, bswap4);
+        check("C6 beeper x1 tone present (swing >= 256)", (bswap1 >= 256));
+        check("C6 beeper x2 gain ~2.0x the x1 swing",
+              (bswap2 * 100 > 180 * bswap1) && (bswap2 * 100 < 220 * bswap1));
+        check("C6 beeper x4 clamps at both 16-bit rails (tone x4 > rail)",
+              (pmx4 == 32767) && (pmn4 == -32768));
+
         if (fails == 0) $display("FLOPPY SOUND CHAIN TB ALL CHECKS PASSED");
         else $display("FLOPPY SOUND CHAIN TB FAILURES: %0d", fails);
         $display("TB-RESULT: %s", (fails == 0) ? "PASS" : "FAIL");
@@ -268,6 +352,7 @@ module tb_floppy_sound_chain;
     end
 
     // window markers (declared here to keep the initial block simple)
-    integer idxA0, idxB0, idxC0, idxD0, idxE0, c1_match = 1, pmaxr, pminr;
+    integer idxA0, idxB0, idxC0, idxD0, idxE0, idxG0, c1_match = 1, pmaxr, pminr;
+    integer hum1, hum2, hum4, bswap1, bswap2, bswap4, pmx1, pmn1, pmx2, pmn2, pmx4, pmn4;
 
 endmodule

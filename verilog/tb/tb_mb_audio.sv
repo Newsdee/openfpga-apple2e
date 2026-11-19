@@ -158,6 +158,7 @@ module tb_mb_audio;
     speaker_i2s dut(
         .clk_14m(clk), .spk_bit(spk_bit), .mb_in_m(mb_gate),
         .mb_gain_m(mb_gain),
+        .spk_gain_m(2'd0),   // beeper slider: 1x (this TB tests the MB chain)
         .mb_l(mb_l), .mb_r(mb_r), .mclk(mclk), .sclk(sclk),
         .lrck(i2s_lrck), .dac(i2s_dac)
     );

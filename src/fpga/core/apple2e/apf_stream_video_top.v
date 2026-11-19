@@ -1422,6 +1422,12 @@ reg  [31:0] cfg_mb_word = 32'd0;
 // ON (1): synthesized Disk II drive sound mixed into the I2S output
 // (PLAN_FLOPPY_SOUND_PORT_2026-11-19.md). write-only, like cfg_mb_word.
 reg  [31:0] cfg_fs_word = 32'd1;
+// Floppy volume slider (PLAN_AUDIO_VOLUME_BALANCE_2026-11-19.md):
+// 0=off, 1=1x, 2=2x, 3=4x (donor gain ladder; default 1 = 1x).
+reg  [31:0] cfg_fsgain_word = 32'd1;
+// Beeper volume slider: 0=1x (default, today's exact level), 1=2x,
+// 2=3x, 3=4x (gain stage in speaker_i2s).
+reg  [31:0] cfg_spkgain_word = 32'd0;
 // Combined "HDD" option (0x01F00010, 0.3.5): merges "Boot Media" (0/1/2) and
 // the retired "HD Write Protect" (0x01F00018) into one 5-value word - "Floppy"
 // takes the HD off the bus, so write-protect is moot there:
@@ -1457,6 +1463,12 @@ always @(posedge clk_74a) begin
     // write-only (same safe pattern; no read-back arm).
     if (bridge_wr && bridge_addr == 32'h01F00024)
         cfg_fs_word <= bridge_wr_data;
+    // Floppy volume slider (0=off, 1=1x, 2=2x, 3=4x). write-only.
+    if (bridge_wr && bridge_addr == 32'h01F00028)
+        cfg_fsgain_word <= bridge_wr_data;
+    // Beeper volume slider (0=1x default, 1=2x, 2=3x, 3=4x). write-only.
+    if (bridge_wr && bridge_addr == 32'h01F0002C)
+        cfg_spkgain_word <= bridge_wr_data;
 end
 // ---- Combined HDD decode (74a domain) ----
 // media (2 bits, feeds the existing media_m sync): 0/1->00, 2->01, 3/4->10,
@@ -1920,8 +1932,8 @@ end
     floppy_sound u_floppy_sound (
         .clk(clk_core_14318),
         .reset(machine_reset),
-        .enable(fs_en_m),
-        .gain(2'd0),
+        .enable(fs_eff_en_m),
+        .gain(fs_gain_donor),
         .pan(2'd3),
         .drive1_motor(drv_motor),
         .drive2_motor(1'b0),
@@ -1939,6 +1951,7 @@ end
         .spk_bit  ( m_spk ),
         .mb_in_m  ( mb_inslot_m ),
         .mb_gain_m( mb_gain_m ),
+        .spk_gain_m( spk_gain_m ),
         .mb_l     ( mb_audio_l ),
         .mb_r     ( mb_audio_r ),
         .fs_l     ( fs_sample_l ),
@@ -2213,6 +2226,26 @@ wire [1:0] mb_gain_m = mb_opt_m;          // raw option value for speaker_i2s
 wire        fs_en_m;
 synch_3 #(.WIDTH(1)) u_fs_en_sync (
     .i(cfg_fs_word[0]), .o(fs_en_m), .clk(clk_core_14318)
+);
+// Floppy volume slider CDC (74a -> 14.318): 0=off, 1=1x, 2=2x, 3=4x.
+// The donor's scale_gain ladder is x1/x2/x4 for gain 0/1/2 and gain 3
+// FALLS THROUGH to x1 (no mute), so slider 0 = OFF via the enable gate
+// (donor enable=0 resets its state -> exact zero output, zero-idle rule)
+// and 1/2/3 map to the donor's 2'd0/2'd1/2'd2.
+wire [1:0] fs_gain_m;
+synch_3 #(.WIDTH(2)) u_fs_gain_sync (
+    .i(cfg_fsgain_word[1:0]), .o(fs_gain_m), .clk(clk_core_14318)
+);
+wire [1:0] fs_gain_donor = (fs_gain_m == 2'd1) ? 2'd0
+                            : (fs_gain_m == 2'd2) ? 2'd1
+                            : (fs_gain_m == 2'd3) ? 2'd2
+                            : 2'd0;
+wire        fs_eff_en_m = fs_en_m & (fs_gain_m != 2'd0);
+// Beeper volume slider CDC (74a -> 14.318): 0=1x (default = today's exact
+// level), 1=2x, 2=3x, 3=4x - gain stage in speaker_i2s.
+wire [1:0] spk_gain_m;
+synch_3 #(.WIDTH(2)) u_spk_gain_sync (
+    .i(cfg_spkgain_word[1:0]), .o(spk_gain_m), .clk(clk_core_14318)
 );
 // Slot-4 Mockingboard (Model A clone: 2x 6522 + 2x AY-3-8910, 6 stereo
 // channels). The donor is byte-identical (src/fpga/core/mockingboard/,
