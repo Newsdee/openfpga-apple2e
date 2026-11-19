@@ -4,11 +4,11 @@
         "metadata": {
             "platform_ids": ["apple2e"],
             "shortname": "Apple2e",
-            "description": "Apple IIe (native 560x192 streaming raster, no frame buffer; WOZ floppy drive via Pocket SDRAM, on-screen keyboard; NTSC color; APF sync contract fix; merged Color Preset option; diagnostics hidden while keyboard is open; joy2key gamepad-to-keystroke presets; docked USB HID keyboard, Player-3 slot)",
+            "description": "Apple IIe (native 560x192 streaming raster, no frame buffer; WOZ floppy drive via Pocket SDRAM, on-screen keyboard; NTSC color; APF sync contract fix; merged Color Preset option; diagnostics hidden while keyboard is open; joy2key gamepad-to-keystroke presets; docked USB HID keyboard, Player-3 slot; savestate save/load; Mockingboard card (slot 4) with volume slider)",
             "author": "Newsdee",
             "url": "https://github.com/Newsdee",
-            "version": "0.3.5",
-            "date_release": "2026-11-08"
+            "version": "0.3.7",
+            "date_release": "2026-11-19"
         },
         "framework": {
             "target_product": "Analogue Pocket",
@@ -20,7 +20,7 @@
             },
             "hardware": {
                 "link_port": false,
-                "cartridge_adapter": 0
+                "cartridge_adapter": -1
             }
         },
         "cores": [

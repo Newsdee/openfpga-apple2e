@@ -7,6 +7,20 @@ at-a-glance index.
 
 ## Releases
 
+### 0.3.7 — 2026-11-19
+**Mockingboard sound card (slot 4) with volume slider.**
+
+The core now emulates a Mockingboard (Model A clone) — 2× 6522 VIA +
+2× AY-3-8910 PSG, six stereo channels — in slot 4, behind a new
+*Mockingboard* menu option (a volume slider: Off / 1x / 2x / 3x). Its
+audio mixes into the stereo I2S output; at Off the audio path is
+bit-identical to the plain speaker. The card RTL is vendored
+byte-identical from the MiSTer Apple II core (provenance in
+`src/fpga/core/mockingboard/NOTICE.md`). No other behavior changes
+from 0.3.6 (savestates, floppy, HDV, video, keyboard). Platform year
+corrected to 1983 (Apple IIe). See
+[`RELEASE_NOTES_0.3.7.md`](RELEASE_NOTES_0.3.7.md).
+
 ### 0.3.6 — 2026-11-18
 **Savestate save/load.**
 
