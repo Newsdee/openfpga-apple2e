@@ -1417,6 +1417,11 @@ reg  [31:0] cfg_joy_xcenter_word = 32'd0;  // "Analog X Center" (0x01F0001C)
 // IRQ/NMI (the card forces both inactive when I_ENA_H=0), and the audio
 // mixer's MB term is gated out (bit-identical to the pre-port mono path).
 reg  [31:0] cfg_mb_word = 32'd0;
+// "Floppy Sound" check (interact.json id 12) @0x01F00024 - the next free
+// slot after the MB's :20 (map: 1C joy-xcenter, 20 MB, 24 free). Default
+// ON (1): synthesized Disk II drive sound mixed into the I2S output
+// (PLAN_FLOPPY_SOUND_PORT_2026-11-19.md). write-only, like cfg_mb_word.
+reg  [31:0] cfg_fs_word = 32'd1;
 // Combined "HDD" option (0x01F00010, 0.3.5): merges "Boot Media" (0/1/2) and
 // the retired "HD Write Protect" (0x01F00018) into one 5-value word - "Floppy"
 // takes the HD off the bus, so write-protect is moot there:
@@ -1448,6 +1453,10 @@ always @(posedge clk_74a) begin
     // write-only (same safe pattern as above - no read-back arm).
     if (bridge_wr && bridge_addr == 32'h01F00020)
         cfg_mb_word <= bridge_wr_data;
+    // Floppy Sound on/off (default ON - cfg_fs_word inits to 1).
+    // write-only (same safe pattern; no read-back arm).
+    if (bridge_wr && bridge_addr == 32'h01F00024)
+        cfg_fs_word <= bridge_wr_data;
 end
 // ---- Combined HDD decode (74a domain) ----
 // media (2 bits, feeds the existing media_m sync): 0/1->00, 2->01, 3/4->10,
@@ -1896,6 +1905,35 @@ end
 
 // 555 speaker -> I2S (module; m_spk is the machine-domain speaker bit)
     wire        spk_dac, spk_lrck;
+    // Floppy drive sound (PLAN_FLOPPY_SOUND_PORT_2026-11-19.md): donor
+    // src/fpga/core/sound/floppy_sound.sv (byte-identical, see its NOTICE.md)
+    // synthesizes motor hum / step clunks / track-0 knock / IO activity
+    // from the WOZ engine's existing event taps (machine domain, no CDC in
+    // the donor). Motor tap = D1_MOTOR_ON (immediate command - NOT the
+    // spin-down-holding D1_ACTIVE, per the NOTICE). Single drive: drive-2
+    // inputs tied low (preserved, not deleted). pan = Drives (d1 -> L,
+    // MiSTer parity), gain = 1x hardwired (core convention: no audio
+    // knobs). Option "Floppy Sound" (default on) drives enable. The
+    // zero-idle 10-bit amplitudes mix into the I2S output in speaker_i2s
+    // (x8, saturating sum).
+    wire [9:0] fs_sample_l, fs_sample_r;
+    floppy_sound u_floppy_sound (
+        .clk(clk_core_14318),
+        .reset(machine_reset),
+        .enable(fs_en_m),
+        .gain(2'd0),
+        .pan(2'd3),
+        .drive1_motor(drv_motor),
+        .drive2_motor(1'b0),
+        .drive1_io(drv_io),
+        .drive2_io(1'b0),
+        .drive1_step(drv_step),
+        .drive2_step(1'b0),
+        .drive1_track_zero_step(drv_trk0),
+        .drive2_track_zero_step(1'b0),
+        .sample(fs_sample_l),
+        .sample_r(fs_sample_r)
+    );
     speaker_i2s u_spk_i2s (
         .clk_14m  ( clk_core_14318 ),
         .spk_bit  ( m_spk ),
@@ -1903,6 +1941,8 @@ end
         .mb_gain_m( mb_gain_m ),
         .mb_l     ( mb_audio_l ),
         .mb_r     ( mb_audio_r ),
+        .fs_l     ( fs_sample_l ),
+        .fs_r     ( fs_sample_r ),
         .mclk     ( audgen_mclk ),
         .sclk     ( audgen_sclk ),
         .lrck     ( spk_lrck ),
@@ -2157,7 +2197,7 @@ wire        m_cpu_we;    // apple2 CPU_WE (was unconnected)
 // Option word [1:0] (interact.json slider_u32 @0x01F00020, NO mask -
 // mask bits are LEFT UNTOUCHED, so a mask here would have blocked the
 // slider's own bits; 2026-11-19 hardware found this):
-//   00 = off, 01 = 1x, 10 = 2x, 11 = 3x (gains x16/x24/x32 in speaker_i2s).
+//   00 = off, 01 = 1x, 10 = 2x, 11 = 3x (gains x24/x32/x48 in speaker_i2s).
 // A transient while the user drags the slider is at worst a few ms of the
 // card briefly on/off + a gain flip - harmless.
 wire [1:0] mb_opt_m;
@@ -2166,7 +2206,14 @@ synch_3 #(.WIDTH(2)) u_mb_opt_sync (
 );
 wire mb_inslot_m = (mb_opt_m != 2'd0);   // card on (1x/2x/3x)
 wire [1:0] mb_gain_m = mb_opt_m;          // raw option value for speaker_i2s
-                                           // (00 off, 01 x16, 10 x24, 11 x32)
+                                           // (00 off, 01 x24, 10 x32, 11 x48)
+// Floppy Sound option CDC (74a -> 14.318): default ON (cfg_fs_word inits 1);
+// enable=0 zeros the donor's outputs AND its internal state, so off is
+// exactly "no drive sound" (zero-idle rule).
+wire        fs_en_m;
+synch_3 #(.WIDTH(1)) u_fs_en_sync (
+    .i(cfg_fs_word[0]), .o(fs_en_m), .clk(clk_core_14318)
+);
 // Slot-4 Mockingboard (Model A clone: 2x 6522 + 2x AY-3-8910, 6 stereo
 // channels). The donor is byte-identical (src/fpga/core/mockingboard/,
 // see its NOTICE.md); the bus contract was verified signal-by-signal
@@ -2331,9 +2378,9 @@ disk_ii_woz woz (
     .D_OUT           ( woz_dout ),
     .D1_ACTIVE       ( drv_active ), .D2_ACTIVE ( ),
     .D1_MOTOR_ON     ( drv_motor ), .D2_MOTOR_ON ( ),
-    .D1_STEP         ( ), .D2_STEP ( ),
-    .D1_TRACK0       ( ), .D2_TRACK0 ( ),
-    .D1_IO           ( ), .D2_IO ( ),
+    .D1_STEP         ( drv_step ), .D2_STEP ( ),
+    .D1_TRACK0       ( drv_trk0 ), .D2_TRACK0 ( ),
+    .D1_IO           ( drv_io ), .D2_IO ( ),
     .D1_WP           ( 1'b1 ), .D2_WP ( 1'b1 ),
     .SD_LBA0         ( woz_sd_lba ),
     .SD_RD0          ( woz_sd_rd ),
@@ -2553,6 +2600,9 @@ end
 // ---- drive-activity diagnostics (M1 no-boot: where is it stuck?) ----
 wire        drv_active;            // engine D1_ACTIVE (selected-drive motor)
 wire        drv_motor;             // engine D1_MOTOR_ON (controller command)
+wire        drv_step;              // engine D1_STEP (single-cycle step event)
+wire        drv_trk0;              // engine D1_TRACK0 (track-0 press pulse)
+wire        drv_io;                // engine D1_IO (read-flux/write-cell activity)
 reg  [23:0] drv_reads;             // cumulative sd_buff_wr bytes (saturating)
 always @(posedge clk_core_14318 or posedge machine_reset) begin
     if (machine_reset)

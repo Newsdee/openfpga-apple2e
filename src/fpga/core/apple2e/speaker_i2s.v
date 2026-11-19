@@ -19,10 +19,10 @@
 // averaging - a tone's period is far longer than a 20.8 us window, so a box
 // average destroys it) via a 2-entry valid/ack handshake into the mclk
 // domain, DC-tracked slowly per channel (tau ~128 samples, passes 50-100 Hz),
-// scaled by a user volume slider (x16/x24/x32 = 1x/2x/3x; the fixed x16 was
-// judged a bit quiet on hardware 2026-11-19) and mixed into L/R; the option
-// gate keeps the MB term at 0 when off (0 = MB off), bit-identical to the
-// mono speaker path. See PLAN_MB_AUDIO_DEBUG_2026-11-18.md.
+// scaled by a user volume slider (x24/x32/x48 = 1x/2x/3x, saturating mix;
+// the fixed x16 was judged too quiet on hardware 2026-11-19) and mixed
+// into L/R; the option gate keeps the MB term at 0 when off (0 = MB off),
+// bit-identical to the mono speaker path. See PLAN_MB_AUDIO_DEBUG_2026-11-18.md.
 
 module speaker_i2s (
     input  wire        clk_14m,   // 14.318 MHz machine domain (averager)
@@ -31,6 +31,8 @@ module speaker_i2s (
     input  wire [1:0]  mb_gain_m, // MB volume slider 00 off / 01 1x / 10 2x / 11 3x (machine domain)
     input  wire [9:0]  mb_l,      // MB O_AUDIO_L 10-bit sample sum (machine domain)
     input  wire [9:0]  mb_r,      // MB O_AUDIO_R 10-bit sample sum (machine domain)
+    input  wire [9:0]  fs_l,      // floppy sound LEFT amplitude 0..1023 (machine dom, 0 = idle)
+    input  wire [9:0]  fs_r,      // floppy sound RIGHT amplitude (machine dom, 0 = idle)
     input  wire        mclk,      // 12.288 MHz audio master (CDC clock)
     input  wire        sclk,      // 3.072 MHz = mclk/4 (I2S shift clock)
     output wire        lrck,      // 48 kHz word select
@@ -89,6 +91,26 @@ module speaker_i2s (
         end
     end
 
+    // Floppy-sound CDC: same valid/ack pattern as MB (independent
+    // handshake - separate source). The donor is zero-idle (no drive
+    // events / option off -> 0), so a silent drive crosses exactly 0 and
+    // the mix term below adds nothing: bit-identical to the speaker+MB
+    // build. No DC tracker: the samples are amplitudes (unsigned,
+    // idle 0), summed directly - MiSTer parity (floppy_sound.sv NOTICE).
+    reg [9:0] fs_x_l = 10'd0, fs_x_r = 10'd0;
+    reg       fs_vld = 1'b0;
+    reg       fs_ack = 1'b0;
+    reg       fs_ack_s1 = 1'b0, fs_ack_s2 = 1'b0;
+    always @(posedge clk_14m) begin
+        fs_ack_s1 <= fs_ack;
+        fs_ack_s2 <= fs_ack_s1;
+        if (fs_ack_s2 == fs_vld) begin
+            fs_x_l <= fs_l;
+            fs_x_r <= fs_r;
+            fs_vld <= ~fs_vld;
+        end
+    end
+
     // ------------------------------------------------------------------
     // 2. CDC to the audio domain + DC blocker
     // ------------------------------------------------------------------
@@ -109,6 +131,8 @@ module speaker_i2s (
     // crosses as a plain 2-FF so the mix gate below is a plain mclk-domain
     // signal.
     reg [ 9:0] mb_l_c = 10'd0, mb_r_c = 10'd0;   // latched samples (mclk dom)
+    reg [ 9:0] fs_l_c = 10'd0, fs_r_c = 10'd0;   // floppy latched samples (mclk dom)
+    reg        fs_vld_s1 = 1'b0, fs_vld_s2 = 1'b0;
     reg        mb_vld_s1 = 1'b0, mb_vld_s2 = 1'b0;
     reg        mb_in_s1, mb_in_s2;
     reg [1:0]  mb_gain_s1, mb_gain_s2;
@@ -121,6 +145,13 @@ module speaker_i2s (
             mb_l_c <= mb_x_l;
             mb_r_c <= mb_x_r;
             mb_ack <= ~mb_ack;
+        end
+        fs_vld_s1 <= fs_vld;
+        fs_vld_s2 <= fs_vld_s1;
+        if (fs_vld_s2 !== fs_ack) begin
+            fs_l_c <= fs_x_l;
+            fs_r_c <= fs_x_r;
+            fs_ack <= ~fs_ack;
         end
         mb_in_s1 <= mb_in_m;  mb_in_s2 <= mb_in_s1;
         mb_gain_s1 <= mb_gain_m;  mb_gain_s2 <= mb_gain_s1;
@@ -162,16 +193,17 @@ module speaker_i2s (
     // step = |diff|/128 rounded, min 1 while off-target (exact convergence)
     wire [9:0]  mb_step_l = (mb_dabs_l == 10'd0) ? 10'd0 : (((mb_dabs_l + 10'd63) >> 7) | 10'd1);
     wire [9:0]  mb_step_r = (mb_dabs_r == 10'd0) ? 10'd0 : (((mb_dabs_r + 10'd63) >> 7) | 10'd1);
-    // Volume slider (mb_gain_s2): 00/01 = x16 (1x), 10 = x24 (2x),
-    // 11 = x32 (3x). 00 only occurs with the card off (mb_in_s2 gates the
-    // term out). All forms sign-extend sdiff to 16 bits; x24 = x16 + x8.
-    // Headroom: the card's O_AUDIO_* = sum of three 8-bit YM levels (0..765),
-    // so the achievable sdiff is +/-765: x32 -> +/-24480, plus the speaker's
-    // +/-8192 = +/-32672 < 32767 - no saturation even at absolute card max
-    // + speaker full. (If the card's audio format ever exceeds 765, add
-    // saturation here.)
-    // All forms are EXACT 16-bit two's complement of sdiff scaled (the
-    // -Werror build flags WIDTHTRUNC on wider concatenations):
+    // Volume slider (mb_gain_s2): 01 = x24 (1x), 10 = x32 (2x),
+    // 11 = x48 (3x). 00 only occurs with the card off (mb_in_s2 gates the
+    // term out). Levels vs the speaker (single-channel 255 -> speaker
+    // full-scale is +/-8192):
+    //   1x x24 -> +/-6120  (0.75x speaker)
+    //   2x x32 -> +/-8160  (~1.0x speaker)
+    //   3x x48 -> +/-12240 (1.5x speaker)
+    // (2026-11-19 hardware: x16 was too quiet; ladder shifted x1.5 and
+    // the top level raised to x48 - see PLAN_MB_AUDIO_DEBUG section 9.)
+    // All base forms are EXACT 16-bit two's complement of sdiff scaled
+    // (the -Werror build flags WIDTHTRUNC on wider concatenations):
     //   x8  = {3 sign, sd[9:0], 3 zeros}
     //   x16 = {2 sign, sd[9:0], 4 zeros}      x32 = {1 sign, sd[9:0], 5 zeros}
     wire [15:0] mb_word_l_x16 = {mb_sdiff_l[10], mb_sdiff_l[10],
@@ -180,20 +212,55 @@ module speaker_i2s (
                                  mb_sdiff_l[9:0], 3'b000};
     wire [15:0] mb_word_l_x24 = mb_word_l_x16 + mb_word_l_x8;
     wire [15:0] mb_word_l_x32 = {mb_sdiff_l[10], mb_sdiff_l[9:0], 5'b00000};
-    wire [15:0] mb_word_l = mb_gain_s2[1] ? (mb_gain_s2[0] ? mb_word_l_x32 : mb_word_l_x24)
-                                          : mb_word_l_x16;
+    // x48: signed 17-bit product, clamped to 16 bits. At the card's true
+    // max (sdiff 765 = three full channels) x48 = 36,720 exceeds 16 bits -
+    // the extreme corner clamps (clean limiting), it never wraps.
+    wire signed [10:0] mb_sd_l = mb_sdiff_l;   // same bits, signed view
+    wire signed [16:0] mb_word_l_x48_raw = mb_sd_l * 17'sd48;
+    wire [15:0] mb_word_l_x48 = (mb_word_l_x48_raw > 17'sd32767) ? 16'sd32767 :
+                                (mb_word_l_x48_raw < -17'sd32768) ? 16'h8000 :
+                                mb_word_l_x48_raw[15:0];
+    wire [15:0] mb_word_l = mb_gain_s2[1] ? (mb_gain_s2[0] ? mb_word_l_x48 : mb_word_l_x32)
+                                          : mb_word_l_x24;
     wire [15:0] mb_word_r_x16 = {mb_sdiff_r[10], mb_sdiff_r[10],
                                  mb_sdiff_r[9:0], 4'b0000};
     wire [15:0] mb_word_r_x8  = {mb_sdiff_r[10], mb_sdiff_r[10], mb_sdiff_r[10],
                                  mb_sdiff_r[9:0], 3'b000};
     wire [15:0] mb_word_r_x24 = mb_word_r_x16 + mb_word_r_x8;
     wire [15:0] mb_word_r_x32 = {mb_sdiff_r[10], mb_sdiff_r[9:0], 5'b00000};
-    wire [15:0] mb_word_r = mb_gain_s2[1] ? (mb_gain_s2[0] ? mb_word_r_x32 : mb_word_r_x24)
-                                          : mb_word_r_x16;
-    // 16-bit adds: spk +/-8192, mb +/-24480 (x32 at card max) -> max
-    // +/-32672, cannot overflow (headroom note above).
-    wire [15:0] out_l16 = mb_in_s2 ? (spk_word + mb_word_l) : spk_word;
-    wire [15:0] out_r16 = mb_in_s2 ? (spk_word + mb_word_r) : spk_word;
+    wire signed [10:0] mb_sd_r = mb_sdiff_r;
+    wire signed [16:0] mb_word_r_x48_raw = mb_sd_r * 17'sd48;
+    wire [15:0] mb_word_r_x48 = (mb_word_r_x48_raw > 17'sd32767) ? 16'sd32767 :
+                                (mb_word_r_x48_raw < -17'sd32768) ? 16'h8000 :
+                                mb_word_r_x48_raw[15:0];
+    wire [15:0] mb_word_r = mb_gain_s2[1] ? (mb_gain_s2[0] ? mb_word_r_x48 : mb_word_r_x32)
+                                          : mb_word_r_x24;
+    // Final sum: 16-bit SATURATING add of speaker + MB + floppy (x48 +
+    // speaker full + floppy x8 can exceed the range; clamping is clean
+    // limiting, wrapping is a harsh digital glitch). 17 bits hold the
+    // pre-clamp range: 8192 + 32767 + 8184 = 49,143 < 65,535.
+    // The MB inslot option gates ONLY the MB term (independent feature:
+    // floppy sound works with the MB card off). Silent sources add
+    // exactly 0 (tracker-converged MB sdiff; zero-idle donor), so MB-off
+    // + silent card + silent drive reproduces spk_word bit-exactly.
+    wire [15:0] mb_term_l = mb_in_s2 ? mb_word_l : 16'd0;
+    wire [15:0] mb_term_r = mb_in_s2 ? mb_word_r : 16'd0;
+    wire signed [16:0] spk_s17_l = {spk_word[15], spk_word};
+    wire signed [16:0] spk_s17_r = {spk_word[15], spk_word};
+    wire signed [16:0] mbt_s17_l = {mb_term_l[15], mb_term_l};
+    wire signed [16:0] mbt_s17_r = {mb_term_r[15], mb_term_r};
+    // Floppy term: unsigned amplitude x8 (0..8184, always non-negative
+    // idle 0) - positive addend, no sign-extension pitfalls.
+    wire [15:0]  fs_word_l = {3'b000, fs_l_c, 3'b000};
+    wire [15:0]  fs_word_r = {3'b000, fs_r_c, 3'b000};
+    wire signed [16:0] fs_s17_l = {1'b0, fs_word_l};   // 17-bit, exact: fs is unsigned (positive addend)
+    wire signed [16:0] fs_s17_r = {1'b0, fs_word_r};   // 17-bit, exact
+    wire signed [16:0] sum_l = spk_s17_l + mbt_s17_l + fs_s17_l;
+    wire signed [16:0] sum_r = spk_s17_r + mbt_s17_r + fs_s17_r;
+    wire [15:0] out_l16 = (sum_l > 17'sd32767 ? 16'sd32767 :
+                           (sum_l < -17'sd32768 ? 16'h8000 : sum_l[15:0]));
+    wire [15:0] out_r16 = (sum_r > 17'sd32767 ? 16'sd32767 :
+                           (sum_r < -17'sd32768 ? 16'h8000 : sum_r[15:0]));
 
     // ------------------------------------------------------------------
     // 3. I2S shift-out: 16 active + 16 dummy bits per channel

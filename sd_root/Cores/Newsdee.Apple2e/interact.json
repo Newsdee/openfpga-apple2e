@@ -221,6 +221,18 @@
           "adjust_small": 1,
           "adjust_large": 1
         }
+      },
+      {
+        "name": "Floppy Sound",
+        "id": 12,
+        "type": "check",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "defaultval": 1,
+        "address": "0x01F00024",
+        "value": 1,
+        "value_off": 0
       }
     ],
     "messages": []

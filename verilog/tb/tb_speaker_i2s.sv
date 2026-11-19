@@ -42,6 +42,8 @@ module tb_speaker_i2s;
         .mb_gain_m(2'd0),
         .mb_l   (10'd0),
         .mb_r   (10'd0),
+        .fs_l   (10'd0),
+        .fs_r   (10'd0),
         .mclk   (mclk),
         .sclk   (sclk),
         .lrck   (lrck),

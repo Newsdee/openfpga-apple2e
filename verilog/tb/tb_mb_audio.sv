@@ -351,15 +351,17 @@ module tb_mb_audio;
               (pmax - pmin) > 1500);
 
         // ============================================================
-        // T7: volume slider - 2x/3x scale the 1x swing by ~1.5x/~2.0x
-        // without clipping. The T3 3-channel stimulus is still running;
+        // T7: volume slider - 2x/3x scale the 1x swing by ~1.33x/~2.0x
+        // (ladder 24/32/48 - the x16 base was judged too quiet on
+        // hardware 2026-11-19) without clipping. The T3 3-channel
+        // stimulus is still running;
         // the gain multiplies sdiff AFTER the DC tracker, so switching
         // levels needs no tracker re-convergence (short settle only).
         // Integer-scaled comparisons (Verilator float-in-compare is
         // avoided); %0.2f is print-only. swing1x/2x/3x declared up top
         // (Verilator 5.050: no mid-block declarations after statements).
-        swing1x = pmax - pmin;   // T3 window measured at mb_gain=1 (1x)
-        mb_gain = 2'd2;          // 2x
+        swing1x = pmax - pmin;   // T3 window measured at mb_gain=1 (1x = x24)
+        mb_gain = 2'd2;          // 2x (x32)
         repeat (10_000) @(posedge clk);
         word_idx = 0;
         repeat (1500) @(negedge i2s_lrck);
@@ -367,10 +369,10 @@ module tb_mb_audio;
         swing2x = pmax - pmin;
         $display("T7 swings: 1x=%0d 2x=%0d (ratio %0.2f)",
                  swing1x, swing2x, 1.0 * swing2x / swing1x);
-        check("T7 2x gain ~1.5x the 1x swing, no clip",
-              swing2x * 100 > 130 * swing1x && swing2x * 100 < 170 * swing1x
+        check("T7 2x gain ~1.33x the 1x swing, no clip",
+              swing2x * 100 > 128 * swing1x && swing2x * 100 < 140 * swing1x
               && pmax < 32767 && pmin > -32767);
-        mb_gain = 2'd3;          // 3x
+        mb_gain = 2'd3;          // 3x (x48)
         repeat (10_000) @(posedge clk);
         word_idx = 0;
         repeat (1500) @(negedge i2s_lrck);
