@@ -1,0 +1,20 @@
+Fitter Status : Successful - Thu Nov 19 11:26:25 2026
+Quartus Prime Version : 17.0.2 Build 602 07/19/2017 SJ Lite Edition
+Revision Name : apf_apple2
+Top-level Entity Name : apf_top_apple2
+Family : Cyclone V
+Device : 5CEBA4F23C8
+Timing Models : Final
+Logic utilization (in ALMs) : 16,052 / 18,480 ( 87 % )
+Total registers : 17212
+Total pins : 224 / 224 ( 100 % )
+Total virtual pins : 0
+Total block memory bits : 1,559,488 / 3,153,920 ( 49 % )
+Total RAM Blocks : 198 / 308 ( 64 % )
+Total DSP Blocks : 29 / 66 ( 44 % )
+Total HSSI RX PCSs : 0
+Total HSSI PMA RX Deserializers : 0
+Total HSSI TX PCSs : 0
+Total HSSI PMA TX Serializers : 0
+Total PLLs : 2 / 4 ( 50 % )
+Total DLLs : 0 / 4 ( 0 % )

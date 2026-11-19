@@ -157,3 +157,7 @@ verilog/obj_rr_*/
 verilog/ledger_g*.csv
 # Runtime-staged ROMs (run_tb_savestate_integration.sh copies from src/fpga/rtl/roms/)
 verilog/rtl/
+
+# bulky Quartus detailed reports - keep summaries only
+builds/*/apf_apple2.fit.rpt
+builds/*/apf_apple2.map.rpt
