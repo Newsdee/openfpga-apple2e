@@ -13,10 +13,24 @@
 // GAIN: the centered duty is multiplied by 32 (half-scale 16-bit output,
 // matching the MiSTer core's convention). Hardwired, per the core's
 // "sane fixed audio level, no OSD knob" decision.
+//
+// 2026-11-18 (PLAN_MOCKINGBOARD_PORT / PLAN_MB_AUDIO_DEBUG): the Mockingboard
+// adds a stereo 10-bit PSG sum (MB O_AUDIO_L/R). It is point-sampled (no box
+// averaging - a tone's period is far longer than a 20.8 us window, so a box
+// average destroys it) via a 2-entry valid/ack handshake into the mclk
+// domain, DC-tracked slowly per channel (tau ~128 samples, passes 50-100 Hz),
+// scaled by a user volume slider (x16/x24/x32 = 1x/2x/3x; the fixed x16 was
+// judged a bit quiet on hardware 2026-11-19) and mixed into L/R; the option
+// gate keeps the MB term at 0 when off (0 = MB off), bit-identical to the
+// mono speaker path. See PLAN_MB_AUDIO_DEBUG_2026-11-18.md.
 
 module speaker_i2s (
     input  wire        clk_14m,   // 14.318 MHz machine domain (averager)
     input  wire        spk_bit,   // 1-bit speaker (machine domain, m_spk)
+    input  wire        mb_in_m,   // Mockingboard inslot option (machine domain)
+    input  wire [1:0]  mb_gain_m, // MB volume slider 00 off / 01 1x / 10 2x / 11 3x (machine domain)
+    input  wire [9:0]  mb_l,      // MB O_AUDIO_L 10-bit sample sum (machine domain)
+    input  wire [9:0]  mb_r,      // MB O_AUDIO_R 10-bit sample sum (machine domain)
     input  wire        mclk,      // 12.288 MHz audio master (CDC clock)
     input  wire        sclk,      // 3.072 MHz = mclk/4 (I2S shift clock)
     output wire        lrck,      // 48 kHz word select
@@ -45,6 +59,37 @@ module speaker_i2s (
     end
 
     // ------------------------------------------------------------------
+    // 1b. Mockingboard point-sample capture (machine domain)
+    // 2026-11-18 rev (PLAN_MB_AUDIO_DEBUG): the original box averager
+    // (298-clock window) destroyed the music - a tone's period is much
+    // longer than the 20.8 us window, so its window average was
+    // near-constant and the DC blocker removed it, leaving only the
+    // tracker's tracking ripple (a 48 kHz square wave: the "noisy"
+    // symptom) plus a thin quantized remnant ("off-pitch"). The MiSTer
+    // golden path point-samples the PSG output instead (apple2_top.v:
+    // sat10(psg4+psg5+spk_avg) - no PSG box averaging). So: capture
+    // mb_l/mb_r into a 2-entry valid/ack handshake, one sample pair per
+    // handshake. The card's outputs only change every 14 machine clocks
+    // (980 ns), far slower than the mclk handshake (~300 ns): no
+    // overflow, and the data is stable while it is being crossed - which
+    // also fixes the multi-bit CDC skew of the old plain 2-FF crossing
+    // (plan suspect S1).
+    // ------------------------------------------------------------------
+    reg [9:0] mb_x_l = 10'd0, mb_x_r = 10'd0;   // sample data registers
+    reg       mb_vld = 1'b0;                    // valid toggle (machine dom)
+    reg       mb_ack = 1'b0;                    // ack toggle (mclk dom)
+    reg       mb_ack_s1 = 1'b0, mb_ack_s2 = 1'b0;
+    always @(posedge clk_14m) begin
+        mb_ack_s1 <= mb_ack;
+        mb_ack_s2 <= mb_ack_s1;
+        if (mb_ack_s2 == mb_vld) begin          // consumer caught up: send next
+            mb_x_l <= mb_l;
+            mb_x_r <= mb_r;
+            mb_vld <= ~mb_vld;
+        end
+    end
+
+    // ------------------------------------------------------------------
     // 2. CDC to the audio domain + DC blocker
     // ------------------------------------------------------------------
     // Quasi-static 10-bit duty (0..512) crossed to the audio domain (2-FF),
@@ -59,9 +104,26 @@ module speaker_i2s (
     // The I2S word is the centered difference (duty - mean) x 32, i.e.
     // -8192..+8160 => half-scale 16-bit, the MiSTer core's convention.
     reg [ 9:0] duty_s1 = 10'd0, duty_s2 = 10'd0;
+    // MB handshake receive (mclk domain): latch a new sample pair when the
+    // synchronized valid toggle differs from the ack. The option bit
+    // crosses as a plain 2-FF so the mix gate below is a plain mclk-domain
+    // signal.
+    reg [ 9:0] mb_l_c = 10'd0, mb_r_c = 10'd0;   // latched samples (mclk dom)
+    reg        mb_vld_s1 = 1'b0, mb_vld_s2 = 1'b0;
+    reg        mb_in_s1, mb_in_s2;
+    reg [1:0]  mb_gain_s1, mb_gain_s2;
     always @(posedge mclk) begin
         duty_s1 <= spk_avg;
         duty_s2 <= duty_s1;
+        mb_vld_s1 <= mb_vld;
+        mb_vld_s2 <= mb_vld_s1;
+        if (mb_vld_s2 !== mb_ack) begin
+            mb_l_c <= mb_x_l;
+            mb_r_c <= mb_x_r;
+            mb_ack <= ~mb_ack;
+        end
+        mb_in_s1 <= mb_in_m;  mb_in_s2 <= mb_in_s1;
+        mb_gain_s1 <= mb_gain_m;  mb_gain_s2 <= mb_gain_s1;
     end
 
     wire [ 9:0] d_in  = duty_s2;                       // 0..512 (raw unsigned)
@@ -73,6 +135,67 @@ module speaker_i2s (
     wire [15:0] spk_word  = d_sdiff16 << 5;                       // x32: -8192..+8160
 
     // ------------------------------------------------------------------
+    // 2b. MB DC removal + gain + mix (mclk domain, 2026-11-18 rev)
+    // ------------------------------------------------------------------
+    // The point-sampled AY sum (0..765) carries a DC offset = the tone's
+    // mean level (V/2 per active channel). A SLOW first-order tracker
+    // removes it: step = |diff|/128 (min 1 while off-target), tau ~128
+    // samples ~ 2.7 ms: passes 100 Hz at 0.3 dB and 50 Hz at 0.06 dB (the
+    // old tau=16 sample tracker was a ~500 Hz high-pass that ate the MB
+    // bass - plan suspect S3) while still tracking volume/DC changes
+    // between notes within a few ms.
+    // Gain x16: the first hardware A/B (2026-11-18, build 21:25, x4) was
+    // judged too quiet. x16 = geometric midpoint of the too-loud x64 and the
+    // too-quiet x4: a single-channel full-volume tone (sdiff +/-127) x16 =
+    // +/-2032 = 1/4 of the speaker's +/-8192 full swing; a 3-channel
+    // transient peak (sdiff +/-765) tops out at +/-12240 - the 16-bit add
+    // (spk +/-8192 + mb +/-12240 = +/-20432 max) still cannot clip.
+    // (x4 was MiSTer-parity ~1/15 - the golden is quiet; the Pocket's I2S
+    // chain needs more to sit right in the headphones.)
+    // mb_in_s2=0: the MB term is 0 (silent card => sdiff converges to 0),
+    // so L/R = spk_word exactly - bit-identical to the pre-port mono path.
+    wire [10:0] mb_sdiff_l = mb_l_c - mb_lp_l;   // -1024..+1023 (11-bit two's comp)
+    wire [10:0] mb_sdiff_r = mb_r_c - mb_lp_r;
+    reg [9:0]   mb_lp_l = 10'd0, mb_lp_r = 10'd0;   // DC trackers (mclk dom)
+    wire [9:0]  mb_dabs_l = mb_l_c >= mb_lp_l ? (mb_l_c - mb_lp_l) : (mb_lp_l - mb_l_c);
+    wire [9:0]  mb_dabs_r = mb_r_c >= mb_lp_r ? (mb_r_c - mb_lp_r) : (mb_lp_r - mb_r_c);
+    // step = |diff|/128 rounded, min 1 while off-target (exact convergence)
+    wire [9:0]  mb_step_l = (mb_dabs_l == 10'd0) ? 10'd0 : (((mb_dabs_l + 10'd63) >> 7) | 10'd1);
+    wire [9:0]  mb_step_r = (mb_dabs_r == 10'd0) ? 10'd0 : (((mb_dabs_r + 10'd63) >> 7) | 10'd1);
+    // Volume slider (mb_gain_s2): 00/01 = x16 (1x), 10 = x24 (2x),
+    // 11 = x32 (3x). 00 only occurs with the card off (mb_in_s2 gates the
+    // term out). All forms sign-extend sdiff to 16 bits; x24 = x16 + x8.
+    // Headroom: the card's O_AUDIO_* = sum of three 8-bit YM levels (0..765),
+    // so the achievable sdiff is +/-765: x32 -> +/-24480, plus the speaker's
+    // +/-8192 = +/-32672 < 32767 - no saturation even at absolute card max
+    // + speaker full. (If the card's audio format ever exceeds 765, add
+    // saturation here.)
+    // All forms are EXACT 16-bit two's complement of sdiff scaled (the
+    // -Werror build flags WIDTHTRUNC on wider concatenations):
+    //   x8  = {3 sign, sd[9:0], 3 zeros}
+    //   x16 = {2 sign, sd[9:0], 4 zeros}      x32 = {1 sign, sd[9:0], 5 zeros}
+    wire [15:0] mb_word_l_x16 = {mb_sdiff_l[10], mb_sdiff_l[10],
+                                 mb_sdiff_l[9:0], 4'b0000};
+    wire [15:0] mb_word_l_x8  = {mb_sdiff_l[10], mb_sdiff_l[10], mb_sdiff_l[10],
+                                 mb_sdiff_l[9:0], 3'b000};
+    wire [15:0] mb_word_l_x24 = mb_word_l_x16 + mb_word_l_x8;
+    wire [15:0] mb_word_l_x32 = {mb_sdiff_l[10], mb_sdiff_l[9:0], 5'b00000};
+    wire [15:0] mb_word_l = mb_gain_s2[1] ? (mb_gain_s2[0] ? mb_word_l_x32 : mb_word_l_x24)
+                                          : mb_word_l_x16;
+    wire [15:0] mb_word_r_x16 = {mb_sdiff_r[10], mb_sdiff_r[10],
+                                 mb_sdiff_r[9:0], 4'b0000};
+    wire [15:0] mb_word_r_x8  = {mb_sdiff_r[10], mb_sdiff_r[10], mb_sdiff_r[10],
+                                 mb_sdiff_r[9:0], 3'b000};
+    wire [15:0] mb_word_r_x24 = mb_word_r_x16 + mb_word_r_x8;
+    wire [15:0] mb_word_r_x32 = {mb_sdiff_r[10], mb_sdiff_r[9:0], 5'b00000};
+    wire [15:0] mb_word_r = mb_gain_s2[1] ? (mb_gain_s2[0] ? mb_word_r_x32 : mb_word_r_x24)
+                                          : mb_word_r_x16;
+    // 16-bit adds: spk +/-8192, mb +/-24480 (x32 at card max) -> max
+    // +/-32672, cannot overflow (headroom note above).
+    wire [15:0] out_l16 = mb_in_s2 ? (spk_word + mb_word_l) : spk_word;
+    wire [15:0] out_r16 = mb_in_s2 ? (spk_word + mb_word_r) : spk_word;
+
+    // ------------------------------------------------------------------
     // 3. I2S shift-out: 16 active + 16 dummy bits per channel
     // ------------------------------------------------------------------
     reg [4:0]  lrck_cnt = 5'd0;
@@ -82,9 +205,15 @@ module speaker_i2s (
 
     always @(negedge sclk) begin
         if (lrck_cnt == 5'd31) begin
-            // channel switch: load the centered sample, advance the tracker
-            i2s_shift <= spk_word;
+            // channel switch: load the centered sample, advance the trackers
+            // MB stereo (2026-11-18): the word streams over the NEXT period
+            // with lrck = ~lrck_r (I2S: lrck high = right channel), so pick
+            // by the CURRENT lrck_r: 0 -> right period follows -> R, 1 -> left.
+            // Mono (mb_in_s2=0): out_l16 == out_r16 == spk_word - no-op select.
+            i2s_shift <= lrck_r ? out_l16 : out_r16;
             d_lp      <= d_in >= d_lp ? (d_lp + d_step) : (d_lp - d_step);
+            mb_lp_l   <= mb_l_c >= mb_lp_l ? (mb_lp_l + mb_step_l) : (mb_lp_l - mb_step_l);
+            mb_lp_r   <= mb_r_c >= mb_lp_r ? (mb_lp_r + mb_step_r) : (mb_lp_r - mb_step_r);
             lrck_r    <= ~lrck_r;
         end else begin
             // MSB-first stream: read bit 15 while shifting LEFT.

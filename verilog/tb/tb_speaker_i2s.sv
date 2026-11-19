@@ -38,6 +38,10 @@ module tb_speaker_i2s;
     speaker_i2s dut (
         .clk_14m(clk_14m),
         .spk_bit(spk_bit),
+        .mb_in_m(1'b0),   // MB port: tied off - mono path under test
+        .mb_gain_m(2'd0),
+        .mb_l   (10'd0),
+        .mb_r   (10'd0),
         .mclk   (mclk),
         .sclk   (sclk),
         .lrck   (lrck),

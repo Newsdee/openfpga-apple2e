@@ -88,6 +88,12 @@ module devkey_uart #(
     // ctrl-domain snapshot (counters + state words) already crossed to 74a
     // via the toggle handshake in apf_stream_video_top.
     input  wire [127:0] ssd_snap,
+    // 2026-11-19 SSY: WOZ floppy feed tap snapshot. 32-bit machine-domain
+    // word (engine/transport/mount-ctl) already crossed to 74a via the
+    // toggle handshake in apf_stream_video_top. One SSY line per 20 Hz
+    // tick while idle shows where the nibble feed dies (see
+    // docs/EXPERT_BRIEF_WOZ_FLOPPY_HW_REGRESSION_2026-11-19.md, action C).
+    input  wire [31:0] ssy_snap,
     // ---- dev key (debug_key.v outputs; uart_rx already 3FF-synced) ----
     input  wire        button,
     input  wire        uart_rx,
@@ -525,7 +531,8 @@ module devkey_uart #(
                EV_RXB  = 4'd11,
                EV_SSD  = 4'd12,   // 2026-11-16: save/load progress counters
                EV_SSX  = 4'd13,   // 2026-11-16: port/owner/mgr state word
-               EV_SSHD = 4'd14;   // 2026-11-17: load header dump (REVERT)
+               EV_SSHD = 4'd14,   // 2026-11-17: load header dump (REVERT)
+               EV_SSY  = 4'd15;   // 2026-11-19: WOZ feed tap line (REVERT)
 
     reg [7:0]  line [0:47];   // 2026-11-17: widened 36->48 for SS HD headroom
     reg [3:0]  ev_r;
@@ -816,6 +823,50 @@ module devkey_uart #(
                     default: char_for = 8'h0A;
                 endcase
             end
+            EV_SSY: begin
+                // "SSY s" m "a" q "k" f "b" "d" 4hex CRLF (32 chars)
+                // WOZ feed taps: s=mount state (0 unm, 1 mnted, 2-4 eject),
+                // m=mounted, a=D1_ACTIVE (selected-drive motor state),
+                // q=woz_sd_rd engine read request, k=sd_ack transport,
+                // f=transport fault latch, b=sd_buff_wr byte strobe,
+                // d=upper 16 bits of the cumulative read-byte counter -
+                // a frozen d with q/k/b activity is the dead feed.
+                case (i)
+                    6'd0:  char_for = 8'h53;   // S
+                    6'd1:  char_for = 8'h53;   // S
+                    6'd2:  char_for = 8'h59;   // Y
+                    6'd3:  char_for = 8'h20;   // sp
+                    6'd4:  char_for = 8'h73;   // s
+                    6'd5:  char_for = hexc(ssy_snap[31:29]);
+                    6'd6:  char_for = 8'h20;   // sp
+                    6'd7:  char_for = 8'h6D;   // m
+                    6'd8:  char_for = hexc({3'd0, ssy_snap[28]});
+                    6'd9:  char_for = 8'h20;   // sp
+                    6'd10: char_for = 8'h61;   // a
+                    6'd11: char_for = hexc({3'd0, ssy_snap[22]});
+                    6'd12: char_for = 8'h20;   // sp
+                    6'd13: char_for = 8'h71;   // q
+                    6'd14: char_for = hexc({3'd0, ssy_snap[24]});
+                    6'd15: char_for = 8'h20;   // sp
+                    6'd16: char_for = 8'h6B;   // k
+                    6'd17: char_for = hexc({3'd0, ssy_snap[27]});
+                    6'd18: char_for = 8'h20;   // sp
+                    6'd19: char_for = 8'h66;   // f
+                    6'd20: char_for = hexc({3'd0, ssy_snap[26]});
+                    6'd21: char_for = 8'h20;   // sp
+                    6'd22: char_for = 8'h62;   // b
+                    6'd23: char_for = hexc({3'd0, ssy_snap[25]});
+                    6'd24: char_for = 8'h20;   // sp
+                    6'd25: char_for = 8'h64;   // d
+                    6'd26: char_for = hexc(ssy_snap[21:18]);
+                    6'd27: char_for = hexc(ssy_snap[17:14]);
+                    6'd28: char_for = hexc(ssy_snap[13:10]);
+                    6'd29: char_for = hexc(ssy_snap[9:6]);
+                    6'd30: char_for = 8'h0D;
+                    6'd31: char_for = 8'h0A;
+                    default: char_for = 8'h0A;
+                endcase
+            end
             EV_ID: begin
                 // "ID " + hex8(ss_status) + " d" + hex2(tx_drop) + CRLF
                 case (i)
@@ -922,6 +973,11 @@ module devkey_uart #(
             end else if (ss_busy && t20hz && t20hz_phase == 2'd2) begin
                 gen_state <= 2'b01; ev_r <= EV_SSX;
                 len_r <= 6'd15; idx_r <= 6'd0;
+            end else if (t20hz) begin
+                // 2026-11-19: SSY WOZ feed tap, 20 Hz whenever idle (the
+                // ss_busy branches above consume the tick during an op).
+                gen_state <= 2'b01; ev_r <= EV_SSY;
+                len_r <= 6'd32; idx_r <= 6'd0;
             end else if (sel_err) begin
                 gen_state <= 2'b01; ev_r <= EV_ERR;
                 len_r <= 6'd8; idx_r <= 6'd0;

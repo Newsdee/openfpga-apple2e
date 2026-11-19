@@ -314,6 +314,14 @@ set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_ASYNCHRONOUS_SIGNAL_PIPELINING ON
 set_global_assignment -name FITTER_EFFORT "AUTO FIT"
+# 2026-11-18: placement lottery for WOZ floppy - machine-domain setup slack
+# 0.547 (21:25 build, HW FAIL) and 0.685 (probe build, HW FAIL) both broke
+# floppy load; 0.858 (12:10 build) worked. Re-roll until STA >= 0.8; verify
+# the actual seed in fit.rpt ("Fitter Initial Placement Seed").
+# NOTE 2026-11-19: FITTER_SEED 42 was REJECTED by QP 17.0.2 Lite (Error
+# 125048 at project load) - correct mechanism unknown, pending expert review
+# (EXPERT_BRIEF_WOZ_FLOPPY_HW_REGRESSION_2026-11-19.md, open item 1).
+# set_global_assignment -name FITTER_SEED 42
 set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION ON
 
 # Assembler Assignments
@@ -752,6 +760,9 @@ set_global_assignment -name SYSTEMVERILOG_FILE core/woz/woz_floppy_controller.sv
 set_global_assignment -name VERILOG_FILE core/apple2e/sdram_storage.v
 set_global_assignment -name VERILOG_FILE core/apple2e/apple2e_sdram_pll.v
 set_global_assignment -name VERILOG_FILE core/apple2e/devkey_uart.v
+set_global_assignment -name VERILOG_FILE core/mockingboard/mockingboard.v
+set_global_assignment -name VERILOG_FILE core/mockingboard/via6522.v
+set_global_assignment -name SYSTEMVERILOG_FILE core/mockingboard/YM2149.sv
 set_global_assignment -name VERILOG_FILE ip/debug_key.v
 set_global_assignment -name VERILOG_FILE ../../machine/apple2.v
 set_global_assignment -name VERILOG_FILE ../../machine/timing_generator.v

@@ -15,6 +15,11 @@ module tb_devkey_uart;
     // input). Layout: {8 spare, 8 cmd-while-busy, 20 wr_req, 20 wr_done,
     // 20 rd_req, 20 rd_done, 16 storage state, 16 slot state}.
     reg [127:0] ssd_snap = 128'h0;
+    // 2026-11-19 SSY: WOZ feed tap snapshot (machine-domain word crossed to
+    // 74a at the top). Layout: {3 mstate, 1 mounted, 1 sd_ack, 1 tfault,
+    // 1 sd_buff_wr, 1 woz_sd_rd, 1 D1_MOTOR_ON, 1 D1_ACTIVE, 16 reads[15:0],
+    // 6 spare}.
+    reg [31:0] ssy_snap = 32'h0;
     // 2026-11-17 SS HD: source of the load-header dump snapshot
     reg [63:0] ss_hd0 = 0;
     reg [63:0] ss_hd1 = 0;
@@ -41,6 +46,7 @@ module tb_devkey_uart;
         .clk(clk), .rst(rst), .ss_start(ss_start), .ss_load(ss_load),
         .ss_busy(ss_busy), .ss_ok(ss_ok), .ss_err(ss_err), .ss_status(ss_status),
         .ssd_snap(ssd_snap),
+        .ssy_snap(ssy_snap),
         .ss_hd0(ss_hd0), .ss_hd1(ss_hd1), .ss_hd_err(ss_hd_err),
         .button(key_button), .uart_rx(uart_rx), .uart_tx(uart_tx), .led(led)
     );
@@ -51,6 +57,7 @@ module tb_devkey_uart;
         .clk(clk), .rst(rst), .ss_start(ss_start), .ss_load(ss_load),
         .ss_busy(ss_busy), .ss_ok(ss_ok), .ss_err(ss_err), .ss_status(ss_status),
         .ssd_snap(ssd_snap),
+        .ssy_snap(ssy_snap),
         .ss_hd0(ss_hd0), .ss_hd1(ss_hd1), .ss_hd_err(ss_hd_err),
         .button(key_button), .uart_rx(uart_rx), .uart_tx(mirror_tx),
         .led(mirror_led)
@@ -192,12 +199,44 @@ module tb_devkey_uart;
         expect_line("ID 00000102 d00", 0);
         $display("PASS boot banner and ID through debug-key TX pad at 115200");
 
+        // 2026-11-19 SSY: WOZ feed tap line, one per 20 Hz tick while idle.
+        // The first tick lands ~50 ms after reset; scan a 108 ms window so
+        // at least one tick (and its full line) is covered. Expect decodes
+        // the fixed ssy_snap word: s=1 m=1 a=0 q=1 k=0 f=1 b=0 d=ABCD.
+        begin : ssy_check
+            bit found;
+            ssy_snap = {3'b001, 1'b1, 1'b0, 1'b1, 1'b0, 1'b1, 1'b1, 1'b0,
+                        16'hABCD, 6'd0};
+            found = 0;
+            for (integer c = 0; c < 8_000_000 && !found; c++) begin
+                @(negedge clk);
+                for (integer i = 0; i < line_count; i++)
+                    if (lines[i] == "SSY s1 m1 a0 q1 k0 f1 b0 dABCD") found = 1;
+            end
+            ssy_snap = 32'd0;
+            if (!found) $fatal(1, "SSY tap line missing");
+            $display("PASS SSY WOZ feed tap line");
+        end
+
         mark = line_count;
         ss_status = 32'h12345678;
         ss_busy = 1;
         pulse_command(1);
         expect_line("SS ST", mark);
-        expect_line("SS 12345678", mark);
+        // 2026-11-19: the 20 Hz busy poll emits SSP on only 2 of its 4
+        // phase ticks, and the SSY scan above shifted the phase alignment -
+        // the fixed 80 ms expect_line window can now legitimately land
+        // between two SSP ticks. Scan 215 ms (>= 4 ticks) instead.
+        begin : ssp_wait
+            bit found;
+            found = 0;
+            for (integer c = 0; c < 16_000_000 && !found; c++) begin
+                @(negedge clk);
+                for (integer i = mark; i < line_count; i++)
+                    if (lines[i] == "SS 12345678") found = 1;
+            end
+            if (!found) $fatal(1, "Missing line: SS 12345678");
+        end
         ss_ok = 1;
         repeat (10) @(negedge clk);
         ss_busy = 0;

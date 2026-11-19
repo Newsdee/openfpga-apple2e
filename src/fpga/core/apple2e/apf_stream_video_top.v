@@ -681,6 +681,54 @@ end
             ssd_snap_74 <= ssd_snap_r;
     end
 
+    // 2026-11-19 SSY: WOZ floppy feed taps (EXPERT_BRIEF_WOZ_FLOPPY_HW_
+    // REGRESSION_2026-11-19.md, action C). Every source is machine-domain
+    // (engine/transport/mount-ctl all run on clk_core_14318), so the word
+    // is assembled here and crossed ONCE to 74a - same toggle handshake as
+    // ssd_snap. devkey_uart prints one SSY line per 20 Hz tick while idle:
+    //   SSY s<mstate> m<mounted> a<D1_ACTIVE> q<woz_sd_rd> k<sd_ack>
+    //       f<tfault> b<sd_buff_wr> d<reads[15:0]>
+    // A frozen d with q/k/b activity localizes the dead feed (request never
+    // fires / ack never returns / bytes never move / fault latched).
+    wire [31:0] ssy_snap_src = {
+        mc_state[2:0],           // [31:29] 0=unm 1=mnted 2-4=eject
+        mc_img_mounted,          // [28]
+        woz_sd_ack,              // [27]
+        woz_transport_fault,     // [26]
+        woz_sd_buff_wr,          // [25]
+        woz_sd_rd,               // [24]
+        drv_motor,               // [23] D1_MOTOR_ON
+        drv_active,              // [22] D1_ACTIVE
+        drv_reads[15:0],         // [21:6] cumulative read bytes (upper 16)
+        6'd0                      // [5:0] spare
+    };
+    reg [31:0] ssy_snap_r;
+    reg        ssy_tog_m;
+    reg [16:0] ssy_tick_c;
+    wire       ssy_tick = (ssy_tick_c == 17'd14318);   // ~10.0 Hz @ 14.318 MHz
+    always @(posedge clk_core_14318) begin
+        if (machine_reset) begin
+            ssy_snap_r <= 32'd0; ssy_tog_m <= 1'b0; ssy_tick_c <= 17'd0;
+        end else if (ssy_tick) begin
+            ssy_tick_c <= 17'd0;
+            ssy_snap_r <= ssy_snap_src;
+            ssy_tog_m  <= ~ssy_tog_m;
+        end else begin
+            ssy_tick_c <= ssy_tick_c + 17'd1;
+        end
+    end
+    // 74a side: 3FF on the toggle, latch the payload on the sampled rise.
+    reg        ssy_tog_s0, ssy_tog_s1, ssy_tog_s2, ssy_tog_s2_d;
+    reg [31:0] ssy_snap_74;
+    always @(posedge clk_74a) begin
+        ssy_tog_s2 <= ssy_tog_s1;
+        ssy_tog_s1 <= ssy_tog_s0;
+        ssy_tog_s0 <= ssy_tog_m;
+        ssy_tog_s2_d <= ssy_tog_s2;
+        if (ssy_tog_s2 && !ssy_tog_s2_d)
+            ssy_snap_74 <= ssy_snap_r;
+    end
+
     // dev-key UART tracer (74a): observes live savestate save/load phases
     // on hardware (the host side only sees busy/timeout). See
     // DEVKEY_UART_INTEGRATION_2026-11-14.md and devkey_uart.v.
@@ -711,6 +759,7 @@ end
         .uart_tx    ( dk_uart_tx ),
         .led        ( dk_led_s ),
         .ssd_snap   ( ssd_snap_74 ),         // 2026-11-16 SSD/SSX (REVERT)
+        .ssy_snap   ( ssy_snap_74 ),         // 2026-11-19 SSY WOZ taps (REVERT)
         .ss_hd0     ( ss_dbg_hdr0 ),         // 2026-11-17 SS HD (REVERT)
         .ss_hd1     ( ss_dbg_hdr1 ),         // 2026-11-17 SS HD (REVERT)
         .ss_hd_err  ( ss_dbg_errcode )       // 2026-11-17 SS HD (REVERT)
@@ -1361,6 +1410,13 @@ reg  [31:0] cfg_j2k_btn_word = 32'd0;
 reg  [31:0] cfg_hdd_word     = 32'd0;   // "HDD" combined (0x01F00010): media + write-protect
 reg  [31:0] cfg_joy_mode_word = 32'd0;  // "Joystick Mode" (0x01F00014)
 reg  [31:0] cfg_joy_xcenter_word = 32'd0;  // "Analog X Center" (0x01F0001C)
+// ---- Mockingboard inslot option (2026-11-18, PLAN_MOCKINGBOARD_PORT) ----
+// "Mockingboard" check (interact.json id 11) @0x01F00020 - a FRESH address
+// (0x01F00018 was the retired HD Write Protect; 0x01F0000C is Fire Keys).
+// Write-only, default 0 = card OFF: $C4x0 reads return empty-slot 0x00, no
+// IRQ/NMI (the card forces both inactive when I_ENA_H=0), and the audio
+// mixer's MB term is gated out (bit-identical to the pre-port mono path).
+reg  [31:0] cfg_mb_word = 32'd0;
 // Combined "HDD" option (0x01F00010, 0.3.5): merges "Boot Media" (0/1/2) and
 // the retired "HD Write Protect" (0x01F00018) into one 5-value word - "Floppy"
 // takes the HD off the bus, so write-protect is moot there:
@@ -1388,6 +1444,10 @@ always @(posedge clk_74a) begin
     // (same safe pattern - no read-back arm; the 01F00xxx wildcard stays proven).
     if (bridge_wr && bridge_addr == 32'h01F0001C)
         cfg_joy_xcenter_word <= bridge_wr_data;
+    // Mockingboard inslot (PLAN_MOCKINGBOARD_PORT_2026-11-18.md): 0=off 1=on.
+    // write-only (same safe pattern as above - no read-back arm).
+    if (bridge_wr && bridge_addr == 32'h01F00020)
+        cfg_mb_word <= bridge_wr_data;
 end
 // ---- Combined HDD decode (74a domain) ----
 // media (2 bits, feeds the existing media_m sync): 0/1->00, 2->01, 3/4->10,
@@ -1757,7 +1817,7 @@ apple2 d1 (
     .STALL(ss_stall),          // W1: savestate freeze (was 1'b0)
     .ADDR(m_addr), .ram_addr(m_ram_addr), .D(m_ram_di), .ram_do(m_ram_do),
     .aux(m_ram_aux), .PD(m_pd_mux), .CPU_WE(m_cpu_we),
-    .IRQ_n(1'b1), .NMI_n(1'b1), .ram_we(m_ram_we),
+    .IRQ_n(mb_irq_n), .NMI_n(mb_nmi_n), .ram_we(m_ram_we),
     .VIDEO(m_video), .COLOR_LINE(m_col_line), .RUN_FILL_OK(m_run_fill_ok),
     .TEXT_MODE(m_text_mode), .EARLY_VIDEO(m_early_video), .HGR_MODE(m_hgr_mode),
     .HGR80_MODE(m_hgr80_mode), .GR2(m_gr2), .COL80(m_col80), .DHIRES_MODE(m_dhires),
@@ -1839,6 +1899,10 @@ end
     speaker_i2s u_spk_i2s (
         .clk_14m  ( clk_core_14318 ),
         .spk_bit  ( m_spk ),
+        .mb_in_m  ( mb_inslot_m ),
+        .mb_gain_m( mb_gain_m ),
+        .mb_l     ( mb_audio_l ),
+        .mb_r     ( mb_audio_r ),
         .mclk     ( audgen_mclk ),
         .sclk     ( audgen_sclk ),
         .lrck     ( spk_lrck ),
@@ -1970,7 +2034,7 @@ parameter OVL_DEBUG = 1'b0;   // SHIPPING (0.3.5): debug text/lines off; drive l
     // module and all DUT tap ports stay in the tree (TBs keep compiling);
     // only the instantiation is gated. The top (apf_top_apple2) passes its
     // own copy through.
-    parameter DEVKEY_DIAG = 1'b0;
+    parameter DEVKEY_DIAG = 1'b0;   // 2026-11-19: shipping default (the effective switch is the apf_top_apple2 parameter of the same name, which is passed into this module and overrides this default)
                               // (2026-11-07 the HDV K/W readout diagnostic was on for the hardware
                               // re-test; reverted now that the RD_PRIME_STAGE fix is validated.)
 
@@ -2088,6 +2152,48 @@ sdram_storage #(.FP_EN(FP_DIAG)) stor (
 //   woz_mount_ctl (Unit 4) turns the M0 coordinator result into
 //   IMG_MOUNTED/IMG_SIZE (mount = rising edge; eject = zero-size event).
 wire        m_cpu_we;    // apple2 CPU_WE (was unconnected)
+
+// ---- Mockingboard option CDC (74a -> 14.318, PLAN_MOCKINGBOARD_PORT) ----
+// Option word [1:0] (interact.json slider_u32 @0x01F00020, mask 3):
+//   00 = off, 01 = 1x, 10 = 2x, 11 = 3x (gains x16/x24/x32 in speaker_i2s).
+// A transient while the user drags the slider is at worst a few ms of the
+// card briefly on/off + a gain flip - harmless.
+wire [1:0] mb_opt_m;
+synch_3 #(.WIDTH(2)) u_mb_opt_sync (
+    .i(cfg_mb_word[1:0]), .o(mb_opt_m), .clk(clk_core_14318)
+);
+wire mb_inslot_m = (mb_opt_m != 2'd0);   // card on (1x/2x/3x)
+wire [1:0] mb_gain_m = mb_opt_m;          // raw option value for speaker_i2s
+                                           // (00 off, 01 x16, 10 x24, 11 x32)
+// Slot-4 Mockingboard (Model A clone: 2x 6522 + 2x AY-3-8910, 6 stereo
+// channels). The donor is byte-identical (src/fpga/core/mockingboard/,
+// see its NOTICE.md); the bus contract was verified signal-by-signal
+// against the MiSTer apple2_top.v instantiation. IO space only
+// ($C4x0 = IO_SELECT[4]); I_RW_L = 1:read 0:write = ~m_cpu_we. OE is
+// NOT ENA-gated inside the donor, so the PD mux below selects on the
+// slot+option bits, not on mb_oe (a disabled card never reaches PD).
+wire [7:0]  mb_data;
+wire        mb_oe;
+wire        mb_irq_n, mb_nmi_n;      // forced inactive high when off (donor)
+wire [9:0]  mb_audio_l, mb_audio_r;  // 10-bit sample sums -> speaker_i2s mix
+MOCKINGBOARD mb_4 (
+    .CLK_14M     ( clk_core_14318 ),
+    .PHASE_ZERO  ( m_pz ),
+    .PHASE_ZERO_R( m_pzr ),
+    .PHASE_ZERO_F( m_pzf ),
+    .I_RESET_L   ( ~machine_reset ),  // soft reset + cold reboot reset the card
+    .I_ENA_H     ( mb_inslot_m ),
+    .I_ADDR      ( m_addr[7:0] ),
+    .I_DATA      ( m_ram_di ),
+    .O_DATA      ( mb_data ),
+    .OE          ( mb_oe ),
+    .I_RW_L      ( ~m_cpu_we ),
+    .I_IOSEL_L   ( ~m_io_sel[4] | ~mb_inslot_m ),
+    .O_IRQ_L     ( mb_irq_n ),
+    .O_NMI_L     ( mb_nmi_n ),
+    .O_AUDIO_L   ( mb_audio_l ),
+    .O_AUDIO_R   ( mb_audio_r )
+);
 wire [7:0]  woz_dout;    // engine D_OUT (ROM on IO_SELECT, data reg elsewhere)
 wire        woz_sd_rd, woz_sd_wr;
 wire [31:0] woz_sd_lba;
@@ -2203,7 +2309,11 @@ reboot_ctl woz_reboot (
 // slot-6 WOZ floppy. For Both/HDD (hd_off_m=0) the wiring is bit-identical
 // to the pre-gate form.
 wire sel7_live = (m_dev_sel[7] | m_io_sel[7]) & ~hd_off_m;
+// Slot 4 = Mockingboard (IO only, $C4x0). The windows never overlap, so
+// the mux order is for form; HDD keeps top priority as before.
+wire sel4_live = m_io_sel[4] & mb_inslot_m;
 wire [7:0]  m_pd_mux = sel7_live ? hdd_dout :
+                       sel4_live ? mb_data :
                        (m_dev_sel[6] | m_io_sel[6]) ? woz_dout : 8'h00;
 
 disk_ii_woz woz (
