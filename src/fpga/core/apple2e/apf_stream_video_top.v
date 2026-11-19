@@ -2154,7 +2154,9 @@ sdram_storage #(.FP_EN(FP_DIAG)) stor (
 wire        m_cpu_we;    // apple2 CPU_WE (was unconnected)
 
 // ---- Mockingboard option CDC (74a -> 14.318, PLAN_MOCKINGBOARD_PORT) ----
-// Option word [1:0] (interact.json slider_u32 @0x01F00020, mask 3):
+// Option word [1:0] (interact.json slider_u32 @0x01F00020, NO mask -
+// mask bits are LEFT UNTOUCHED, so a mask here would have blocked the
+// slider's own bits; 2026-11-19 hardware found this):
 //   00 = off, 01 = 1x, 10 = 2x, 11 = 3x (gains x16/x24/x32 in speaker_i2s).
 // A transient while the user drags the slider is at worst a few ms of the
 // card briefly on/off + a gain flip - harmless.

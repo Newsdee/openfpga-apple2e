@@ -214,7 +214,6 @@
         "writeonly": true,
         "defaultval": 0,
         "address": "0x01F00020",
-        "mask": 3,
         "graphical": {
           "signed": false,
           "min": 0,
