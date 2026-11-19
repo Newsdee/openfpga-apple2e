@@ -94,6 +94,10 @@ module devkey_uart #(
     // tick while idle shows where the nibble feed dies (see
     // docs/EXPERT_BRIEF_WOZ_FLOPPY_HW_REGRESSION_2026-11-19.md, action C).
     input  wire [31:0] ssy_snap,
+    // 2026-11-19 SSH: HDV transport tap snapshot (74a domain, no CDC -
+    // the bridge already runs on clk_74a). One SSH line per 20 Hz idle
+    // phase tick. REVERT for shipping (port elided with g_devkey_diag).
+    input  wire [31:0] ssh_snap,
     // ---- dev key (debug_key.v outputs; uart_rx already 3FF-synced) ----
     input  wire        button,
     input  wire        uart_rx,
@@ -532,10 +536,12 @@ module devkey_uart #(
                EV_SSD  = 4'd12,   // 2026-11-16: save/load progress counters
                EV_SSX  = 4'd13,   // 2026-11-16: port/owner/mgr state word
                EV_SSHD = 4'd14,   // 2026-11-17: load header dump (REVERT)
-               EV_SSY  = 4'd15;   // 2026-11-19: WOZ feed tap line (REVERT)
+               EV_SSY  = 4'd15,   // 2026-11-19: WOZ feed tap line (REVERT)
+               EV_SSH  = 5'd16,   // 2026-11-19: HDV transport tap line (REVERT)
+               EV_SO   = 5'd17;   // 2026-11-19: word-owner client levels (REVERT)
 
     reg [7:0]  line [0:47];   // 2026-11-17: widened 36->48 for SS HD headroom
-    reg [3:0]  ev_r;
+    reg [4:0]  ev_r;   // 2026-11-19: widened 4->5 bits for EV_SSH/EV_SO (all 16 4-bit codes in use)
     reg [5:0]  len_r;
     reg [5:0]  idx_r;
     reg [1:0]  gen_state;      // 0=idle 1=build 2=emit
@@ -572,7 +578,7 @@ module devkey_uart #(
     // index truncated 32 to 0, making the banner's LF come out as 'A' and
     // merging the first ID line into the banner (learned 2026-11-15).
     function [7:0] char_for;
-        input [3:0] ev;
+        input [4:0] ev;
         input [5:0] i;
         begin
             case (ev)
@@ -867,6 +873,72 @@ module devkey_uart #(
                     default: char_for = 8'h0A;
                 endcase
             end
+            EV_SSH: begin
+                // "SSH s" hexc(state) " f" hexc(fault) " E" hexc(bridge_err)
+                // " d" hexc(ds_done) " e" hexc(ds_err) " c" hex16({fetch_cnt,
+                // wrcnt}) " w" hex2({mounted, protect}) CRLF (30 chars)
+                // HDV transport taps: s=FSM (0 idle, 1 fetch, 2 walk-in,
+                // 3 walk-out, 4/5 write), f=host-cmd timeout (sticky),
+                // E=bridge err hold, d=dataslot done, e=dataslot err code,
+                // c=hex16 {completed 0x0180 fetches, host 0x0184 read words
+                // of last write (want 128)}, w={mounted, protect}. A frozen
+                // c with s stuck at 1 and f/E set = HDV load stalled
+                // core-side; s=0 with no fault = host never sent the next
+                // fetch.
+                case (i)
+                    6'd0:  char_for = 8'h53;   // S
+                    6'd1:  char_for = 8'h53;   // S
+                    6'd2:  char_for = 8'h48;   // H
+                    6'd3:  char_for = 8'h20;   // sp
+                    6'd4:  char_for = 8'h73;   // s
+                    6'd5:  char_for = hexc({3'd0, ssh_snap[31:29]});
+                    6'd6:  char_for = 8'h20;   // sp
+                    6'd7:  char_for = 8'h66;   // f
+                    6'd8:  char_for = hexc({3'd0, ssh_snap[28]});
+                    6'd9:  char_for = 8'h20;   // sp
+                    6'd10: char_for = 8'h45;   // E
+                    6'd11: char_for = hexc({3'd0, ssh_snap[27]});
+                    6'd12: char_for = 8'h20;   // sp
+                    6'd13: char_for = 8'h64;   // d
+                    6'd14: char_for = hexc({3'd0, ssh_snap[26]});
+                    6'd15: char_for = 8'h20;   // sp
+                    6'd16: char_for = 8'h65;   // e
+                    6'd17: char_for = hexc({1'b0, ssh_snap[25:23]});
+                    6'd18: char_for = 8'h20;   // sp
+                    6'd19: char_for = 8'h63;   // c
+                    6'd20: char_for = hexc(ssh_snap[22:19]);
+                    6'd21: char_for = hexc(ssh_snap[18:15]);
+                    6'd22: char_for = hexc(ssh_snap[14:11]);
+                    6'd23: char_for = hexc(ssh_snap[10:7]);
+                    6'd24: char_for = 8'h20;   // sp
+                    6'd25: char_for = 8'h77;   // w
+                    6'd26: char_for = hexc(ssh_snap[6:3]);
+                    6'd27: char_for = hexc(ssh_snap[2:0]);
+                    6'd28: char_for = 8'h0D;
+                    6'd29: char_for = 8'h0A;
+                    default: char_for = 8'h0A;
+                endcase
+            end
+            EV_SO: begin
+                // "SO " + hex2(ssd_snap[127:120]) + CRLF (7 chars)
+                // Word-owner client levels (ctrl domain, crossed in the
+                // ssd_snap handshake): [7] fc_req (image-fetch pending -
+                // the WOZ/HDV image word path), [6] word port busy,
+                // [5] fetch_busy (sector engine), [4] sector_ready,
+                // [3] ssrd_req, [2] sswr_req, [1] hr_req, [0] hwr_req.
+                // fc_req high with fetch_busy clear = a fetch request the
+                // sector engine never serviced.
+                case (i)
+                    6'd0:  char_for = 8'h53;   // S
+                    6'd1:  char_for = 8'h4F;   // O
+                    6'd2:  char_for = 8'h20;   // sp
+                    6'd3:  char_for = hexc(ssd_snap[127:124]);
+                    6'd4:  char_for = hexc(ssd_snap[123:120]);
+                    6'd5:  char_for = 8'h0D;
+                    6'd6:  char_for = 8'h0A;
+                    default: char_for = 8'h0A;
+                endcase
+            end
             EV_ID: begin
                 // "ID " + hex8(ss_status) + " d" + hex2(tx_drop) + CRLF
                 case (i)
@@ -974,10 +1046,20 @@ module devkey_uart #(
                 gen_state <= 2'b01; ev_r <= EV_SSX;
                 len_r <= 6'd15; idx_r <= 6'd0;
             end else if (t20hz) begin
-                // 2026-11-19: SSY WOZ feed tap, 20 Hz whenever idle (the
-                // ss_busy branches above consume the tick during an op).
-                gen_state <= 2'b01; ev_r <= EV_SSY;
-                len_r <= 6'd32; idx_r <= 6'd0;
+                // 2026-11-19: idle 20 Hz tap lines, phase-cycled:
+                // 0 -> SSY (WOZ feed), 1 -> SSH (HDV transport),
+                // 2 -> SO (word-owner clients), 3 -> SSY again (keeps the
+                // original 2-per-4-ticks cadence for the WOZ line).
+                if (t20hz_phase == 2'd1) begin
+                    gen_state <= 2'b01; ev_r <= EV_SSH;
+                    len_r <= 6'd30; idx_r <= 6'd0;
+                end else if (t20hz_phase == 2'd2) begin
+                    gen_state <= 2'b01; ev_r <= EV_SO;
+                    len_r <= 6'd7; idx_r <= 6'd0;
+                end else begin
+                    gen_state <= 2'b01; ev_r <= EV_SSY;
+                    len_r <= 6'd32; idx_r <= 6'd0;
+                end
             end else if (sel_err) begin
                 gen_state <= 2'b01; ev_r <= EV_ERR;
                 len_r <= 6'd8; idx_r <= 6'd0;

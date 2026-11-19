@@ -20,6 +20,10 @@ module tb_devkey_uart;
     // 1 sd_buff_wr, 1 woz_sd_rd, 1 D1_MOTOR_ON, 1 D1_ACTIVE, 16 reads[15:0],
     // 6 spare}.
     reg [31:0] ssy_snap = 32'h0;
+    // 2026-11-19 SSH: HDV transport tap (74a, no CDC). Layout:
+    // {5 spare, 1 protect, 1 mounted, 8 wrcnt, 8 fetch_cnt, 3 ds_err,
+    //  1 ds_done, 1 bridge_err, 1 fault, 3 state}.
+    reg [31:0] ssh_snap = 32'h0;
     // 2026-11-17 SS HD: source of the load-header dump snapshot
     reg [63:0] ss_hd0 = 0;
     reg [63:0] ss_hd1 = 0;
@@ -47,6 +51,7 @@ module tb_devkey_uart;
         .ss_busy(ss_busy), .ss_ok(ss_ok), .ss_err(ss_err), .ss_status(ss_status),
         .ssd_snap(ssd_snap),
         .ssy_snap(ssy_snap),
+        .ssh_snap(ssh_snap),
         .ss_hd0(ss_hd0), .ss_hd1(ss_hd1), .ss_hd_err(ss_hd_err),
         .button(key_button), .uart_rx(uart_rx), .uart_tx(uart_tx), .led(led)
     );
@@ -58,6 +63,7 @@ module tb_devkey_uart;
         .ss_busy(ss_busy), .ss_ok(ss_ok), .ss_err(ss_err), .ss_status(ss_status),
         .ssd_snap(ssd_snap),
         .ssy_snap(ssy_snap),
+        .ssh_snap(ssh_snap),
         .ss_hd0(ss_hd0), .ss_hd1(ss_hd1), .ss_hd_err(ss_hd_err),
         .button(key_button), .uart_rx(uart_rx), .uart_tx(mirror_tx),
         .led(mirror_led)
@@ -208,7 +214,7 @@ module tb_devkey_uart;
             ssy_snap = {3'b001, 1'b1, 1'b0, 1'b1, 1'b0, 1'b1, 1'b1, 1'b0,
                         16'hABCD, 6'd0};
             found = 0;
-            for (integer c = 0; c < 8_000_000 && !found; c++) begin
+            for (integer c = 0; c < 24_000_000 && !found; c++) begin
                 @(negedge clk);
                 for (integer i = 0; i < line_count; i++)
                     if (lines[i] == "SSY s1 m1 a0 q1 k0 f1 b0 dABCD") found = 1;
@@ -216,6 +222,56 @@ module tb_devkey_uart;
             ssy_snap = 32'd0;
             if (!found) $fatal(1, "SSY tap line missing");
             $display("PASS SSY WOZ feed tap line");
+        end
+
+        // 2026-11-19 SSH/SO: HDV transport + word-owner client taps. The
+        // idle tap lines are now phase-cycled (0->SSY, 1->SSH, 2->SO,
+        // 3->SSY), so each scan window spans at least two full 4-tick
+        // rotations (>= 216 ms) to guarantee its phase tick. Expect the
+        // encoded lines from the fixed snap words below.
+        begin : ssh_check
+            bit found;
+            integer mark2;
+            mark2 = line_count;
+            ssh_snap = {3'b001, 1'b1, 1'b1, 1'b1, 3'b010, 8'h12, 8'h34,
+                        7'b1100000};   // state=1 f=1 E=1 d=1 e=2
+                                        // fetch=0x12 wrcnt=0x34 mnt=1 prot=1
+            found = 0;
+            for (integer c = 0; c < 24_000_000 && !found; c++) begin
+                @(negedge clk);
+                for (integer i = mark2; i < line_count; i++)
+                    if (lines[i] == "SSH s1 f1 E1 d1 e2 c1234 wC0") found = 1;
+            end
+            ssh_snap = 32'd0;
+            if (!found) begin
+                for (integer i = mark2; i < line_count; i++)
+                    if (lines[i] != "ID 00000102 d00" && lines[i] != "HB 00" &&
+                        lines[i] != "APF2E DID 00000102 d00")
+                        $display("DBG line[%0d]=\"%s\"", i, lines[i]);
+                $fatal(1, "SSH HDV transport tap line missing");
+            end
+            $display("PASS SSH HDV transport tap line");
+        end
+        begin : so_check
+            bit found;
+            integer mark3;
+            mark3 = line_count;
+            ssd_snap[127:120] = 8'h8F;
+            found = 0;
+            for (integer c = 0; c < 24_000_000 && !found; c++) begin
+                @(negedge clk);
+                for (integer i = mark3; i < line_count; i++)
+                    if (lines[i] == "SO 8F") found = 1;
+            end
+            ssd_snap[127:120] = 8'h0;
+            if (!found) begin
+                for (integer i = mark3; i < line_count; i++)
+                    if (lines[i] != "ID 00000102 d00" && lines[i] != "HB 00" &&
+                        lines[i] != "APF2E DID 00000102 d00")
+                        $display("DBG line[%0d]=\"%s\"", i, lines[i]);
+                $fatal(1, "SO word-owner tap line missing");
+            end
+            $display("PASS SO word-owner tap line");
         end
 
         mark = line_count;
@@ -230,7 +286,7 @@ module tb_devkey_uart;
         begin : ssp_wait
             bit found;
             found = 0;
-            for (integer c = 0; c < 16_000_000 && !found; c++) begin
+            for (integer c = 0; c < 24_000_000 && !found; c++) begin
                 @(negedge clk);
                 for (integer i = mark; i < line_count; i++)
                     if (lines[i] == "SS 12345678") found = 1;

@@ -139,6 +139,12 @@ module sdram_storage (
     // 2026-11-16 savestate SSD/SSX serial debug (REVERT for shipping):
     // port/owner state word for the tracer's SSX line (all ctrl domain).
     output wire [15:0]  dbg_ss_state
+    // 2026-11-19 SSH/SO diagnostic (DEVKEY_DIAG build): per-client request
+    // levels + port busy + sector-fetch engine state, all ctrl domain,
+    // crossed once to 74a in the existing ssd_snap spare bits. The SSY
+    // line already covers the machine side; this covers the shared
+    // host->machine word port for the 2026-11-19 WOZ+HDV co-failure.
+    , output wire [7:0]  dbg_so_state
 );
 
     // Image-fingerprint diagnostics fan-out (M1): the top-level FP_DIAG
@@ -273,6 +279,12 @@ module sdram_storage (
     // verifier level is high (the M0 invariant that kept the port's
     // single queue unambiguous, now explicit)
     wire fc_req_eff = fc_req_w && !vreq_s[1];
+    // 2026-11-19 SO diagnostic word (see port comment). A frozen word with
+    // fc_req asserted + fetch_busy clear names a fetch request the sector
+    // engine never serviced; ssrd/sswr/hr/hwr levels show a client holding
+    // the port while the transport waits.
+    assign dbg_so_state = {fc_req_eff, ov_word_busy, fetch_busy, sector_ready,
+                           ssrd_req, sswr_req, hr_req, hwr_req};
 
     // image generation + live size: 74.25 -> ctrl (133.12) crossings.
     // A torn multi-bit sync only ever looks like a different generation

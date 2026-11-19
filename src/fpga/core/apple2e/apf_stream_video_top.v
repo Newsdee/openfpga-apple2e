@@ -555,6 +555,7 @@ end
     wire [63:0] ss_dbg_hdr1;            // 2026-11-17 SS HD (REVERT for shipping)
     wire [1:0]  ss_dbg_errcode;         // 2026-11-17 SS HD (REVERT for shipping)
     wire [15:0] ss_dbg_storage_state;   // storage: port/owner state word
+    wire [7:0]  so_state_c;             // 2026-11-19 SO: word-owner client levels (ctrl domain, REVERT)
 
     // Per-op progress counters (ctrl domain). Signal semantics (verified in
     // RTL, do not assume symmetry):
@@ -641,7 +642,10 @@ end
     // ctrl tick, toggled on the same edge (payload valid from the next cycle;
     // the 3FF below sees it settled), held frozen until the next tick.
     wire [127:0] ssd_snap_src = {
-        8'd0,                    // [127:120] spare
+        so_state_c,              // [127:120] 2026-11-19 SO: word-owner client levels
+                                 //            (fc_req/word_busy/fetch_busy/sector_ready/
+                                 //             ssrd/sswr/hr/hwr) - crossed in this same
+                                 //            snapshot, no extra CDC
         ssd_cmd_c1,              // [119:112] cmd-while-busy
         ssd_wr_req_c,            // [111:92]  save req attempts
         ssd_wr_done_c,           // [91:72]   save done
@@ -649,6 +653,24 @@ end
         ssd_rd_done_c,           // [51:32]   load done (rising edges)
         ss_dbg_storage_state,    // [31:16]   port/owner state word
         ss_dbg_slot_state         // [15:0]    mgr/slot state word
+    };
+    // 2026-11-19 SSH: HDV transport tap snapshot. All sources are 74a
+    // (the bridge runs on clk_74a), so no CDC - devkey_uart observes this
+    // wire directly. Complements SSY (machine side of WOZ): a frozen
+    // fetch_cnt with state stuck in ST_FETCH and fault/bridge_err set
+    // names an HDV load stalled core-side; state IDLE with no fault means
+    // the host never sent the next 0x0180.
+    wire [31:0] ssh_snap_src = {
+        5'd0,                    // [4:0]   spare
+        hdd_protect,             // [5]     HDV read-only
+        hdv_mounted_74,          // [6]     HDV slot size != 0
+        hdv_wrcnt_74,            // [14:7]  host 0x0184 read words of last write (want 128)
+        hdv_fetch_cnt,           // [22:15] completed 0x0180 fetches
+        target_dataslot_err,     // [25:23]
+        target_dataslot_done,    // [26]
+        bridge_err_74,           // [27]
+        hdv_fault,               // [28]    host command timeout (sticky)
+        hdv_state                // [31:29] 0 idle .. 5 write
     };
     reg [127:0] ssd_snap_r;
     reg         ssd_snap_tog_c;
@@ -760,6 +782,7 @@ end
         .led        ( dk_led_s ),
         .ssd_snap   ( ssd_snap_74 ),         // 2026-11-16 SSD/SSX (REVERT)
         .ssy_snap   ( ssy_snap_74 ),         // 2026-11-19 SSY WOZ taps (REVERT)
+        .ssh_snap   ( ssh_snap_src ),        // 2026-11-19 SSH HDV transport taps (REVERT)
         .ss_hd0     ( ss_dbg_hdr0 ),         // 2026-11-17 SS HD (REVERT)
         .ss_hd1     ( ss_dbg_hdr1 ),         // 2026-11-17 SS HD (REVERT)
         .ss_hd_err  ( ss_dbg_errcode )       // 2026-11-17 SS HD (REVERT)
@@ -2193,7 +2216,8 @@ sdram_storage #(.FP_EN(FP_DIAG)) stor (
     .hwr_done        ( br_hwr_done ),
     .hwr_busy        ( br_hwr_busy ),
     .port_wr_idle    ( ss_port_wr_idle ),
-    .dbg_ss_state    ( ss_dbg_storage_state )   // 2026-11-16 SSD/SSX (REVERT)
+    .dbg_ss_state    ( ss_dbg_storage_state ),   // 2026-11-16 SSD/SSX (REVERT)
+    .dbg_so_state    ( so_state_c )              // 2026-11-19 SO (REVERT for shipping)
 );
 
 // ---- Floppy M1: WOZ floppy machine (engine + transport + mount ctl) ----

@@ -57,14 +57,16 @@ module apf_top_apple2
     #(
         parameter OVL_SS_DIAG = 1'b0,
         parameter OVL_SS_ONLY = 1'b0,
-        // 2026-11-19: shipping. (The SSY diagnostic build 09:13 flipped this
-        // to 1 - REVERT TO 1'b0 before shipping. It is the EFFECTIVE switch:
-        // passed into stream_video_core_top, overriding that module's own
-        // default - the 08:57 build flipped only the sub-module default and
-        // came out console-less.) The SSY tap code itself stays in the tree
-        // gated on this parameter (reusable; see EXPERT_BRIEF_WOZ_FLOPPY_HW_
+        // 2026-11-19: DIAGNOSTIC BUILD (SSH/SO transport taps -
+        // EXPERT_BRIEF_AUDIO_SLIDERS_TRANSPORTS_2026-11-19.md step 2).
+        // (The SSY diagnostic build 09:13 flipped this to 1 - REVERT TO
+        // 1'b0 before shipping. It is the EFFECTIVE switch: passed into
+        // stream_video_core_top, overriding that module's own default -
+        // the 08:57 build flipped only the sub-module default and came out
+        // console-less.) The SSY/SSH/SO tap code stays in the tree gated on
+        // this parameter (reusable; see EXPERT_BRIEF_WOZ_FLOPPY_HW_
         // REGRESSION_2026-11-19.md action C).
-        parameter DEVKEY_DIAG = 1'b0
+        parameter DEVKEY_DIAG = 1'b1
     ) (
 
 ///////////////////////////////////////////////////
