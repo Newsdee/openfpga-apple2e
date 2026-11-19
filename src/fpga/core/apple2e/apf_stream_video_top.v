@@ -1423,10 +1423,13 @@ reg  [31:0] cfg_mb_word = 32'd0;
 // (PLAN_FLOPPY_SOUND_PORT_2026-11-19.md). write-only, like cfg_mb_word.
 reg  [31:0] cfg_fs_word = 32'd1;
 // Floppy volume slider (PLAN_AUDIO_VOLUME_BALANCE_2026-11-19.md):
-// 0=off, 1=1x, 2=2x, 3=4x (donor gain ladder; default 1 = 1x).
+// 0=off, 1=2x, 2=4x, 3=8x (donor gain ladder x2/x4/x4+boost; default
+// 1 = 2x). Ladder raised one step after hardware feedback (the old
+// 1=1x top of 4x left the drive sound quiet against MB/beeper).
 reg  [31:0] cfg_fsgain_word = 32'd1;
-// Beeper volume slider: 0=1x (default, today's exact level), 1=2x,
-// 2=3x, 3=4x (gain stage in speaker_i2s).
+// Beeper volume slider: 0=2x (default), 1=4x, 2=6x, 3=8x - the ladder
+// sits x2 above the original 1x..4x so the steps are clearly audible
+// (hardware: the x1..x4 ladder "did not change at all" against the mix).
 reg  [31:0] cfg_spkgain_word = 32'd0;
 // Combined "HDD" option (0x01F00010, 0.3.5): merges "Boot Media" (0/1/2) and
 // the retired "HD Write Protect" (0x01F00018) into one 5-value word - "Floppy"
@@ -1463,10 +1466,10 @@ always @(posedge clk_74a) begin
     // write-only (same safe pattern; no read-back arm).
     if (bridge_wr && bridge_addr == 32'h01F00024)
         cfg_fs_word <= bridge_wr_data;
-    // Floppy volume slider (0=off, 1=1x, 2=2x, 3=4x). write-only.
+    // Floppy volume slider (0=off, 1=2x, 2=4x, 3=8x). write-only.
     if (bridge_wr && bridge_addr == 32'h01F00028)
         cfg_fsgain_word <= bridge_wr_data;
-    // Beeper volume slider (0=1x default, 1=2x, 2=3x, 3=4x). write-only.
+    // Beeper volume slider (0=2x default, 1=4x, 2=6x, 3=8x). write-only.
     if (bridge_wr && bridge_addr == 32'h01F0002C)
         cfg_spkgain_word <= bridge_wr_data;
 end
@@ -1952,6 +1955,7 @@ end
         .mb_in_m  ( mb_inslot_m ),
         .mb_gain_m( mb_gain_m ),
         .spk_gain_m( spk_gain_m ),
+        .fs_boost_m( fs_boost_m ),
         .mb_l     ( mb_audio_l ),
         .mb_r     ( mb_audio_r ),
         .fs_l     ( fs_sample_l ),
@@ -2236,11 +2240,17 @@ wire [1:0] fs_gain_m;
 synch_3 #(.WIDTH(2)) u_fs_gain_sync (
     .i(cfg_fsgain_word[1:0]), .o(fs_gain_m), .clk(clk_core_14318)
 );
-wire [1:0] fs_gain_donor = (fs_gain_m == 2'd1) ? 2'd0
-                            : (fs_gain_m == 2'd2) ? 2'd1
+// Floppy volume slider -> donor gain (2 bits: 0=x1 1=x2 2=x4, and the
+// donor's own 3 FALLS THROUGH to x1 - there is no mute; 0=off is done by
+// the enable gate below). Slider mapping (2026-11-19 ladder raise):
+//   0 -> off (en gated)   1 -> donor x2   2 -> donor x4
+//   3 -> donor x4 + x2 boost stage (speaker_i2s fs_boost_m) = x8 total
+wire [1:0] fs_gain_donor = (fs_gain_m == 2'd1) ? 2'd1
+                            : (fs_gain_m == 2'd2) ? 2'd2
                             : (fs_gain_m == 2'd3) ? 2'd2
                             : 2'd0;
 wire        fs_eff_en_m = fs_en_m & (fs_gain_m != 2'd0);
+wire        fs_boost_m  = (fs_gain_m == 2'd3);   // x8 top stop
 // Beeper volume slider CDC (74a -> 14.318): 0=1x (default = today's exact
 // level), 1=2x, 2=3x, 3=4x - gain stage in speaker_i2s.
 wire [1:0] spk_gain_m;

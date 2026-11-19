@@ -40,7 +40,8 @@ module tb_speaker_i2s;
         .spk_bit(spk_bit),
         .mb_in_m(1'b0),   // MB port: tied off - mono path under test
         .mb_gain_m(2'd0),
-        .spk_gain_m(2'd0),   // beeper slider: 1x = today's exact level (mono harness unaffected)
+        .spk_gain_m(2'd0),   // beeper slider: 0 = x2 (lowest ladder stop)
+        .fs_boost_m(1'b0),   // floppy boost: off
         .mb_l   (10'd0),
         .mb_r   (10'd0),
         .fs_l   (10'd0),

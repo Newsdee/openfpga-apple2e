@@ -223,18 +223,6 @@
         }
       },
       {
-        "name": "Floppy Sound",
-        "id": 12,
-        "type": "check",
-        "enabled": true,
-        "persist": true,
-        "writeonly": true,
-        "defaultval": 1,
-        "address": "0x01F00024",
-        "value": 1,
-        "value_off": 0
-      },
-      {
         "name": "Floppy Volume",
         "id": 13,
         "type": "slider_u32",

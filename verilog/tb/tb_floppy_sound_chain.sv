@@ -34,12 +34,14 @@ module tb_floppy_sound_chain;
     reg        reset = 1'b1;
     reg        fs_en = 1'b0;
     reg        drv_motor = 1'b0, drv_step = 1'b0, drv_trk0 = 1'b0, drv_io = 1'b0;
-    reg [1:0]  fs_gain = 2'd0;    // donor gain: 0=x1, 1=x2, 2=x4 (C5)
-    reg [1:0]  spk_gain = 2'd0;   // beeper slider: 0=x1, 1=x2, 3=x4 (C6)
+    reg [1:0]  fs_gain = 2'd0;    // floppy slider position 0..3 (C5: 0=off 1=2x 2=4x 3=8x)
+    reg [1:0]  spk_gain = 2'd0;   // beeper slider position 0..3 (C6: 0=2x 1=4x 2=6x 3=8x)
+    wire [1:0] fs_gain_donor = (fs_gain == 2'd1) ? 2'd1 : (fs_gain == 2'd2) ? 2'd2 : (fs_gain == 2'd3) ? 2'd2 : 2'd0;
+    wire       fs_boost_w = (fs_gain == 2'd3);   // x8 top stop
     wire [9:0] fs_l, fs_r;
 
     floppy_sound u_fs (
-        .clk(clk), .reset(reset), .enable(fs_en), .gain(fs_gain), .pan(2'd3),
+        .clk(clk), .reset(reset), .enable(fs_en), .gain(fs_gain_donor), .pan(2'd3),
         .drive1_motor(drv_motor), .drive2_motor(1'b0),
         .drive1_io(drv_io), .drive2_io(1'b0),
         .drive1_step(drv_step), .drive2_step(1'b0),
@@ -83,6 +85,7 @@ module tb_floppy_sound_chain;
         .clk_14m(clk), .spk_bit(spk_bit),
         .mb_in_m(mb_gate), .mb_gain_m(mb_gain), .mb_l(mb_l), .mb_r(mb_r),
         .spk_gain_m(spk_gain),
+        .fs_boost_m(fs_boost_w),
         .fs_l(fs_l), .fs_r(fs_r),
         .mclk(mclk), .sclk(sclk), .lrck(i2s_lrck), .dac(i2s_dac)
     );
@@ -95,7 +98,7 @@ module tb_floppy_sound_chain;
     reg        dec_lrck_r = 1'b0;
     reg [15:0] w_l = 16'd0, w_r = 16'd0;
     integer    word_idx = 0;
-    localparam integer WMAX = 32768;
+    localparam integer WMAX = 65536;
     reg [15:0] w_l_hist [0:WMAX-1];
     reg [15:0] w_r_hist [0:WMAX-1];
     always @(negedge sclk) begin
@@ -272,77 +275,83 @@ module tb_floppy_sound_chain;
         check("C4 saturating mix: reaches -32768 rail", (pmin == -32768));
         check("C4 saturating mix: no wrap (max word jump < 40000)", (mj < 40000));
 
-        // C5: floppy gain ladder - the donor's internal scale_gain
-        // (x1/x2/x4, saturation at 1023) via its gain port. The motor
-        // hum is a near-constant ~16 count level, so reading the donor's
-        // fs_l output DIRECTLY (the gain is applied inside the donor)
-        // gives phase-free, exact ratios. (The I2S window of C2/C3 stays
-        // valid at x1 - C5 runs after them.)
+        // C5: floppy volume ladder - 0=off, 1=2x, 2=4x, 3=8x (donor gain
+        // port for 2x/4x + the x2 boost stage for the 8x top stop). The
+        // 8x boost lives in the MIXER (not the donor), so measure the
+        // I2S L word - with MB and beeper off the word IS the floppy
+        // term (donor sample x8, x16 boosted). Near-constant hum ->
+        // stable window peaks, exact 2.0 ratios. (C5 runs after C2/C3.)
         spk_on = 1'b0;
         mb_gate = 1'b0;
         fs_en = 1'b1;
         drv_motor = 1'b1;
-        fs_gain = 2'd0;                       // x1
-        repeat (1_000_000) @(negedge clk);     // C4's fs_en=0 RESET the donor -
-                                              // re-ramp the motor envelope
-                                              // (~190k clocks/step) to steady
-        hum1 = 0;
-        for (i = 0; i < 30_000; i = i + 1) begin
-            @(negedge clk);
-            if (fs_l > hum1) hum1 = fs_l;
-        end
-        fs_gain = 2'd1;                       // x2
-        repeat (10_000) @(negedge clk);
-        hum2 = 0;
-        for (i = 0; i < 30_000; i = i + 1) begin
-            @(negedge clk);
-            if (fs_l > hum2) hum2 = fs_l;
-        end
-        fs_gain = 2'd2;                       // x4
-        repeat (10_000) @(negedge clk);
-        hum4 = 0;
-        for (i = 0; i < 30_000; i = i + 1) begin
-            @(negedge clk);
-            if (fs_l > hum4) hum4 = fs_l;
-        end
-        $display("C5 hum ladder: x1=%0d x2=%0d x4=%0d", hum1, hum2, hum4);
-        check("C5 floppy x1 hum present (peak >= 2)", (hum1 >= 2));
-        check("C5 floppy x2 gain ~2.0x the x1 hum",
-              (hum2 * 100 > 180 * hum1) && (hum2 * 100 < 220 * hum1));
-        check("C5 floppy x4 gain ~4.0x the x1 hum",
-              (hum4 * 100 > 370 * hum1) && (hum4 * 100 < 430 * hum1));
-
-        // C6: beeper gain slider - x1/x2/x4 on the speaker term (the gain
-        // stage multiplies the DC-removed beep AFTER the duty tracker, so
-        // no re-convergence). 1 kHz square in the I2S words (>= 3 cycles
-        // per 300-word window) -> stable swing, exact ratios. MB and
-        // floppy are off; no clamp interaction (4096 x4 = 16384 < rail).
-        spk_on = 1'b1;
-        fs_en = 1'b0;
-        drv_motor = 1'b0;
-        spk_gain = 2'd0;                      // x1
-        repeat (60_000) @(negedge clk);       // duty tracker settles
+        fs_gain = 2'd1;                       // 2x
+        repeat (3_000_000) @(negedge clk);     // C4's fs_en=0 RESET the donor -
+                                              // re-ramp the 4-bit motor
+                                              // envelope (190,909 clocks/
+                                              // step) to its saturation
+                                              // (15 steps ~ 2.9M clocks) so
+                                              // the hum is constant across
+                                              // the three windows
         idxG0 = word_idx;
         repeat (44_700) @(negedge clk);       // 300 words
         measure_pp(idxG0, idxG0 + 299, pmax, pmin);
+        hum1 = pmax;
+        fs_gain = 2'd2;                       // 4x
+        repeat (10_000) @(negedge clk);
+        idxG0 = word_idx;
+        repeat (44_700) @(negedge clk);       // 300 words
+        measure_pp(idxG0, idxG0 + 299, pmax, pmin);
+        hum2 = pmax;
+        fs_gain = 2'd3;                       // 8x (donor x4 + x2 boost)
+        repeat (10_000) @(negedge clk);
+        idxG0 = word_idx;
+        repeat (44_700) @(negedge clk);       // 300 words
+        measure_pp(idxG0, idxG0 + 299, pmax, pmin);
+        hum4 = pmax;
+        $display("C5 hum ladder words: 2x=%0d 4x=%0d 8x=%0d", hum1, hum2, hum4);
+        check("C5 floppy 2x hum present (peak >= 32)", (hum1 >= 32));
+        check("C5 floppy 4x gain ~2.0x the 2x hum",
+              (hum2 * 100 > 180 * hum1) && (hum2 * 100 < 220 * hum1));
+        check("C5 floppy 8x gain ~2.0x the 4x hum (boost stage)",
+              (hum4 * 100 > 180 * hum2) && (hum4 * 100 < 220 * hum2));
+
+        // C6: beeper gain slider - x2/x4/x6/x8 on the speaker term (the
+        // gain stage multiplies the DC-removed beep AFTER the duty
+        // tracker, so no re-convergence). 2 kHz square in the I2S words.
+        // MB and floppy are off. The duty tracker oscillates FREELY
+        // against the beep (its /16 step cannot lock to the 24-word
+        // half-period), so the per-CYCLE swing varies a lot - a 300-word
+        // window undershoots (found 2026-11-19: x8 window read 17.6k
+        // while x4 read 65.5k). Measure 10,000 words (~104 cycles) so
+        // the max/min span the swing envelope. Expected: x4 and x8
+        // clamp at the 16-bit rails (old-x1 swing ~25k x4 = 100k).
+        spk_on = 1'b1;
+        fs_en = 1'b0;
+        drv_motor = 1'b0;
+        spk_gain = 2'd0;                      // x2
+        repeat (60_000) @(negedge clk);       // duty tracker settles
+        idxG0 = word_idx;
+        repeat (1_490_000) @(negedge clk);    // 10,000 words
+        measure_pp(idxG0, idxG0 + 9_999, pmax, pmin);
         bswap1 = pmax - pmin; pmx1 = pmax; pmn1 = pmin;
-        spk_gain = 2'd1;                      // x2
+        spk_gain = 2'd1;                      // x4
         repeat (10_000) @(negedge clk);
         idxG0 = word_idx;
-        repeat (44_700) @(negedge clk);
-        measure_pp(idxG0, idxG0 + 299, pmax, pmin);
+        repeat (1_490_000) @(negedge clk);    // 10,000 words
+        measure_pp(idxG0, idxG0 + 9_999, pmax, pmin);
         bswap2 = pmax - pmin; pmx2 = pmax; pmn2 = pmin;
-        spk_gain = 2'd3;                      // x4
+        spk_gain = 2'd3;                      // x8
         repeat (10_000) @(negedge clk);
         idxG0 = word_idx;
-        repeat (44_700) @(negedge clk);
-        measure_pp(idxG0, idxG0 + 299, pmax, pmin);
+        repeat (1_490_000) @(negedge clk);    // 10,000 words
+        measure_pp(idxG0, idxG0 + 9_999, pmax, pmin);
         bswap4 = pmax - pmin; pmx4 = pmax; pmn4 = pmin;
-        $display("C6 beeper swings: x1=%0d x2=%0d x4=%0d", bswap1, bswap2, bswap4);
-        check("C6 beeper x1 tone present (swing >= 256)", (bswap1 >= 256));
-        check("C6 beeper x2 gain ~2.0x the x1 swing",
-              (bswap2 * 100 > 180 * bswap1) && (bswap2 * 100 < 220 * bswap1));
+        $display("C6 beeper swings (10k words): x2=%0d x4=%0d x8=%0d", bswap1, bswap2, bswap4);
+        check("C6 beeper x2 tone present (swing >= 24k)", (bswap1 >= 24000));
         check("C6 beeper x4 clamps at both 16-bit rails (tone x4 > rail)",
+              (pmx2 == 32767) && (pmn2 == -32768));
+        check("C6 beeper x8 clamps at both 16-bit rails (tone x8 > rail)",
               (pmx4 == 32767) && (pmn4 == -32768));
 
         if (fails == 0) $display("FLOPPY SOUND CHAIN TB ALL CHECKS PASSED");
