@@ -74,9 +74,25 @@ stereo channels.
 
 ## Release candidate note
 
-Cut from the tree after the Mockingboard audio sign-off and the floppy-
-sound landing (sim-validated: card unit TB 22/22 checks, machine TB
-with a real 6502 programming the card, audio TB all checks including
-the 24/32/48 gain ratios, floppy-sound donor TB 15/15 + full-chain TB
-9/9, mono harness `-Werror`-clean). Final hardware floppy/audio/
-drive-sound pass is the release gate before the zip is re-cut.
+**Status 2026-11-19: RC candidate validated on hardware, release
+deferred for audio refinement.** The current candidate
+(`builds/2026-11-19_1207_stdfit_037_fs/`, `bitstream.rbf_r` sha
+`3c257255…c1c33`) passed the full hardware pass: floppy load,
+savestate load, savestate save, Mockingboard audio, floppy drive
+sound. Two build-process facts from this pass, now standing policy:
+
+- **All builds compile with `FITTER_EFFORT "Standard Fit"`.** The
+  first candidate (Auto Fit) failed the hardware floppy + savestate-
+  load test at a congested machine-domain placement; Standard Fit
+  (which Auto Fit skips optimizations to save compile time) passed.
+  See `EXPERT_BRIEF_WOZ_FLOPPY_HW_REGRESSION` section 13.
+- The three-way hardware test (floppy / savestate load / savestate
+  save) is the release gate per build; STA slack is not.
+
+Remaining before the cut: relative **volume balance** between
+Mockingboard / floppy drive sound / beeper (a bit out of line on
+hardware), plus additional per-source volume sliders - plan in
+`docs/PLAN_AUDIO_VOLUME_BALANCE_2026-11-19.md`. Sim-validated baseline:
+card unit TB 22/22, machine TB with a real 6502 programming the card,
+audio TB all checks including the 24/32/48 gain ratios, floppy-sound
+donor TB 15/15 + full-chain TB 9/9, mono harness `-Werror`-clean.

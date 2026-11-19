@@ -313,14 +313,26 @@ set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_ASYNCHRONOUS_SIGNAL_PIPELINING ON
-set_global_assignment -name FITTER_EFFORT "AUTO FIT"
-# 2026-11-18: placement lottery for WOZ floppy - machine-domain setup slack
-# 0.547 (21:25 build, HW FAIL) and 0.685 (probe build, HW FAIL) both broke
-# floppy load; 0.858 (12:10 build) worked. Re-roll until STA >= 0.8; verify
-# the actual seed in fit.rpt ("Fitter Initial Placement Seed").
+set_global_assignment -name FITTER_EFFORT "Standard Fit"
+# 2026-11-19 re-roll (11:27 floppy-sound build FAILED the hardware floppy
+# test - and savestate load; machine-domain sound engine re-flowed the
+# host->machine transport placement; EXPERT_BRIEF_WOZ_FLOPPY_HW_REGRESSION
+# section 13). FITTER_EFFORT "HIGH" is ILLEGAL on QP 17 (Error 125036):
+# the value space is "Auto Fit" / "Fast Fit" / "Standard Fit". Auto Fit
+# DEGRADES the fit (fit.rpt Info 171003: "may decrease Fitter effort",
+# "optimizations were skipped to reduce compilation time"), so Standard
+# Fit is both a different AND a stronger placement search on the same
+# netlist - the right first re-roll for a congested-domain failure.
+# If Standard Fit still fails the hardware test, next rolls:
+# OPTIMIZATION_TECHNIQUE SPEED->BALANCED (different netlist), then
+# PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION OFF (big placement perturbation).
 # NOTE 2026-11-19: FITTER_SEED 42 was REJECTED by QP 17.0.2 Lite (Error
-# 125048 at project load) - correct mechanism unknown, pending expert review
-# (EXPERT_BRIEF_WOZ_FLOPPY_HW_REGRESSION_2026-11-19.md, open item 1).
+# 125048 at project load) - the seed stays 1 on every run (verified in
+# fit.rpt "Fitter Initial Placement Seed"); re-rolls come from fitter
+# settings, not seeds. WARNING: Quartus rewrites this file on project
+# save/compile and REVERTS manual edits (seen 2026-11-19: it reverted
+# FITTER_EFFORT to AUTO FIT) - edit the qsf AFTER closing the Quartus
+# project, then start the compile.
 # set_global_assignment -name FITTER_SEED 42
 set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION ON
 
