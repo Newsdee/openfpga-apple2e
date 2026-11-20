@@ -29,6 +29,13 @@
 //   HB <2hex>                  same idle rate while the ID line is off
 //   BTN                        button press
 //   RX <2hex>                  received byte (LED blinks as well)
+//   SSY s.. d<4hex>            WOZ floppy feed taps (2026-11-19, gated)
+//   SSH s.. w<2hex>            HDV transport taps (2026-11-19, gated)
+//   SO <1hex>                  word-owner client levels (2026-11-19, gated)
+//       The three tap lines are DELTA-PRINTED (2026-11-20): each emits
+//       only when its snap word changed since its last emission, plus a
+//       2 s heartbeat per line (liveness). Idle console = 3 lines/2 s;
+//       activity (loads, savestate taps) prints on change.
 //
 // RX commands: 'd'/'D' toggles the idle ID line (off -> HB lines only).
 // No other commands; triggering save/load from the key would need a bridge
@@ -366,6 +373,29 @@ module devkey_uart #(
     always @(posedge clk) begin
         if (rst)            t20hz_phase <= 2'd0;
         else if (t20hz) t20hz_phase <= t20hz_phase + 2'd1;
+    end
+
+    // 2026-11-20: delta printing for the idle tap lines. Each line emits
+    // only when its snap word changed since its last emission, or on a
+    // 2 s heartbeat (liveness proof). Idle console goes from ~20 lines/s
+    // to 3 lines per 2 s while the machine is quiet, and speaks exactly
+    // when a load/savestate moves. The 20 Hz BUSY poll during savestate
+    // activity (ss_busy phases above) is unchanged - that is the capture
+    // stream.
+    reg [9:0]  hb_cnt;                        // 2 ms ticks; 1000 = 2 s
+    wire       hb_due = (hb_cnt == 10'd999);
+    always @(posedge clk) begin
+        if (rst) hb_cnt <= 10'd0;
+        else if (t1hz) hb_cnt <= hb_cnt + 1'b1;    // wraps at 1024
+    end
+    reg [31:0] last_ssy, last_ssh;
+    reg [ 7:0] last_so;
+    reg        tap_inited;
+    always @(posedge clk) begin
+        if (rst) begin
+            last_ssy <= 32'd0; last_ssh <= 32'd0;
+            last_so  <= 8'd0;  tap_inited <= 1'b0;
+        end
     end
 
     // 2026-11-16: critical events LATCH-UNTIL-EMITTED. The generator only
@@ -1046,19 +1076,26 @@ module devkey_uart #(
                 gen_state <= 2'b01; ev_r <= EV_SSX;
                 len_r <= 6'd15; idx_r <= 6'd0;
             end else if (t20hz) begin
-                // 2026-11-19: idle 20 Hz tap lines, phase-cycled:
-                // 0 -> SSY (WOZ feed), 1 -> SSH (HDV transport),
-                // 2 -> SO (word-owner clients), 3 -> SSY again (keeps the
-                // original 2-per-4-ticks cadence for the WOZ line).
-                if (t20hz_phase == 2'd1) begin
+                // 2026-11-20: delta-printed idle taps - phase 1 -> SSH
+                // (HDV transport), phase 2 -> SO (word-owner clients),
+                // phases 0/3 -> SSY (WOZ feed). Each line emits only on
+                // a changed snap word or the 2 s heartbeat (the first tick
+                // after reset emits SSY unconditionally).
+                if (t20hz_phase == 2'd1 &&
+                    (ssh_snap != last_ssh || hb_due || !tap_inited)) begin
                     gen_state <= 2'b01; ev_r <= EV_SSH;
                     len_r <= 6'd30; idx_r <= 6'd0;
-                end else if (t20hz_phase == 2'd2) begin
+                    last_ssh <= ssh_snap; tap_inited <= 1'b1;
+                end else if (t20hz_phase == 2'd2 &&
+                             (ssd_snap[127:120] != last_so || hb_due || !tap_inited)) begin
                     gen_state <= 2'b01; ev_r <= EV_SO;
                     len_r <= 6'd7; idx_r <= 6'd0;
-                end else begin
+                    last_so <= ssd_snap[127:120]; tap_inited <= 1'b1;
+                end else if ((t20hz_phase == 2'd0 || t20hz_phase == 2'd3) &&
+                             (ssy_snap != last_ssy || hb_due || !tap_inited)) begin
                     gen_state <= 2'b01; ev_r <= EV_SSY;
                     len_r <= 6'd32; idx_r <= 6'd0;
+                    last_ssy <= ssy_snap; tap_inited <= 1'b1;
                 end
             end else if (sel_err) begin
                 gen_state <= 2'b01; ev_r <= EV_ERR;
