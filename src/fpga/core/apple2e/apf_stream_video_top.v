@@ -2579,14 +2579,20 @@ hdd u_hdd (
     .ram_we         ( hdd_ram_we )
 );
 
-// RD_PRIME_STAGE stage accounting (PLAN_HDV_M10K): the M10K lane RAMs'
-// registered read address IS the model-B +1 stage (0.3.5 silicon-confirmed
-// behavior: prime+discard keeps words 0..127 byte-exact; T8e proves it),
-// so the DUT prime register ships OFF. (Pre-M10K combinational array: the
-// +1 stage came from this register - RD_PRIME_STAGE=1 was the 0.3.5
-// shipping value. =1 now would double the stage and re-introduce the
-// 0.3.3/0.3.4 one-word shift.) OOB_ENCODE follows OVL_DEBUG (0 in shipping).
-hdv_bridge #(.OOB_ENCODE(OVL_DEBUG), .RD_PRIME_STAGE(1'b0)) u_hdv_bridge (
+// RD_PRIME_STAGE stage accounting (2026-11-20, post HW rolls 1-2): the
+// M10K lane RAMs' registered read address provides the upstream 1-cycle
+// stage, but it must NOT be the host-facing one: with RD_PRIME_STAGE=0
+// (M10K output straight into this combinational bridge_rd_data mux)
+// HDV writes corrupted on hardware - the Pocket host's sampling window
+// (early in the 74a cycle, placement-dependent) does not see the M10K
+// registered output as a stage, so the kept 128 landed 2 words early
+// (roll 2: SmartportHD_test.HDV sector 2, file[x]=C[x+8]). SHIPPING =
+// RD_PRIME_STAGE=1: the DUT's prime FF (a plain ALM register) is the
+// host-facing stage - exactly the 0.3.5-0.4.1 silicon-proven form the
+// framework's model-B prime+discard aligns to. (Pre-M10K combinational
+// array: this same register WAS the +1 stage - 1 was its shipping value.)
+// OOB_ENCODE follows OVL_DEBUG (0 in shipping).
+hdv_bridge #(.OOB_ENCODE(OVL_DEBUG), .RD_PRIME_STAGE(1'b1)) u_hdv_bridge (
     .clk_74a        ( clk_74a ),
     .clk_14a        ( clk_core_14318 ),
     .reset_n        ( reset_n ),
