@@ -30,3 +30,11 @@ front.
 2. HDV load
 3. Savestate SAVE + LOAD (both directions)
 (COM4 is silent by design - no console in this build.)
+
+## HW result (2026-11-20): PASS - 0.4.1 cut from this build
+
+User: "all good" - floppy load, HDV load, savestate save+load all pass.
+Roll #10 = pass: series is now 8W/4F, and the ladder netlist family
+passed three times in a row (09:24 console-in, 10:21 console-in,
+10:44 console-out). **0.4.1 released from this bitstream**
+(`Apple2e_Pocket_0.4.1.zip`).

@@ -7,6 +7,36 @@ at-a-glance index.
 
 ## Releases
 
+### 0.4.1 — 2026-11-20
+**Beeper volume attenuation ladder; diagnostic console out.**
+
+The beeper slider is final: Off / ×1/4 (default) / ×1/2 / ×1, where ×1
+is the 0.3.6 beeper bit-exactly — attenuation, because the beeper must
+sit *below* the rail-clamped Mockingboard top. The "dead beeper slider"
+reported on two 0.4.0-dev builds was the placement-sensitive transport
+marginality (same bad placements that broke floppy/HDV), not a beeper
+bug. The devkey diagnostic console (transport taps, delta-printed) is
+gated out (~957 ALMs freed, 92%→87%); the code stays in the tree for
+the next diagnostic. HW-validated three-way (floppy, HDV, savestate
+save+load). Known: transport placement sensitivity (8 pass / 4 fail
+across the 10-build series; structural fix is the next-release target),
+Mockingboard state not in the savestate blob. See
+[`RELEASE_NOTES_0.4.1.md`](RELEASE_NOTES_0.4.1.md).
+
+### 0.4.0 — 2026-11-19
+**Savestates, Mockingboard, floppy drive sound, audio balance.**
+
+First stable release of the feature wave that landed across internal
+0.3.7-RC builds: savestate save/load/sleep-wake (hardware-validated
+command-race, write-overflow and load-base fixes), the Mockingboard
+sound card (slot 4, six stereo AY-3-8910 channels, volume slider),
+synthesized floppy drive sound with volume slider, and Beeper Volume
+slider (in its first, to-be-corrected amplifying form — see 0.4.1).
+Cut from the HW-validated 2026-11-19 22:32 bitstream. Supersedes the
+0.3.7 RC (which shipped the Mockingboard + slider fix as a release
+candidate but predates the audio work). See
+[`RELEASE_NOTES_0.4.0.md`](RELEASE_NOTES_0.4.0.md).
+
 ### 0.3.7 — 2026-11-19
 **Mockingboard sound card (slot 4) with volume slider.**
 
