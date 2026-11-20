@@ -1,0 +1,157 @@
+Flow report for apf_apple2
+Fri Nov 20 12:34:18 2026
+Quartus Prime Version 17.0.2 Build 602 07/19/2017 SJ Lite Edition
+
+
+---------------------
+; Table of Contents ;
+---------------------
+  1. Legal Notice
+  2. Flow Summary
+  3. Flow Settings
+  4. Flow Non-Default Global Settings
+  5. Flow Elapsed Time
+  6. Flow OS Summary
+  7. Flow Log
+  8. Flow Messages
+  9. Flow Suppressed Messages
+
+
+
+----------------
+; Legal Notice ;
+----------------
+Copyright (C) 2017  Intel Corporation. All rights reserved.
+Your use of Intel Corporation's design tools, logic functions 
+and other software and tools, and its AMPP partner logic 
+functions, and any output files from any of the foregoing 
+(including device programming or simulation files), and any 
+associated documentation or information are expressly subject 
+to the terms and conditions of the Intel Program License 
+Subscription Agreement, the Intel Quartus Prime License Agreement,
+the Intel MegaCore Function License Agreement, or other 
+applicable license agreement, including, without limitation, 
+that your use is for the sole purpose of programming logic 
+devices manufactured by Intel and sold by Intel or its 
+authorized distributors.  Please refer to the applicable 
+agreement for further details.
+
+
+
++-------------------------------------------------------------------------------+
+; Flow Summary                                                                  ;
++---------------------------------+---------------------------------------------+
+; Flow Status                     ; Successful - Fri Nov 20 12:33:50 2026       ;
+; Quartus Prime Version           ; 17.0.2 Build 602 07/19/2017 SJ Lite Edition ;
+; Revision Name                   ; apf_apple2                                  ;
+; Top-level Entity Name           ; apf_top_apple2                              ;
+; Family                          ; Cyclone V                                   ;
+; Device                          ; 5CEBA4F23C8                                 ;
+; Timing Models                   ; Final                                       ;
+; Logic utilization (in ALMs)     ; 11,222 / 18,480 ( 61 % )                    ;
+; Total registers                 ; 12881                                       ;
+; Total pins                      ; 224 / 224 ( 100 % )                         ;
+; Total virtual pins              ; 0                                           ;
+; Total block memory bits         ; 1,563,584 / 3,153,920 ( 50 % )              ;
+; Total DSP Blocks                ; 29 / 66 ( 44 % )                            ;
+; Total HSSI RX PCSs              ; 0                                           ;
+; Total HSSI PMA RX Deserializers ; 0                                           ;
+; Total HSSI TX PCSs              ; 0                                           ;
+; Total HSSI PMA TX Serializers   ; 0                                           ;
+; Total PLLs                      ; 2 / 4 ( 50 % )                              ;
+; Total DLLs                      ; 0 / 4 ( 0 % )                               ;
++---------------------------------+---------------------------------------------+
+
+
++-----------------------------------------+
+; Flow Settings                           ;
++-------------------+---------------------+
+; Option            ; Setting             ;
++-------------------+---------------------+
+; Start date & time ; 11/20/2026 12:25:36 ;
+; Main task         ; Compilation         ;
+; Revision Name     ; apf_apple2          ;
++-------------------+---------------------+
+
+
++---------------------------------------------------------------------------------------------------------------------------------------------+
+; Flow Non-Default Global Settings                                                                                                            ;
++------------------------------------------------------+----------------------------------------+---------------+----------------+------------+
+; Assignment Name                                      ; Value                                  ; Default Value ; Entity Name    ; Section Id ;
++------------------------------------------------------+----------------------------------------+---------------+----------------+------------+
+; ADV_NETLIST_OPT_SYNTH_WYSIWYG_REMAP                  ; On                                     ; Off           ; --             ; --         ;
+; COMPILER_SIGNATURE_ID                                ; 66504335669042.179514873651104         ; --            ; --             ; --         ;
+; ECO_OPTIMIZE_TIMING                                  ; On                                     ; Off           ; --             ; --         ;
+; ENABLE_SIGNALTAP                                     ; On                                     ; --            ; --             ; --         ;
+; FITTER_EFFORT                                        ; Standard Fit                           ; Auto Fit      ; --             ; --         ;
+; MAX_CORE_JUNCTION_TEMP                               ; 85                                     ; --            ; --             ; --         ;
+; MIN_CORE_JUNCTION_TEMP                               ; 0                                      ; --            ; --             ; --         ;
+; MISC_FILE                                            ; apf/mf_ddio_bidir_12.ppf               ; --            ; --             ; --         ;
+; MUX_RESTRUCTURE                                      ; Off                                    ; Auto          ; --             ; --         ;
+; OPTIMIZATION_MODE                                    ; High Performance Effort                ; Balanced      ; --             ; --         ;
+; OPTIMIZATION_TECHNIQUE                               ; Speed                                  ; Balanced      ; --             ; --         ;
+; OUTPUT_IO_TIMING_FAR_END_VMEAS                       ; Half Signal Swing                      ; --            ; --             ; --         ;
+; OUTPUT_IO_TIMING_FAR_END_VMEAS                       ; Half Signal Swing                      ; --            ; --             ; --         ;
+; OUTPUT_IO_TIMING_NEAR_END_VMEAS                      ; Half Vccio                             ; --            ; --             ; --         ;
+; OUTPUT_IO_TIMING_NEAR_END_VMEAS                      ; Half Vccio                             ; --            ; --             ; --         ;
+; PARTITION_COLOR                                      ; -- (Not supported for targeted family) ; --            ; apf_top_apple2 ; Top        ;
+; PARTITION_FITTER_PRESERVATION_LEVEL                  ; -- (Not supported for targeted family) ; --            ; apf_top_apple2 ; Top        ;
+; PARTITION_NETLIST_TYPE                               ; -- (Not supported for targeted family) ; --            ; apf_top_apple2 ; Top        ;
+; PERIPHERY_TO_CORE_PLACEMENT_AND_ROUTING_OPTIMIZATION ; On                                     ; Off           ; --             ; --         ;
+; PHYSICAL_SYNTHESIS_ASYNCHRONOUS_SIGNAL_PIPELINING    ; On                                     ; Off           ; --             ; --         ;
+; PHYSICAL_SYNTHESIS_COMBO_LOGIC                       ; On                                     ; Off           ; --             ; --         ;
+; PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION              ; On                                     ; Off           ; --             ; --         ;
+; PHYSICAL_SYNTHESIS_REGISTER_RETIMING                 ; On                                     ; Off           ; --             ; --         ;
+; PLACEMENT_EFFORT_MULTIPLIER                          ; 4.0                                    ; 1.0           ; --             ; --         ;
+; POWER_BOARD_THERMAL_MODEL                            ; None (CONSERVATIVE)                    ; --            ; --             ; --         ;
+; POWER_PRESET_COOLING_SOLUTION                        ; 23 MM HEAT SINK WITH 200 LFPM AIRFLOW  ; --            ; --             ; --         ;
+; PRE_FLOW_SCRIPT_FILE                                 ; quartus_sh:apf/build_id_gen.tcl        ; --            ; --             ; --         ;
+; PRE_MAPPING_RESYNTHESIS                              ; On                                     ; Off           ; --             ; --         ;
+; PROJECT_OUTPUT_DIRECTORY                             ; output_files_apple2e                   ; --            ; --             ; --         ;
+; ROUTER_CLOCKING_TOPOLOGY_ANALYSIS                    ; On                                     ; Off           ; --             ; --         ;
+; ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION         ; On                                     ; Auto          ; --             ; --         ;
+; ROUTER_TIMING_OPTIMIZATION_LEVEL                     ; MAXIMUM                                ; Normal        ; --             ; --         ;
+; SAFE_STATE_MACHINE                                   ; On                                     ; Off           ; --             ; --         ;
+; SLD_FILE                                             ; db/stp1_auto_stripped.stp              ; --            ; --             ; --         ;
+; SYNTH_PROTECT_SDC_CONSTRAINT                         ; On                                     ; Off           ; --             ; --         ;
+; TOP_LEVEL_ENTITY                                     ; apf_top_apple2                         ; apf_apple2    ; --             ; --         ;
+; USE_SIGNALTAP_FILE                                   ; core/stp1.stp                          ; --            ; --             ; --         ;
+; VERILOG_MACRO                                        ; JOY_TO_KEY=1                           ; --            ; --             ; --         ;
++------------------------------------------------------+----------------------------------------+---------------+----------------+------------+
+
+
++-------------------------------------------------------------------------------------------------------------------------------+
+; Flow Elapsed Time                                                                                                             ;
++---------------------------+--------------+-------------------------+---------------------+------------------------------------+
+; Module Name               ; Elapsed Time ; Average Processors Used ; Peak Virtual Memory ; Total CPU Time (on all processors) ;
++---------------------------+--------------+-------------------------+---------------------+------------------------------------+
+; Analysis & Synthesis      ; 00:01:35     ; 4.5                     ; 5254 MB             ; 00:02:31                           ;
+; Fitter                    ; 00:06:19     ; 1.4                     ; 7619 MB             ; 00:24:24                           ;
+; Assembler                 ; 00:00:10     ; 1.0                     ; 5019 MB             ; 00:00:10                           ;
+; TimeQuest Timing Analyzer ; 00:00:27     ; 3.1                     ; 5868 MB             ; 00:01:14                           ;
+; Total                     ; 00:08:31     ; --                      ; --                  ; 00:28:19                           ;
++---------------------------+--------------+-------------------------+---------------------+------------------------------------+
+
+
++-----------------------------------------------------------------------------------------+
+; Flow OS Summary                                                                         ;
++---------------------------+------------------+------------+------------+----------------+
+; Module Name               ; Machine Hostname ; OS Name    ; OS Version ; Processor type ;
++---------------------------+------------------+------------+------------+----------------+
+; Analysis & Synthesis      ; DESKTOP-B3J9IGG  ; Windows 10 ; 10.0       ; x86_64         ;
+; Fitter                    ; DESKTOP-B3J9IGG  ; Windows 10 ; 10.0       ; x86_64         ;
+; Assembler                 ; DESKTOP-B3J9IGG  ; Windows 10 ; 10.0       ; x86_64         ;
+; TimeQuest Timing Analyzer ; DESKTOP-B3J9IGG  ; Windows 10 ; 10.0       ; x86_64         ;
++---------------------------+------------------+------------+------------+----------------+
+
+
+------------
+; Flow Log ;
+------------
+quartus_map --read_settings_files=on --write_settings_files=off apf_apple2 -c apf_apple2
+quartus_fit --read_settings_files=off --write_settings_files=off apf_apple2 -c apf_apple2
+quartus_asm --read_settings_files=off --write_settings_files=off apf_apple2 -c apf_apple2
+quartus_sta apf_apple2 -c apf_apple2
+
+
+
