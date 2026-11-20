@@ -57,16 +57,18 @@ module apf_top_apple2
     #(
         parameter OVL_SS_DIAG = 1'b0,
         parameter OVL_SS_ONLY = 1'b0,
-        // 2026-11-19: DIAGNOSTIC BUILD (SSH/SO transport taps -
-        // EXPERT_BRIEF_AUDIO_SLIDERS_TRANSPORTS_2026-11-19.md step 2).
-        // (The SSY diagnostic build 09:13 flipped this to 1 - REVERT TO
-        // 1'b0 before shipping. It is the EFFECTIVE switch: passed into
-        // stream_video_core_top, overriding that module's own default -
-        // the 08:57 build flipped only the sub-module default and came out
-        // console-less.) The SSY/SSH/SO tap code stays in the tree gated on
-        // this parameter (reusable; see EXPERT_BRIEF_WOZ_FLOPPY_HW_
-        // REGRESSION_2026-11-19.md action C).
-        parameter DEVKEY_DIAG = 1'b1
+        // 2026-11-20: SHIPPING (0.4.1 candidate) - diagnostic switches OFF.
+        // The SSY/SSH/SO transport-tap build was 2026-11-20 (09:24 and
+        // 10:21 - both passed the three-way hardware test on the ladder
+        // netlist; see EXPERT_BRIEF_WOZ_FLOPPY_HW_REGRESSION_2026-11-19.md
+        // S14/S15). To rebuild a diagnostic bitstream flip this to 1'b1 -
+        // it is the EFFECTIVE switch: passed into stream_video_core_top,
+        // overriding that module's own default (the 08:57 build flipped
+        // only the sub-module default and came out console-less). The
+        // SSY/SSH/SO tap + delta-print console code stays in the tree
+        // gated on this parameter (reusable; see EXPERT_BRIEF_WOZ_FLOPPY_
+        // HW_REGRESSION_2026-11-19.md action C).
+        parameter DEVKEY_DIAG = 1'b0
     ) (
 
 ///////////////////////////////////////////////////
