@@ -66,6 +66,12 @@ module tb_hdv_bridge;
     reg  [31:0] bridge_wr_data = 32'd0;
     wire [31:0] hdv_ram_word;
 
+    // The sector RAM is four 128x8 lane altsyncrams (PLAN_HDV_M10K): byte i
+    // lives in lane i[1:0] at word i[8:2] of the lane storage (the stub's
+    // mem IS the storage). T4 reads it through the lane instances (a
+    // module-scope wire here would see a stale implicit 'i' - declare the
+    // temp in the loop instead).
+
     // ---- core_bridge_cmd dataslot interface (driven by the DUT) ----
     wire        target_dataslot_read, target_dataslot_write;
     reg         target_dataslot_done = 1'b0;
@@ -116,16 +122,16 @@ module tb_hdv_bridge;
     // window). 8000 bridge clocks ~ 108 us > a write transfer (~80 us:
     // 71 us walk + host DMA) but < the T5/T11 wait windows (3000 machine
     // cycles ~ 209 us).
-    // RD_PRIME_STAGE knob: 0 = 1-stage port (0.3.4 behavior); 1 = model-B
-    // 2-stage port, the 0.3.5 SHIPPING default. The release gate now runs
-    // the shipping stage (1), so the readback checks (T8/T8c/T8d/T8e/T9)
-    // are stage-aware: at 1 they model the framework's model-B prime+discard
-    // (the k=1 start cancels the read latency -> kept words 0..127, byte-
-    // exact); at 0 they model the non-priming host (documenting the k=1
-    // shift that the 0.3.3/0.3.4 hardware corruption showed).
-    localparam TB_RD_PRIME = 1'b1;   // 0.3.5 SHIPPING stage: the gate validates the 2-stage (model-B) port
-    hdv_bridge #(.FETCH_TO(28'd8000), .OOB_ENCODE(1'b1), .RD_PRIME_STAGE(TB_RD_PRIME)) dut (   // OOB_ENCODE: the next hardware diagnostic build runs this mode (OOR reads return the
-    // A5A5-tagged word index instead of 0, tracing the host's read sequence)
+    // RD_PRIME_STAGE / OOB_ENCODE knobs: the gate validates the SHIPPING
+    // M10K-port configuration (PLAN_HDV_M10K): the lane RAMs' registered
+    // read address is the model-B +1 stage (RD_PRIME_STAGE=0), OOR reads
+    // present the lane gather (OOB_ENCODE=0), and the readback checks
+    // (T8/T8c/T8d/T8e/T9) model the framework's model-B prime+discard -
+    // the kept 128 are words 0..127 byte-exact, every sample word-for-
+    // word the pre-M10K shipping port's (0.3.5 silicon-confirmed).
+    localparam TB_RD_PRIME   = 1'b0;   // converted-RAM shipping stage (the RAM provides the +1)
+    localparam TB_SHIP_STAGE = 1'b1;   // the DUT presents the shipping 2-stage port
+    hdv_bridge #(.FETCH_TO(28'd8000), .OOB_ENCODE(1'b0), .RD_PRIME_STAGE(TB_RD_PRIME)) dut (   // OOB_ENCODE=0 (shipping): OOR reads present the lane gather - the pre-M10K shipping OOB value; OOR address detection is checked via hdv_oobcnt
 
         .clk_74a        ( clk_74a ),
         .clk_14a        ( clk_14a ),
@@ -397,6 +403,7 @@ module tb_hdv_bridge;
 
     integer failures;
     integer i;
+    reg  [31:0] t4w;
     reg  [31:0] t;
     reg  [7:0]  st;
     reg  [8:0]  b0, b1, b2, b3;
@@ -624,8 +631,10 @@ module tb_hdv_bridge;
         // early arm, because the straggler byte lands later).
         for (i = 0; i < 512; i = i + 1) begin
             t = (i * 3 + 1) % 256;
-            if (dut.hdv_ram[i] !== t[7:0]) begin
-                if (failures < 8) $display("FAIL T4: ram[%0d] = %0d want %0d", i, dut.hdv_ram[i], t[7:0]);
+            t4w = {dut.u_hdv_lane3.mem[i[8:2]], dut.u_hdv_lane2.mem[i[8:2]],
+                   dut.u_hdv_lane1.mem[i[8:2]], dut.u_hdv_lane0.mem[i[8:2]]};
+            if (t4w[i[1:0]*8 +: 8] !== t[7:0]) begin
+                if (failures < 8) $display("FAIL T4: ram[%0d] = %0d want %0d", i, t4w[i[1:0]*8 +: 8], t[7:0]);
                 failures = failures + 1;
             end
         end
@@ -661,7 +670,7 @@ module tb_hdv_bridge;
         // captured combinationally after setting the address.
         bridge_wr = 1'b0;
         repeat (2) @(posedge clk_74a);   // framework 2FF + DMA startup latency
-        if (TB_RD_PRIME) begin
+        if (TB_SHIP_STAGE) begin
             // shipping (2-stage) model-B readback = PRIME+DISCARD: read words
             // 0..128 (129 reads). Sample 0 is the unprimed/last-test leftover
             // and is discarded; samples 1..128 are words 0..127 (byte-exact).
@@ -729,7 +738,7 @@ module tb_hdv_bridge;
         // the diagnostic the hardware re-test depends on: the host pulled
         // exactly 128 words (an interrupted transfer would show <128 with
         // a latched fault).
-        if (hdv_wrcnt !== (TB_RD_PRIME ? 8'd129 : 8'd128)) begin $display("FAIL T8: hdv_wrcnt=%0d after full 0x0184 (want %d)", hdv_wrcnt, (TB_RD_PRIME ? 129 : 128)); failures = failures + 1; end
+        if (hdv_wrcnt !== (TB_SHIP_STAGE ? 8'd129 : 8'd128)) begin $display("FAIL T8: hdv_wrcnt=%0d after full 0x0184 (want %d)", hdv_wrcnt, (TB_SHIP_STAGE ? 129 : 128)); failures = failures + 1; end
         // the round trip: re-issue a 0x0180 READ of sector 40 and replay
         // the captured store into the RAM (the host's read DMA is the
         // 0x0184 stream in reverse)
@@ -797,28 +806,33 @@ module tb_hdv_bridge;
             bridge_rd   = 1'b0;
             cap[i] = rd_pipe;
         end
-        // k=1 narrow-decode test (stage 0 / 1-stage port only): the k=1
-        // readback keeps words 1..128 with the last (word 128) OOR-encoded.
-        // At the 2-stage port (TB_RD_PRIME=1) the read latency makes this
-        // k-offset readback non-byte-exact, so the data assertion is skipped
-        // (the OOR address detection is still checked via hdv_oobcnt below).
+        // k=1 narrow-decode test (M10K port): the k=1 readback lands one
+        // word earlier than the old 1-stage port - the lane RAM's +1 stage
+        // makes in-window samples sample(i) = word(i+k-1): cap[1..127] =
+        // words 1..127 byte-exact, and the OOR read (word 128) presents
+        // the lane gather = word 127 (the shipping OOB value, OOB_ENCODE=0
+        // - word-for-word the old port's sample at that position). cap[0]
+        // is the prime leftover - the port A address last presented before
+        // the burst (here word 127: this TB's host write ended there and
+        // held the bridge address; the shipping model-B flow primes and
+        // discards its own sample 0, so no shipping data lands on a
+        // leftover). OOR address detection is checked via hdv_oobcnt
+        // below.
         if (!TB_RD_PRIME) begin
-            for (i = 0; i < 128; i = i + 1) begin
-                if (i < 127) begin
-                    /* verilator lint_off WIDTHTRUNC */
-                    tmp16 = (i + 1)*4;
-                    /* verilator lint_on WIDTHTRUNC */
-                    b0 = tmp16[8:0];
-                    tmp16 = tmp16 + 16'd1; b1 = tmp16[8:0];
-                    tmp16 = tmp16 + 16'd1; b2 = tmp16[8:0];
-                    tmp16 = tmp16 + 16'd1; b3 = tmp16[8:0];
-                    if (cap[i] !== {patc(b0), patc(b1), patc(b2), patc(b3)}) begin
-                        if (failures < 8) $display("FAIL T8c: cap[%0d] = %h want %h", i, cap[i], {patc(b0), patc(b1), patc(b2), patc(b3)});
-                        failures = failures + 1;
-                    end
-                end else if (cap[i] !== {16'hA5A5, 8'd128, 8'h00}) begin
-                    // OOR read at 0x01F01200: encoded word index 128 (OOB_ENCODE)
-                    $display("FAIL T8c: cap[127] (out-of-window) = %h want a5a58000 (index 128)", cap[i]);
+            if (cap[0] !== {patc(9'd508), patc(9'd509), patc(9'd510), patc(9'd511)}) begin
+                $display("FAIL T8c: cap[0] (leftover) = %h want word127 %h", cap[0], {patc(9'd508), patc(9'd509), patc(9'd510), patc(9'd511)});
+                failures = failures + 1;
+            end
+            for (i = 1; i < 128; i = i + 1) begin
+                /* verilator lint_off WIDTHTRUNC */
+                tmp16 = i*4;
+                /* verilator lint_on WIDTHTRUNC */
+                b0 = tmp16[8:0];
+                tmp16 = tmp16 + 16'd1; b1 = tmp16[8:0];
+                tmp16 = tmp16 + 16'd1; b2 = tmp16[8:0];
+                tmp16 = tmp16 + 16'd1; b3 = tmp16[8:0];
+                if (cap[i] !== {patc(b0), patc(b1), patc(b2), patc(b3)}) begin
+                    if (failures < 8) $display("FAIL T8c: cap[%0d] = %h want %h", i, cap[i], {patc(b0), patc(b1), patc(b2), patc(b3)});
                     failures = failures + 1;
                 end
             end
@@ -828,7 +842,7 @@ module tb_hdv_bridge;
         #100;
         if (hdv_wrcnt !== 8'd128) begin $display("FAIL T8c: hdv_wrcnt=%0d (want 128)", hdv_wrcnt); failures = failures + 1; end
         if (hdv_oobcnt !== 8'd1) begin $display("FAIL T8c: hdv_oobcnt=%0d (want 1 = host start offset k)", hdv_oobcnt); failures = failures + 1; end
-        if (failures == 0) $display("PASS T8c: k=1 DMA - in-window words exact, OOR = A5A5 index 128, oobcnt=1");
+        if (failures == 0) $display("PASS T8c: k=1 DMA - in-window words exact (lane-gather OOR sample = word 127), oobcnt=1");
 
         // ---- T8d: k=2 (sector 46, offset 23552) ----
         dma_go = 1'b0;   // T8c left it 1: done must come only after the capture
@@ -850,15 +864,24 @@ module tb_hdv_bridge;
             bridge_rd   = 1'b0;
             cap[i] = rd_pipe;
         end
-        // k=2 narrow-decode test (stage 0 / 1-stage port only): the k=2
-        // readback keeps words 2..129 with the last two OOR-encoded. At the
-        // 2-stage port the read latency makes this non-byte-exact, so the
-        // data assertion is skipped (OOR detection checked via hdv_oobcnt).
+        // k=2 narrow-decode test (M10K port): the k=2 readback lands one
+        // word earlier than the old 1-stage port: cap[1..125] = words
+        // 2..126 byte-exact; the two OOR reads (words 128/129) present the
+        // lane gather (address latched one read earlier): cap[126] = word
+        // 127, cap[127] = word 0 (the 7-bit lane address wraps at word
+        // 128) - the shipping OOB value (OOB_ENCODE=0). cap[0] is the
+        // prime leftover = word 0 (this TB held 0x01F01200 = word 128 ->
+        // lane address 0 after T8c's OOR read). OOR address detection is
+        // checked via hdv_oobcnt below.
         if (!TB_RD_PRIME) begin
-            for (i = 0; i < 128; i = i + 1) begin
+            if (cap[0] !== {patd(9'd0), patd(9'd1), patd(9'd2), patd(9'd3)}) begin
+                $display("FAIL T8d: cap[0] (leftover) = %h want word0 %h", cap[0], {patd(9'd0), patd(9'd1), patd(9'd2), patd(9'd3)});
+                failures = failures + 1;
+            end
+            for (i = 1; i < 128; i = i + 1) begin
                 if (i < 126) begin
                     /* verilator lint_off WIDTHTRUNC */
-                    tmp16 = (i + 2)*4;
+                    tmp16 = (i + 1)*4;
                     /* verilator lint_on WIDTHTRUNC */
                     b0 = tmp16[8:0];
                     tmp16 = tmp16 + 16'd1; b1 = tmp16[8:0];
@@ -868,12 +891,21 @@ module tb_hdv_bridge;
                         if (failures < 8) $display("FAIL T8d: cap[%0d] = %h want %h", i, cap[i], {patd(b0), patd(b1), patd(b2), patd(b3)});
                         failures = failures + 1;
                     end
-                end else if (i == 126 && cap[i] !== {16'hA5A5, 8'd128, 8'h00}) begin
-                    $display("FAIL T8d: cap[126] (out-of-window @0x200) = %h want a5a58000", cap[i]);
-                    failures = failures + 1;
-                end else if (i == 127 && cap[i] !== {16'hA5A5, 8'd129, 8'h00}) begin
-                    $display("FAIL T8d: cap[127] (out-of-window @0x204) = %h want a5a58100", cap[i]);
-                    failures = failures + 1;
+                end else if (i == 126) begin
+                    // OOR read of word 128: lane gather = word 127
+                    b0 = 9'd508; b1 = 9'd509; b2 = 9'd510; b3 = 9'd511;
+                    if (cap[i] !== {patd(b0), patd(b1), patd(b2), patd(b3)}) begin
+                        $display("FAIL T8d: cap[126] (OOR@word128) = %h want word127 %h", cap[i], {patd(b0), patd(b1), patd(b2), patd(b3)});
+                        failures = failures + 1;
+                    end
+                end else begin
+                    // OOR read of word 129: lane gather = word 0 (lane
+                    // address 128 wraps to 0)
+                    b0 = 9'd0; b1 = 9'd1; b2 = 9'd2; b3 = 9'd3;
+                    if (cap[i] !== {patd(b0), patd(b1), patd(b2), patd(b3)}) begin
+                        $display("FAIL T8d: cap[127] (OOR@word129) = %h want word0 %h", cap[i], {patd(b0), patd(b1), patd(b2), patd(b3)});
+                        failures = failures + 1;
+                    end
                 end
             end
         end
@@ -882,7 +914,7 @@ module tb_hdv_bridge;
         #100;
         if (hdv_wrcnt !== 8'd128) begin $display("FAIL T8d: hdv_wrcnt=%0d (want 128)", hdv_wrcnt); failures = failures + 1; end
         if (hdv_oobcnt !== 8'd2) begin $display("FAIL T8d: hdv_oobcnt=%0d (want 2 = host start offset k)", hdv_oobcnt); failures = failures + 1; end
-        if (failures == 0) $display("PASS T8d: k=2 DMA - in-window words exact, OOR = A5A5 indices 128/129, oobcnt=2");
+        if (failures == 0) $display("PASS T8d: k=2 DMA - in-window words exact (lane-gather OOR samples = word 127 / word 0), oobcnt=2");
 
         // ---- T8e: model-B host (latency prime) against the CURRENT port ----
         // 2026-11-07 (expert Problem 2): T8c/T8d encode model A (host starts at
@@ -923,39 +955,36 @@ module tb_hdv_bridge;
         // keep[0] is the discarded prime; kept word j = raw sample (j+1).
         // t8e_bad is a LOCAL counter so T8e reports its own result
         // independently of the global failures (earlier read-port tests pollute it).
-        // Parameter-aware: TB_RD_PRIME=1 (fix) -> kept = words 0..127 (byte-exact);
-        // TB_RD_PRIME=0 (shipping) -> kept = words 1..128 (the k=1 shift, last = OOR).
+        // M10K port (shipping, OOB_ENCODE=0): prime+discard kept = words
+        // 0..127 byte-exact - INCLUDING kept[127]: the 129th read (word
+        // 128, OOR) presents the lane gather = word 127, exactly the old
+        // port's sample at that position (the old prime register delivered
+        // word 127 there; the OOR value of that read surfaced one read
+        // later, at the non-existent read 130).
         begin : t8e_block
             integer t8e_bad;
             integer expw;
             reg  [31:0] expval;
             t8e_bad = 0;
             for (i = 0; i < 128; i = i + 1) begin
-                // stage 1: kept[i] = word i ; stage 0: kept[i] = word i+1 (k=1 shift)
-                expw = i + (TB_RD_PRIME ? 32'd0 : 32'd1);
-                if (expw < 32'd128) begin
-                    /* verilator lint_off WIDTHTRUNC */
-                    tmp16 = expw*4;
-                    /* verilator lint_on WIDTHTRUNC */
-                    b0 = tmp16[8:0];
-                    tmp16 = tmp16 + 16'd1; b1 = tmp16[8:0];
-                    tmp16 = tmp16 + 16'd1; b2 = tmp16[8:0];
-                    tmp16 = tmp16 + 16'd1; b3 = tmp16[8:0];
-                    expval = {pate(b0), pate(b1), pate(b2), pate(b3)};
-                end else
-                    expval = {16'hA5A5, 8'd128, 8'h00};   // stage 0: kept[127] = OOR word 128
+                expw = i;   // kept[i] = word i, all 128 byte-exact
+                /* verilator lint_off WIDTHTRUNC */
+                tmp16 = expw*4;
+                /* verilator lint_on WIDTHTRUNC */
+                b0 = tmp16[8:0];
+                tmp16 = tmp16 + 16'd1; b1 = tmp16[8:0];
+                tmp16 = tmp16 + 16'd1; b2 = tmp16[8:0];
+                tmp16 = tmp16 + 16'd1; b3 = tmp16[8:0];
+                expval = {pate(b0), pate(b1), pate(b2), pate(b3)};
                 if (keep2e[i+1] !== expval) begin
                     if (t8e_bad < 8) $display("FAIL T8e: kept[%0d] = %h want %h", i, keep2e[i+1], expval);
                     t8e_bad = t8e_bad + 1;
                     failures = failures + 1;
                 end
             end
-            if (t8e_bad == 0) begin
-                if (TB_RD_PRIME)
-                    $display("PASS T8e: model-B prime+discard BYTE-EXACT (words 0..127) - the fix works; kept first=%h last=%h", keep2e[1], keep2e[128]);
-                else
-                    $display("PASS T8e: model-B host reproduces the k=1 shift on the shipping port (kept first=%h last=%h, tail=a5a58000) - mechanism documented", keep2e[1], keep2e[128]);
-            end else
+            if (t8e_bad == 0)
+                $display("PASS T8e: model-B prime+discard BYTE-EXACT (words 0..127) on the M10K port (incl. the OOR-read sample = word 127); kept first=%h last=%h", keep2e[1], keep2e[128]);
+            else
                 $display("FAIL T8e: model-B host (%0d/128 words off); kept first=%h last=%h", t8e_bad, keep2e[1], keep2e[128]);
         end
         dma_go = 1'b1;
@@ -1010,10 +1039,11 @@ module tb_hdv_bridge;
         // issues no C0F8 writes), so the stream is that pattern.
         bridge_wr = 1'b0;
         repeat (2) @(posedge clk_74a);   // framework 2FF + DMA startup latency
-        // Stage-aware readback (like T8): at the 2-stage port use PRIME+
-        // DISCARD (129 reads, discard the leftover prime) so the kept 128 are
-        // words 0..127 byte-exact; the k=1 readback alone would miss word 0.
-        if (TB_RD_PRIME) begin
+        // Stage-aware readback (like T8): the shipping M10K port uses
+        // PRIME+DISCARD (129 reads, discard the leftover prime) so the kept
+        // 128 are words 0..127 byte-exact; the k=1 readback alone would
+        // miss word 0.
+        if (TB_SHIP_STAGE) begin
             for (i = 0; i < 129; i = i + 1) begin
                 bridge_addr = 32'h01F01000 + i*4;
                 bridge_rd   = 1'b1;

@@ -1,0 +1,10 @@
+# hdv_ram 4-lane altsyncram param legality probe - A&S only
+# (quartus_map ramprobe_4lane)
+#
+# See ramprobe_4lane.v for what is being probed and README.md for
+# how to read the result.
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CEBA4F23C8
+set_global_assignment -name TOP_LEVEL_ENTITY ramprobe_4lane
+set_global_assignment -name VERILOG_FILE ramprobe_4lane.v
+set_global_assignment -name ORIGINAL_QUARTUS_VERSION "17.0.2"

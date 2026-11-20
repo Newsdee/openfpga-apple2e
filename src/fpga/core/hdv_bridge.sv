@@ -32,8 +32,9 @@
 //   - the FSM waits a 2-bridge-clock guard (ST_WRITE_ARM) after the
 //     walk_out strobes end before arming 0x0184, so the last CDC write
 //     has settled by the time the host DMA may read the RAM.
-// Reads of the RAM are combinational from either domain (the contents
-// are only read after the relevant write burst has completed).
+// Reads of the RAM are one-clock-late (the lane altsyncrams' registered
+// read addresses; PLAN_HDV_M10K) - the contents are only read after the
+// relevant write burst has completed.
 //
 // CDC notes: 14M->74a pulses are fine (a 1-machine-clk pulse is ~5 bridge
 // clocks). The 74a->14M walk requests are therefore LEVELS, held for the
@@ -64,18 +65,29 @@ module hdv_bridge #(
     // 2026-11-07 (expert Problem 2, model B proven in sim by T8e): the
     // framework's 0x0184 DMA PRIMES one beat against the documented read
     // convention ("data may arrive up to the next read strobe later") and
-    // DISCARDS the first sampled value. With only the top-level
-    // bridge_rd_data stage of latency that first sample is already valid
-    // (word 0), so the prime discards a valid word and the kept 128 land
-    // shifted by k (the 0.3.3/0.3.4 hardware corruption; T8e reproduces it
-    // exactly in sim). One more clk_74a stage makes the primed sample the
-    // stale one, so the kept 128 align to 0..127. 0 = 1-stage port (0.3.4
-    // behavior); 1 = model-B 2-stage port, the 0.3.5 SHIPPING default
-    // (confirmed on silicon: byte-exact two-folder write). Kept LOCAL to
-    // hdv_ram_word: the global bridge_rd_data mux (apf_stream_video_top.v)
-    // is untouched - a read-back-mux change once broke disk loading on
-    // silicon.
-    , parameter RD_PRIME_STAGE = 1'b1
+    // DISCARDS the first sampled value. The port must present ONE more
+    // stage than the top-level bridge_rd_data alone, so that the primed
+    // (discarded) sample is stale and the kept 128 align to 0..127
+    // (0.3.3/0.3.4 lacked that stage: the prime discarded a VALID word
+    // and the kept 128 landed shifted by k - the hardware corruption;
+    // T8e reproduces it exactly in sim). Kept LOCAL to hdv_ram_word: the
+    // global bridge_rd_data mux (apf_stream_video_top.v) is untouched -
+    // a read-back-mux change once broke disk loading on silicon.
+    //
+    // STAGE ACCOUNTING BY RAM GENERATION:
+    //   pre-M10K (combinational array): the +1 stage came from THIS prime
+    //   register -> RD_PRIME_STAGE=1 shipping (0.3.5, confirmed byte-exact
+    //   on silicon). The prime delayed every sample - in-window AND OOR -
+    //   by one read; that OOR delay is what kept the model-B flow's final
+    //   OOR sample (the 129th read at word 128) out of the kept stream.
+    //   M10K lane RAMs (2026-11-20, PLAN_HDV_M10K): the RAM's registered
+    //   read address IS the +1 stage for in-window reads, and OOR reads
+    //   present the lane gather (the last latched in-window word) instead
+    //   of the OOB value - the same value the old port's prime delivered
+    //   at those sample positions -> RD_PRIME_STAGE=0 shipping, every
+    //   sample word-for-word the old shipping port's; =1 would add a
+    //   SECOND in-window stage (the 0.3.3/0.3.4 one-word shift shape).
+    , parameter RD_PRIME_STAGE = 1'b0
 ) (
     input  wire        clk_74a,        // bridge clock
     input  wire        clk_14a,        // machine clock (14.318)
@@ -133,38 +145,234 @@ module hdv_bridge #(
     localparam BRIDGE_HDV_ADDR = 32'h01F01000; // RAM base (512-byte window)
 
     // ------------------------------------------------------------------
-    // Sector RAM: 512 x 8. Single write clock (74a); async reads from
-    // either domain (contents only read after the write burst completes).
+    // Sector RAM: 512 x 8 as four 128x8 LANE altsyncrams (four 1-Kbit
+    // blocks; the fitter packs them - PLAN_HDV_M10K_2026-11-20).
+    // Lane L holds the old hdv_ram[4*word + L], so the host's
+    // 4-bytes-per-clock DMA word is four parallel single-byte lane writes
+    // (lane address = word index), and the 14M walk_in reads one lane per
+    // byte (lane select = byte[1:0]).
+    //
+    // Port A (CLOCK0 = clk_74a): host DMA read/write + walk_out byte
+    // write. Writes are SAME-CYCLE (indata/wrcontrol wraddress regs =
+    // "NONE" - probe-verified 2026-11-20 in tools/ramprobe_4lane: the
+    // resolved megafunction is identical to the omitted spelling, and
+    // port A resolves unregistered per the hdd.v probe-X finding: a byte
+    // is visible one 74a cycle after presentation, exactly like the old
+    // NBA array; wo_landed needs no change for this reason). Reads are
+    // 1-cycle (registered address + UNREGISTERED output): q_a is one
+    // clock behind the presented address - this IS the +1 stage the
+    // model-B prime+discard protocol needs, so the shipping config is
+    // RD_PRIME_STAGE=0; OOR reads present the lane gather (last latched
+    // in-window word) to stay word-for-word with the old port (readout
+    // comment).
+    // Port B (CLOCK1 = clk_14a): walk_in reads only (wren_b tied off),
+    // same 1-cycle read; the walk_in (we, addr) pair is delayed one 14M
+    // cycle (wi_we_d/wi_addr_d below) so hdd latches the IDENTICAL
+    // (we, addr, di) tuple it latched with the old combinational array,
+    // one cycle later (walk_in now runs 513 cycles; the final byte's
+    // commit lands one cycle after the walk-done pulse, absorbed by the
+    // wd_sync 2FF + 5-clock latch before the 74a FSM consumes done).
+    // Phases remain mutually exclusive (host write / host read / walk_in
+    // / walk_out) - same read-during-write unreachability as before the
+    // conversion; NEW_DATA_NO_NBE_READ as in hdd.v (OLD_DATA is the
+    // bidir-rejected Error-14000 value).
     // ------------------------------------------------------------------
-    reg [7:0] hdv_ram [0:511];
-
     // host DMA write port: a 32-bit BE word = 4 consecutive bytes (first file
     // byte in [31:24]; the core drives bridge_endian_little = 0)
     wire        host_wr_en = bridge_wr && (bridge_addr[31:12] == 20'h01F01);
     wire [6:0]  host_word  = bridge_addr[8:2];   // 0..127
-    wire [8:0]  host_byte0 = {host_word, 2'b00};
 
     // walk_out write port (CDC'd from 14M; see below)
     reg         wo_wen;
     reg  [8:0]  wo_addr;
     reg  [7:0]  wo_data;
 
-    always @(posedge clk_74a) begin
-        if (host_wr_en) begin
-            // BIG-ENDIAN: the core drives bridge_endian_little = 0, so the
-            // real host writes each 32-bit word with the first file byte in
-            // [31:24] and the last in [7:0]. Unpack in that order (a
-            // little-endian unpack here byte-reverses every 4-byte group -
-            // the "intertwined" block-0 corruption seen on hardware 2026-11-02
-            // while the sim, whose emulated host hardcodes LE, masked it).
-            hdv_ram[host_byte0        ] <= bridge_wr_data[31:24];
-            hdv_ram[host_byte0 + 9'd1] <= bridge_wr_data[23:16];
-            hdv_ram[host_byte0 + 9'd2] <= bridge_wr_data[15:8];
-            hdv_ram[host_byte0 + 9'd3] <= bridge_wr_data[7:0];
-        end
-        if (wo_wen)
-            hdv_ram[wo_addr] <= wo_data;
-    end
+    // Port A write: the host word burst and the walk_out byte never
+    // overlap (phase-separated above); the walk_out byte selects its
+    // lane, the host burst writes all four lanes at the same word index.
+    wire        wo_lane0 = wo_wen & (wo_addr[1:0] == 2'd0);
+    wire        wo_lane1 = wo_wen & (wo_addr[1:0] == 2'd1);
+    wire        wo_lane2 = wo_wen & (wo_addr[1:0] == 2'd2);
+    wire        wo_lane3 = wo_wen & (wo_addr[1:0] == 2'd3);
+
+    // Port A address/data (read + write share the one port-A address in
+    // bidir_dual_port; the three phases never overlap):
+    //   walk_out byte > host word write > host word read.
+    // BIG-ENDIAN host write: the first file byte of the group is in
+    // [31:24] and goes to byte 4*word (lane 0) - the "intertwined"
+    // corruption seen on hardware 2026-11-02 came from an LE unpack here.
+    wire [6:0]  lane_addr_a = wo_wen ? wo_addr[8:2] :
+                              host_wr_en ? host_word : rd_word;
+    wire [7:0]  lane0_data  = wo_lane0 ? wo_data : bridge_wr_data[31:24];
+    wire [7:0]  lane1_data  = wo_lane1 ? wo_data : bridge_wr_data[23:16];
+    wire [7:0]  lane2_data  = wo_lane2 ? wo_data : bridge_wr_data[15: 8];
+    wire [7:0]  lane3_data  = wo_lane3 ? wo_data : bridge_wr_data[ 7: 0];
+
+    wire [7:0] lane0_qa, lane1_qa, lane2_qa, lane3_qa;   // 74a readout
+    wire [7:0] lane0_qb, lane1_qb, lane2_qb, lane3_qb;   // 14M walk_in
+
+    altsyncram u_hdv_lane0 (
+        .address_a (lane_addr_a), .address_b (cnt_i[8:2]),
+        .clock0 (clk_74a),        .clock1 (clk_14a),
+        .data_a (lane0_data),     .data_b (8'h00),
+        .wren_a (host_wr_en | wo_lane0), .wren_b (1'b0),
+        .q_a (lane0_qa),          .q_b (lane0_qb),
+        .aclr0 (1'b0), .aclr1 (1'b0),
+        .addressstall_a (1'b0),   .addressstall_b (1'b0),
+        .byteena_a (1'b1),        .byteena_b (1'b1),
+        .clocken0 (1'b1), .clocken1 (1'b1), .clocken2 (1'b1), .clocken3 (1'b1),
+        .eccstatus (),
+        .rden_a (1'b1), .rden_b (1'b1)
+    );
+    defparam
+        u_hdv_lane0.operation_mode               = "BIDIR_DUAL_PORT",
+        u_hdv_lane0.numwords_a                     = 128,
+        u_hdv_lane0.numwords_b                     = 128,
+        u_hdv_lane0.widthad_a                      = 7,
+        u_hdv_lane0.widthad_b                      = 7,
+        u_hdv_lane0.width_a                        = 8,
+        u_hdv_lane0.width_b                        = 8,
+        u_hdv_lane0.width_byteena_a                = 1,
+        u_hdv_lane0.width_byteena_b                = 1,
+        u_hdv_lane0.outdata_reg_a                  = "UNREGISTERED",
+        u_hdv_lane0.outdata_reg_b                  = "UNREGISTERED",
+        u_hdv_lane0.address_reg_b                  = "CLOCK1",
+        // port A same-cycle writes (probe-verified: identical resolved
+        // entity to the omitted spelling; see tools/ramprobe_4lane)
+        u_hdv_lane0.indata_reg_a                   = "NONE",
+        u_hdv_lane0.wrcontrol_wraddress_reg_a      = "NONE",
+        u_hdv_lane0.read_during_write_mode_port_a  = "NEW_DATA_NO_NBE_READ",
+        u_hdv_lane0.read_during_write_mode_port_b  = "NEW_DATA_NO_NBE_READ",
+        u_hdv_lane0.clock_enable_input_a           = "BYPASS",
+        u_hdv_lane0.clock_enable_input_b           = "BYPASS",
+        u_hdv_lane0.clock_enable_output_a          = "BYPASS",
+        u_hdv_lane0.clock_enable_output_b          = "BYPASS",
+        u_hdv_lane0.outdata_aclr_a                 = "NONE",
+        u_hdv_lane0.outdata_aclr_b                 = "NONE",
+        u_hdv_lane0.power_up_uninitialized         = "TRUE",
+        u_hdv_lane0.intended_device_family         = "Cyclone V",
+        u_hdv_lane0.lpm_type                       = "altsyncram";
+
+    altsyncram u_hdv_lane1 (
+        .address_a (lane_addr_a), .address_b (cnt_i[8:2]),
+        .clock0 (clk_74a),        .clock1 (clk_14a),
+        .data_a (lane1_data),     .data_b (8'h00),
+        .wren_a (host_wr_en | wo_lane1), .wren_b (1'b0),
+        .q_a (lane1_qa),          .q_b (lane1_qb),
+        .aclr0 (1'b0), .aclr1 (1'b0),
+        .addressstall_a (1'b0),   .addressstall_b (1'b0),
+        .byteena_a (1'b1),        .byteena_b (1'b1),
+        .clocken0 (1'b1), .clocken1 (1'b1), .clocken2 (1'b1), .clocken3 (1'b1),
+        .eccstatus (),
+        .rden_a (1'b1), .rden_b (1'b1)
+    );
+    defparam
+        u_hdv_lane1.operation_mode               = "BIDIR_DUAL_PORT",
+        u_hdv_lane1.numwords_a                     = 128,
+        u_hdv_lane1.numwords_b                     = 128,
+        u_hdv_lane1.widthad_a                      = 7,
+        u_hdv_lane1.widthad_b                      = 7,
+        u_hdv_lane1.width_a                        = 8,
+        u_hdv_lane1.width_b                        = 8,
+        u_hdv_lane1.width_byteena_a                = 1,
+        u_hdv_lane1.width_byteena_b                = 1,
+        u_hdv_lane1.outdata_reg_a                  = "UNREGISTERED",
+        u_hdv_lane1.outdata_reg_b                  = "UNREGISTERED",
+        u_hdv_lane1.address_reg_b                  = "CLOCK1",
+        u_hdv_lane1.indata_reg_a                   = "NONE",
+        u_hdv_lane1.wrcontrol_wraddress_reg_a      = "NONE",
+        u_hdv_lane1.read_during_write_mode_port_a  = "NEW_DATA_NO_NBE_READ",
+        u_hdv_lane1.read_during_write_mode_port_b  = "NEW_DATA_NO_NBE_READ",
+        u_hdv_lane1.clock_enable_input_a           = "BYPASS",
+        u_hdv_lane1.clock_enable_input_b           = "BYPASS",
+        u_hdv_lane1.clock_enable_output_a          = "BYPASS",
+        u_hdv_lane1.clock_enable_output_b          = "BYPASS",
+        u_hdv_lane1.outdata_aclr_a                 = "NONE",
+        u_hdv_lane1.outdata_aclr_b                 = "NONE",
+        u_hdv_lane1.power_up_uninitialized         = "TRUE",
+        u_hdv_lane1.intended_device_family         = "Cyclone V",
+        u_hdv_lane1.lpm_type                       = "altsyncram";
+
+    altsyncram u_hdv_lane2 (
+        .address_a (lane_addr_a), .address_b (cnt_i[8:2]),
+        .clock0 (clk_74a),        .clock1 (clk_14a),
+        .data_a (lane2_data),     .data_b (8'h00),
+        .wren_a (host_wr_en | wo_lane2), .wren_b (1'b0),
+        .q_a (lane2_qa),          .q_b (lane2_qb),
+        .aclr0 (1'b0), .aclr1 (1'b0),
+        .addressstall_a (1'b0),   .addressstall_b (1'b0),
+        .byteena_a (1'b1),        .byteena_b (1'b1),
+        .clocken0 (1'b1), .clocken1 (1'b1), .clocken2 (1'b1), .clocken3 (1'b1),
+        .eccstatus (),
+        .rden_a (1'b1), .rden_b (1'b1)
+    );
+    defparam
+        u_hdv_lane2.operation_mode               = "BIDIR_DUAL_PORT",
+        u_hdv_lane2.numwords_a                     = 128,
+        u_hdv_lane2.numwords_b                     = 128,
+        u_hdv_lane2.widthad_a                      = 7,
+        u_hdv_lane2.widthad_b                      = 7,
+        u_hdv_lane2.width_a                        = 8,
+        u_hdv_lane2.width_b                        = 8,
+        u_hdv_lane2.width_byteena_a                = 1,
+        u_hdv_lane2.width_byteena_b                = 1,
+        u_hdv_lane2.outdata_reg_a                  = "UNREGISTERED",
+        u_hdv_lane2.outdata_reg_b                  = "UNREGISTERED",
+        u_hdv_lane2.address_reg_b                  = "CLOCK1",
+        u_hdv_lane2.indata_reg_a                   = "NONE",
+        u_hdv_lane2.wrcontrol_wraddress_reg_a      = "NONE",
+        u_hdv_lane2.read_during_write_mode_port_a  = "NEW_DATA_NO_NBE_READ",
+        u_hdv_lane2.read_during_write_mode_port_b  = "NEW_DATA_NO_NBE_READ",
+        u_hdv_lane2.clock_enable_input_a           = "BYPASS",
+        u_hdv_lane2.clock_enable_input_b           = "BYPASS",
+        u_hdv_lane2.clock_enable_output_a          = "BYPASS",
+        u_hdv_lane2.clock_enable_output_b          = "BYPASS",
+        u_hdv_lane2.outdata_aclr_a                 = "NONE",
+        u_hdv_lane2.outdata_aclr_b                 = "NONE",
+        u_hdv_lane2.power_up_uninitialized         = "TRUE",
+        u_hdv_lane2.intended_device_family         = "Cyclone V",
+        u_hdv_lane2.lpm_type                       = "altsyncram";
+
+    altsyncram u_hdv_lane3 (
+        .address_a (lane_addr_a), .address_b (cnt_i[8:2]),
+        .clock0 (clk_74a),        .clock1 (clk_14a),
+        .data_a (lane3_data),     .data_b (8'h00),
+        .wren_a (host_wr_en | wo_lane3), .wren_b (1'b0),
+        .q_a (lane3_qa),          .q_b (lane3_qb),
+        .aclr0 (1'b0), .aclr1 (1'b0),
+        .addressstall_a (1'b0),   .addressstall_b (1'b0),
+        .byteena_a (1'b1),        .byteena_b (1'b1),
+        .clocken0 (1'b1), .clocken1 (1'b1), .clocken2 (1'b1), .clocken3 (1'b1),
+        .eccstatus (),
+        .rden_a (1'b1), .rden_b (1'b1)
+    );
+    defparam
+        u_hdv_lane3.operation_mode               = "BIDIR_DUAL_PORT",
+        u_hdv_lane3.numwords_a                     = 128,
+        u_hdv_lane3.numwords_b                     = 128,
+        u_hdv_lane3.widthad_a                      = 7,
+        u_hdv_lane3.widthad_b                      = 7,
+        u_hdv_lane3.width_a                        = 8,
+        u_hdv_lane3.width_b                        = 8,
+        u_hdv_lane3.width_byteena_a                = 1,
+        u_hdv_lane3.width_byteena_b                = 1,
+        u_hdv_lane3.outdata_reg_a                  = "UNREGISTERED",
+        u_hdv_lane3.outdata_reg_b                  = "UNREGISTERED",
+        u_hdv_lane3.address_reg_b                  = "CLOCK1",
+        u_hdv_lane3.indata_reg_a                   = "NONE",
+        u_hdv_lane3.wrcontrol_wraddress_reg_a      = "NONE",
+        u_hdv_lane3.read_during_write_mode_port_a  = "NEW_DATA_NO_NBE_READ",
+        u_hdv_lane3.read_during_write_mode_port_b  = "NEW_DATA_NO_NBE_READ",
+        u_hdv_lane3.clock_enable_input_a           = "BYPASS",
+        u_hdv_lane3.clock_enable_input_b           = "BYPASS",
+        u_hdv_lane3.clock_enable_output_a          = "BYPASS",
+        u_hdv_lane3.clock_enable_output_b          = "BYPASS",
+        u_hdv_lane3.outdata_aclr_a                 = "NONE",
+        u_hdv_lane3.outdata_aclr_b                 = "NONE",
+        u_hdv_lane3.power_up_uninitialized         = "TRUE",
+        u_hdv_lane3.intended_device_family         = "Cyclone V",
+        u_hdv_lane3.lpm_type                       = "altsyncram";
+
 
     // host read port (74a, combinational): BE word for the 0x0184 DMA reads.
     // 2026-11-06 (expert review of the SmartportHD corruption): the RAM is
@@ -177,18 +385,39 @@ module hdv_bridge #(
     // Out-of-range reads now return the default 0 arm instead of wrapping.
     wire [6:0] rd_word  = bridge_addr[8:2];
     wire       rd_oob   = (bridge_addr[11:9] != 3'b000);   // beyond the 512-B window
-    wire [8:0] rd_byte0 = {rd_word, 2'b00};
     // BIG-ENDIAN readout, matching the write path above (bridge_endian_little
-    // = 0): word[31:24] = first file byte of the group (hdv_ram[rd_byte0]),
-    // word[7:0] = last (hdv_ram[rd_byte0+3]).
-    // Out-of-window value: 0 (shipping) or the address's word index tagged
-    // with A5A5 (diagnostic build; see OOB_ENCODE).
+    // = 0): word[31:24] = first file byte of the group (lane 0, byte 4*word),
+    // word[7:0] = last (lane 3, byte 4*word+3). In-window reads come from
+    // the lane RAMs' port A 1-cycle read (one clock behind the presented
+    // address) - that IS the model-B +1 stage, so the shipping config is
+    // RD_PRIME_STAGE=0 (the 0x0184 protocol primes one beat and discards
+    // the first sample, so the kept 128 align to 0..127).
+    //
+    // OOR-READ VALUE (the subtle part): an out-of-window read presents THE
+    // LANE GATHER (the last latched in-window word) instead of oob_val in
+    // shipping mode. This reproduces the old port's OOR samples exactly:
+    // the old prime register delayed EVERY sample by one read, so the old
+    // port's sample at the model-B flow's 129th (OOR) read was the
+    // in-window word 127 (the OOR value of that read surfaced one read
+    // later, at the non-existent read 130). The new port's OOR sample is
+    // q_a = mem[addr(one read earlier)] = the same in-window word. Both
+    // arms - in-window and OOR - are therefore word-for-word the old
+    // shipping port's (T8e: kept = words 0..127 byte-exact, wrcnt=129,
+    // oobcnt=1 unchanged; the A5A5 tag in OOB_ENCODE diagnostic mode
+    // surfaces one read earlier - it tags the read position, and that
+    // build is instrumented by definition).
+    // Out-of-window value: the lane gather (shipping) or the address's
+    // word index tagged with A5A5 (diagnostic build; see OOB_ENCODE).
     wire [31:0] oob_val = OOB_ENCODE ? {16'hA5A5, bridge_addr[9:2], 8'h00}
                                      : 32'h0000_0000;
-    wire [31:0] hdv_ram_word_c = rd_oob ? oob_val : {hdv_ram[rd_byte0],
-                           hdv_ram[rd_byte0 + 9'd1],
-                           hdv_ram[rd_byte0 + 9'd2],
-                           hdv_ram[rd_byte0 + 9'd3]};
+    wire [31:0] hdv_ram_word_ww = {lane0_qa, lane1_qa, lane2_qa, lane3_qa};
+    reg  [31:0] hdv_ram_word_ww_q;
+    always @(posedge clk_74a)
+        if (bridge_rd)
+            hdv_ram_word_ww_q <= hdv_ram_word_ww;
+    wire [31:0] hdv_ram_word_c = (rd_oob && OOB_ENCODE) ? oob_val
+                                        : (RD_PRIME_STAGE ? hdv_ram_word_ww_q
+                                                          : hdv_ram_word_ww);
 
     // 2026-11-07 (expert Problem 2, model B proven in sim by T8e): the
     // framework's 0x0184 DMA PRIMES one beat against the documented read
@@ -202,9 +431,12 @@ module hdv_bridge #(
     // Kept LOCAL to hdv_ram_word: the global bridge_rd_data mux
     // (apf_stream_video_top.v) is untouched - a read-back-mux change once
     // broke disk loading on silicon (see its comment at ~line 1024).
-    // RD_PRIME_STAGE=1: register one clk_74a so the host-visible port
-    // presents 2 stages (the primed first sample is stale, the kept 128
-    // align). RD_PRIME_STAGE=0 (shipping): pure combinational = 0.3.4.
+    // RD_PRIME_STAGE=0 (shipping with the M10K lane RAMs): the RAM's
+    // registered read address provides the model-B +1 stage (OOR reads
+    // present the lane gather for old-port parity, see above), so the
+    // legacy prime register is disabled (=1 would add a second in-window
+    // stage - the 0.3.3/0.3.4 corruption shape). Legacy (pre-M10K
+    // combinational array): 1 = the 0.3.5 shipping stage.
     reg [31:0] hdv_ram_word_q;
     always @(posedge clk_74a)
         if (bridge_rd)
@@ -384,10 +616,15 @@ module hdv_bridge #(
     // ------------------------------------------------------------------
     // 14M domain: sector-buffer walkers (512 machine cycles each)
     // ------------------------------------------------------------------
-    // walk_in:  RAM -> hdd sector buffer. hdd latches (ram_we, ram_addr,
-    // ram_di) on its posedge: with we high and addr=cnt_i during cycle P,
-    // hdd writes sector_buf[cnt_i] <= ram[cnt_i] at P. Bytes 0..511 are
-    // latched at the first 512 posedges of the walk.
+    // walk_in:  RAM -> hdd sector buffer. The lane RAMs' port B read is
+    // 1-cycle (registered address + UNREGISTERED output): q_b(m+1) =
+    // mem[addr(m)]. So the (we, addr) pair is delayed ONE 14M cycle
+    // (wi_we_d/wi_addr_d): at the consuming cycle di == mem[wi_addr_d],
+    // and hdd latches (ram_we, ram_addr, ram_di) on its posedge - the
+    // IDENTICAL tuple hdd latched with the old combinational array, one
+    // cycle later (walk_in runs 513 cycles; the final byte's commit lands
+    // one cycle after the walk-done pulse, absorbed by the wd_sync 2FF +
+    // 5-clock latch before the 74a FSM consumes done). Zero hdd.v changes.
     // walk_out: hdd sector buffer -> RAM. 2-phase per byte: phase 0
     // presents addr=k to hdd (ram_do becomes buf[k] one clock later),
     // phase 1 (the gap) strobes (k, buf[k]) to the 74a side. One strobe
@@ -426,6 +663,27 @@ module hdv_bridge #(
     wire walk_in_active = qi_sync[1] && (cnt_i < 10'd512);
     wire [9:0] wo_byte  = cnt_o2[10:1];   // byte index 0..511
 
+    // walk_in delay pair (option (d), PLAN_HDV_M10K): the 14M walk_in read
+    // of the lane RAMs is 1-cycle, so (we, addr) is registered once to keep
+    // hdd's latched (we, addr, di) tuple identical to the old combinational
+    // array. di selects the lane of the DELAYED byte index (q_b(m+1) =
+    // mem[addr(m)], so at the consuming cycle the byte for wi_addr_d is in
+    // lane wi_addr_d[1:0]).
+    reg         wi_we_d;
+    reg  [8:0]  wi_addr_d;
+    always @(posedge clk_14a or negedge rst_14a) begin
+        if (!rst_14a) begin
+            wi_we_d   <= 1'b0;
+            wi_addr_d <= 9'd0;
+        end else begin
+            wi_we_d   <= walk_in_active;
+            wi_addr_d <= walk_in_active ? cnt_i[8:0] : wi_addr_d;
+        end
+    end
+    wire [7:0] wi_lane01  = wi_addr_d[0] ? lane1_qb : lane0_qb;
+    wire [7:0] wi_lane23  = wi_addr_d[0] ? lane3_qb : lane2_qb;
+    wire [7:0] hdv_ram_di_c = wi_addr_d[1] ? wi_lane23 : wi_lane01;
+
     // walk_out strobe: the gap phase, once per byte, data valid (byte 0's
     // gap is cnt_o2=1: hdd latched ram_do=buf[0] at the end of the
     // cnt_o2=0 present phase)
@@ -445,11 +703,14 @@ module hdv_bridge #(
         else
             walk_done_14 <= (cnt_i == 10'd511) || (cnt_o2 == 11'd1023);
     end
-    // hdd port drives (walk_in owns the buffer ports; walk_out presents
-    // its read address during both phases of each byte)
-    assign hdd_ram_addr = walk_in_active ? cnt_i[8:0] : wo_byte[8:0];
-    assign hdd_ram_we   = walk_in_active;
-    assign hdd_ram_di   = hdv_ram[cnt_i[8:0]];
+    // hdd port drives (walk_in owns the buffer write port via the delayed
+    // tuple; walk_out presents its read address during both phases of each
+    // byte). While wi_we_d is low but walk_in is active (the entry cycle)
+    // the address is harmless: hdd_ram_we=0, port B is read-only there.
+    assign hdd_ram_addr = wi_we_d ? wi_addr_d
+                                  : (walk_in_active ? cnt_i[8:0] : wo_byte[8:0]);
+    assign hdd_ram_we   = wi_we_d;
+    assign hdd_ram_di   = hdv_ram_di_c;
 
     // ------------------------------------------------------------------
     // 74a domain: command FSM

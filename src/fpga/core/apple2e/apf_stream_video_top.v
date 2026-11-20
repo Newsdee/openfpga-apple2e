@@ -2579,12 +2579,14 @@ hdd u_hdd (
     .ram_we         ( hdd_ram_we )
 );
 
-// RD_PRIME_STAGE=1 (0.3.5 SHIPPING): 2-stage read port (model-B fix). Model B
-// (framework 129-strobe prime+discard) was confirmed on silicon: the fix build
-// wrote two folders byte-exact (see RELEASE_NOTES_0.3.5 / framework ticket
-// section 10). T8e in verilog/hdv_bridge proves 1 makes a priming host
-// byte-exact. OOB_ENCODE follows OVL_DEBUG (0 in shipping).
-hdv_bridge #(.OOB_ENCODE(OVL_DEBUG), .RD_PRIME_STAGE(1'b1)) u_hdv_bridge (
+// RD_PRIME_STAGE stage accounting (PLAN_HDV_M10K): the M10K lane RAMs'
+// registered read address IS the model-B +1 stage (0.3.5 silicon-confirmed
+// behavior: prime+discard keeps words 0..127 byte-exact; T8e proves it),
+// so the DUT prime register ships OFF. (Pre-M10K combinational array: the
+// +1 stage came from this register - RD_PRIME_STAGE=1 was the 0.3.5
+// shipping value. =1 now would double the stage and re-introduce the
+// 0.3.3/0.3.4 one-word shift.) OOB_ENCODE follows OVL_DEBUG (0 in shipping).
+hdv_bridge #(.OOB_ENCODE(OVL_DEBUG), .RD_PRIME_STAGE(1'b0)) u_hdv_bridge (
     .clk_74a        ( clk_74a ),
     .clk_14a        ( clk_core_14318 ),
     .reset_n        ( reset_n ),

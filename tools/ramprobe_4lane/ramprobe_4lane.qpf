@@ -1,0 +1,5 @@
+QUARTUS_VERSION = "17.0"
+DATE = "hdv_ram 4-lane altsyncram param legality probe (2026-11-20)"
+
+# Revisions
+PROJECT_REVISION = "ramprobe_4lane"

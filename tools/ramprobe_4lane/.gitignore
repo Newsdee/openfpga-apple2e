@@ -1,0 +1,13 @@
+# ramprobe_4lane: keep only the source (design + project files + README).
+# Generated Quartus build output is throwaway - the probe's CONCLUSION
+# (port A same-cycle writes, "NONE" spelling resolves identically to the
+# omitted spelling) is recorded in README.md + PLAN_HDV_M10K_2026-11-20.md
+# and encoded in the hdv_bridge.sv lane defparams.
+db/
+incremental_db/
+obj_dir/
+*.rpt
+*.smsg
+*.summary
+*.pin
+run_out.txt
