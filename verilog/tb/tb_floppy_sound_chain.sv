@@ -35,7 +35,7 @@ module tb_floppy_sound_chain;
     reg        fs_en = 1'b0;
     reg        drv_motor = 1'b0, drv_step = 1'b0, drv_trk0 = 1'b0, drv_io = 1'b0;
     reg [1:0]  fs_gain = 2'd0;    // floppy slider position 0..3 (C5: 0=off 1=2x 2=4x 3=8x)
-    reg [1:0]  spk_gain = 2'd0;   // beeper slider position 0..3 (C6: 0=off 1=1x 2=2x 3=8x)
+    reg [1:0]  spk_gain = 2'd0;   // beeper slider position 0..3 (C6: 0=off 1=x1/4 2=x1/2 3=x1)
     wire [1:0] fs_gain_donor = (fs_gain == 2'd1) ? 2'd1 : (fs_gain == 2'd2) ? 2'd2 : (fs_gain == 2'd3) ? 2'd2 : 2'd0;
     wire       fs_boost_w = (fs_gain == 2'd3);   // x8 top stop
     wire [9:0] fs_l, fs_r;
@@ -316,17 +316,18 @@ module tb_floppy_sound_chain;
         check("C5 floppy 8x gain ~2.0x the 4x hum (boost stage)",
               (hum4 * 100 > 180 * hum2) && (hum4 * 100 < 220 * hum2));
 
-        // C6: beeper gain slider - OFF/x1/x2/x8 on the speaker term (the
-        // gain stage multiplies the DC-removed beep AFTER the duty
-        // tracker, so no re-convergence). 2 kHz square in the I2S words.
-        // MB and floppy are off. The duty tracker oscillates FREELY
-        // against the beep (its /16 step cannot lock to the 24-word
-        // half-period), so the per-CYCLE swing varies a lot - a 300-word
-        // window undershoots (found 2026-11-19: x8 window read 17.6k
-        // while x4 read 65.5k). Measure 10,000 words (~104 cycles) so
-        // the max/min span the swing envelope. Expected: x1 ~27k,
-        // x2 ~55k (measured 54,784 on 2026-11-20), x8 clamps at both
-        // 16-bit rails (x1 swing ~27k x8 = 217k > rail).
+        // C6: beeper gain slider - OFF/x1-4/x1-2/x1 attenuation ladder
+        // (2026-11-20 v2: the top stop is the 0.3.6 baseline, the lower
+        // stops attenuate). The gain stage multiplies the DC-removed
+        // beep AFTER the duty tracker, so no re-convergence. 2 kHz
+        // square in the I2S words. MB and floppy are off. The duty
+        // tracker oscillates FREELY against the beep (its /16 step
+        // cannot lock to the 24-word half-period), so the per-CYCLE
+        // swing varies a lot - a 300-word window undershoots (found
+        // 2026-11-19). Measure 10,000 words (~104 cycles) so the
+        // max/min span the swing envelope. x1 (stop 3) measured 27,232
+        // on 2026-11-20, so x1/2 ~13.6k and x1/4 ~6.8k; no stop can
+        // reach the 16-bit rails (max |spk_word| = 16384).
         spk_on = 1'b1;
         fs_en = 1'b0;
         drv_motor = 1'b0;
@@ -336,31 +337,36 @@ module tb_floppy_sound_chain;
         repeat (1_490_000) @(negedge clk);    // 10,000 words
         measure_pp(idxG0, idxG0 + 9_999, pmax, pmin);
         bswap1 = pmax - pmin; pmx1 = pmax; pmn1 = pmin;
-        spk_gain = 2'd1;                      // x1 (classic)
+        spk_gain = 2'd1;                      // x1/4
         repeat (10_000) @(negedge clk);
         idxG0 = word_idx;
         repeat (1_490_000) @(negedge clk);    // 10,000 words
         measure_pp(idxG0, idxG0 + 9_999, pmax, pmin);
         bswap2 = pmax - pmin; pmx2 = pmax; pmn2 = pmin;
-        spk_gain = 2'd2;                      // x2
+        spk_gain = 2'd2;                      // x1/2
         repeat (10_000) @(negedge clk);
         idxG0 = word_idx;
         repeat (1_490_000) @(negedge clk);    // 10,000 words
         measure_pp(idxG0, idxG0 + 9_999, pmax, pmin);
         bswap4 = pmax - pmin; pmx4 = pmax; pmn4 = pmin;
-        spk_gain = 2'd3;                      // x8
+        spk_gain = 2'd3;                      // x1 (0.3.6 baseline)
         repeat (10_000) @(negedge clk);
         idxG0 = word_idx;
         repeat (1_490_000) @(negedge clk);    // 10,000 words
         measure_pp(idxG0, idxG0 + 9_999, pmax, pmin);
         bswap8 = pmax - pmin; pmx8 = pmax; pmn8 = pmin;
-        $display("C6 beeper swings (10k words): off=%0d x1=%0d x2=%0d x8=%0d", bswap1, bswap2, bswap4, bswap8);
+        $display("C6 beeper swings (10k words): off=%0d q=%0d half=%0d x1=%0d", bswap1, bswap2, bswap4, bswap8);
         check("C6 beeper off = exactly silent (swing == 0)", (bswap1 == 0));
-        check("C6 beeper x1 classic tone present (20k <= swing < 40k)",
-              (bswap2 >= 20000) && (bswap2 < 40000));
-        check("C6 beeper x2 audible step (swing >= 40k)", (bswap4 >= 40000));
-        check("C6 beeper x8 clamps at both 16-bit rails (tone x8 > rail)",
-              (pmx8 == 32767) && (pmn8 == -32768));
+        check("C6 beeper x1/4 soft stop (4k <= swing < 12k)",
+              (bswap2 >= 4000) && (bswap2 < 12000));
+        check("C6 beeper x1/2 stop (10k <= swing < 22k)",
+              (bswap4 >= 10000) && (bswap4 < 22000));
+        check("C6 beeper x1 = 0.3.6 baseline present (20k <= swing < 40k)",
+              (bswap8 >= 20000) && (bswap8 < 40000));
+        check("C6 beeper half ~2.0x quarter (attenuation ratio)",
+              (bswap4 * 100 > 180 * bswap2) && (bswap4 * 100 < 220 * bswap2));
+        check("C6 beeper x1 ~2.0x half (attenuation ratio)",
+              (bswap8 * 100 > 180 * bswap4) && (bswap8 * 100 < 220 * bswap4));
 
         if (fails == 0) $display("FLOPPY SOUND CHAIN TB ALL CHECKS PASSED");
         else $display("FLOPPY SOUND CHAIN TB FAILURES: %0d", fails);

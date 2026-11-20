@@ -40,7 +40,7 @@ module tb_speaker_i2s;
         .spk_bit(spk_bit),
         .mb_in_m(1'b0),   // MB port: tied off - mono path under test
         .mb_gain_m(2'd0),
-        .spk_gain_m(2'd1),   // beeper slider: 1 = x1 (classic; 0 = OFF on the 2026-11-20 ladder)
+        .spk_gain_m(2'd3),   // beeper slider: 3 = x1 = the 0.3.6 word (this TB validates the pre-feature path; the attenuation ladder lives in tb_floppy_sound_chain C6)
         .fs_boost_m(1'b0),   // floppy boost: off
         .mb_l   (10'd0),
         .mb_r   (10'd0),

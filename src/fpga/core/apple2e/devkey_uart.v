@@ -391,12 +391,10 @@ module devkey_uart #(
     reg [31:0] last_ssy, last_ssh;
     reg [ 7:0] last_so;
     reg        tap_inited;
-    always @(posedge clk) begin
-        if (rst) begin
-            last_ssy <= 32'd0; last_ssh <= 32'd0;
-            last_so  <= 8'd0;  tap_inited <= 1'b0;
-        end
-    end
+    // NOTE: last_*/tap_inited are reset in the generator-FSM block below -
+    // they must NOT have their own always block (two clocked writers for
+    // the same regs: Verilator silently merges them, Quartus A&S fails
+    // with Error 10028 "multiple constant drivers").
 
     // 2026-11-16: critical events LATCH-UNTIL-EMITTED. The generator only
     // samples sources while idle: a 1-cycle command pulse or a busy-fall
@@ -1045,6 +1043,10 @@ module devkey_uart #(
             ev_r        <= EV_NONE;
             booted      <= 1'b0;
             line_char_r <= 8'h0A;
+            last_ssy    <= 32'd0;   // 2026-11-20 delta-print latches
+            last_ssh    <= 32'd0;
+            last_so     <= 8'd0;
+            tap_inited  <= 1'b0;
         end else case (gen_state)
         2'b00: begin
             // pick the highest-priority pending event

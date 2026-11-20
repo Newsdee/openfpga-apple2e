@@ -251,27 +251,26 @@ module speaker_i2s (
     // + silent card + silent drive reproduces spk_word bit-exactly.
     wire [15:0] mb_term_l = mb_in_s2 ? mb_word_l : 16'd0;
     wire [15:0] mb_term_r = mb_in_s2 ? mb_word_r : 16'd0;
-    // Beeper volume slider (spk_gain_s2): 00 = OFF, 01 = x1, 10 = x2,
-    // 11 = x8 (2026-11-20 hardware remap: on the good-placement 09:24
-    // build the user hears only the old 0 (x2) vs 3 (x8) - the x4/x6
-    // stops are indistinguishable in the mix, and x2 is not off. So:
-    // true off, the pre-feature x1 classic level, the old x2, and the
-    // loud x8. Max |spk_word| is 16384 (d_sdiff16 << 5), so x8 = 131,072
-    // needs 19-bit signed; the final sum is 19 bits too (max 131,072 +
-    // 32,767 + 16,368 = 180,207).
-    // x2 base in 19 bits: the sign bit appears TWICE (one per the 18-bit
-    // x2 value plus its own extension to 19) - a single sign bit would
-    // zero-extend and flip negatives positive.
-    wire signed [18:0] spk_s19_l = {spk_word[15], spk_word[15], spk_word, 1'b0};   // x2 base, exact
-    wire signed [18:0] spk_s19_r = spk_s19_l;                       // mono speaker
-    wire signed [18:0] spk_x1_l = {spk_word[15], spk_word[15], spk_word[15], spk_word};  // x1 = 16->19 sign-ext, exact
-    wire signed [18:0] spk_x2_l = spk_s19_l;                        // x2
-    wire signed [18:0] spk_x8_l = spk_s19_l << 2;                   // x8
-    wire signed [18:0] spk_g19_l = (spk_gain_s2 == 2'd0) ? 19'sd0
-                  : (spk_gain_s2 == 2'd1) ? spk_x1_l
-                  : (spk_gain_s2 == 2'd2) ? spk_x2_l
-                  : spk_x8_l;
-    wire signed [18:0] spk_g19_r = spk_g19_l;
+    // Beeper volume slider (spk_gain_s2): 00 = OFF, 01 = x1/4, 10 = x1/2,
+    // 11 = x1 (2026-11-20 v2 remap: the user wants the beeper SOFTER than
+    // the 0.3.6 baseline, not louder - the MB top stop is rail-clamped so
+    // the beeper must sit below it. Stop 3 = the 0.3.6 pre-feature word
+    // bit-exactly; 1/2 are arithmetic right-shifts of the signed word
+    // (truncation toward zero; the DC tracker absorbs the sub-LSB bias).
+    // Max |spk_word| is 16384 (d_sdiff16 << 5), so x1 fits in 17 bits and
+    // no stop can reach the 16-bit rails; the 19-bit final sum is kept
+    // for headroom (max 16,384 + 32,767 + 16,368 = 65,519 = 17 bits).
+    // 16->19 sign extension: the sign bit appears THREE times (one per
+    // added width bit) - fewer copies zero-extend and flip negatives
+    // positive (the constant-0-prefix bug found 2026-11-19).
+    wire signed [15:0] spk_ws_l   = spk_word;                 // sign reinterpret
+    wire signed [15:0] spk_x12_l  = spk_ws_l >>> 1;           // x1/2
+    wire signed [15:0] spk_x14_l  = spk_ws_l >>> 2;           // x1/4
+    wire signed [18:0] spk_g19_l  = (spk_gain_s2 == 2'd0) ? 19'sd0
+                  : (spk_gain_s2 == 2'd1) ? {spk_x14_l[15], spk_x14_l[15], spk_x14_l[15], spk_x14_l}
+                  : (spk_gain_s2 == 2'd2) ? {spk_x12_l[15], spk_x12_l[15], spk_x12_l[15], spk_x12_l}
+                  : {spk_word[15], spk_word[15], spk_word[15], spk_word};   // x1 = 0.3.6 word
+    wire signed [18:0] spk_g19_r  = spk_g19_l;
     // 16->18 sign extension: the sign bit appears TWICE (one per each of
     // the two added width bits) and the concat must be exactly 18 bits -
     // a 17-bit concat zero-extends into [17:0] and flips negatives

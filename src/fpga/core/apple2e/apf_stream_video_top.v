@@ -1450,10 +1450,10 @@ reg  [31:0] cfg_fs_word = 32'd1;
 // 1 = 2x). Ladder raised one step after hardware feedback (the old
 // 1=1x top of 4x left the drive sound quiet against MB/beeper).
 reg  [31:0] cfg_fsgain_word = 32'd1;
-// Beeper volume slider: 0=OFF, 1=1x (default - the classic pre-feature
-// level), 2=2x, 3=8x (2026-11-20 hardware remap: on the good-placement
-// build only 0(x2) vs 3(x8) were audible and x2 is not off - so true
-// off, the classic x1, the old x2, and loud x8). Default 1 = classic.
+// Beeper volume slider: 0=OFF, 1=1/4x (default - soft), 2=1/2x,
+// 3=1x (the 0.3.6 baseline beeper) - attenuation ladder, 2026-11-20
+// v2 (user: the beeper must sit BELOW the rail-clamped MB top, so the
+// stops attenuate toward the 0.3.6 level instead of amplifying it).
 reg  [31:0] cfg_spkgain_word = 32'd1;
 // Combined "HDD" option (0x01F00010, 0.3.5): merges "Boot Media" (0/1/2) and
 // the retired "HD Write Protect" (0x01F00018) into one 5-value word - "Floppy"
@@ -1493,7 +1493,7 @@ always @(posedge clk_74a) begin
     // Floppy volume slider (0=off, 1=2x, 2=4x, 3=8x). write-only.
     if (bridge_wr && bridge_addr == 32'h01F00028)
         cfg_fsgain_word <= bridge_wr_data;
-    // Beeper volume slider (0=off, 1=1x default, 2=2x, 3=8x). write-only.
+    // Beeper volume slider (0=off, 1=1/4x default, 2=1/2x, 3=1x). write-only.
     if (bridge_wr && bridge_addr == 32'h01F0002C)
         cfg_spkgain_word <= bridge_wr_data;
 end
@@ -2276,8 +2276,8 @@ wire [1:0] fs_gain_donor = (fs_gain_m == 2'd1) ? 2'd1
                             : 2'd0;
 wire        fs_eff_en_m = fs_en_m & (fs_gain_m != 2'd0);
 wire        fs_boost_m  = (fs_gain_m == 2'd3);   // x8 top stop
-// Beeper volume slider CDC (74a -> 14.318): 0=off, 1=1x (default = the
-// classic pre-feature level), 2=2x, 3=8x - gain stage in speaker_i2s.
+// Beeper volume slider CDC (74a -> 14.318): 0=off, 1=1/4x (default -
+// soft), 2=1/2x, 3=1x (0.3.6 baseline) - gain stage in speaker_i2s.
 wire [1:0] spk_gain_m;
 synch_3 #(.WIDTH(2)) u_spk_gain_sync (
     .i(cfg_spkgain_word[1:0]), .o(spk_gain_m), .clk(clk_core_14318)
