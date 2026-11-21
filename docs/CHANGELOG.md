@@ -7,6 +7,29 @@ at-a-glance index.
 
 ## Releases
 
+### 0.4.2 — 2026-11-21
+**HDV sector storage on M10K block RAM (structural placement fix); final
+beeper ladder; diagnostic console out.**
+
+0.4.1 (beeper attenuation ladder Off/×1/4/×1/2/×1, console gated out)
+plus the structural attempt at the transport placement sensitivity: the
+~4,096-FF `hdv_ram` sector array — the largest non-video monolith in the
+suspect host→machine region — is now four 128×8 lane M10Ks (16,106 →
+11,142 ALM, 87 % → 60 %; pins unchanged 224/224; TNS 0). Read/write
+semantics are cycle-identical to 0.4.1, proven by the new A/B
+differential harness (`verilog/hdv_ab/`: real PMP + real hdd.v +
+faithful host model — 128/128 words byte-exact vs the 0.4.1 FF tree) and
+on hardware. Note: the first three M10K rolls failed the HDV-write gate;
+the A/B harness localized a one-word over-shift (same-strobe double latch
+in the read prime, sim-masked) and the fixed tree passed. Roll-4 HW:
+floppy, Mockingboard, HDV load + write all pass; the written HDV is
+byte-exact against the known-good reference (4-byte test-file naming
+artifact only). Gate status: first of the three consecutive clean rolls
+the plan requires; 0.4.1 remains the fallback. Known: transport region
+still shared (ship builds HW-gated), Mockingboard state not in the
+savestate blob. See
+[`RELEASE_NOTES_0.4.2.md`](RELEASE_NOTES_0.4.2.md).
+
 ### 0.4.1 — 2026-11-20
 **Beeper volume attenuation ladder; diagnostic console out.**
 
