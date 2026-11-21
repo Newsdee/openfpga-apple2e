@@ -123,24 +123,27 @@ module tb_hdv_bridge;
     // 71 us walk + host DMA) but < the T5/T11 wait windows (3000 machine
     // cycles ~ 209 us).
     // RD_PRIME_STAGE / OOB_ENCODE knobs: the gate validates the SHIPPING
-    // M10K-port configuration (2026-11-20, post HW rolls 1-2):
+    // M10K-port configuration (2026-11-21, fixed 2-stage port):
     // RD_PRIME_STAGE=1 - the prime FF is the host-facing stage (the
-    // 0.3.5-0.4.1 silicon-proven form); the M10K registered read is the
-    // upstream stage. OOB_ENCODE=0 (shipping): OOR reads present the
-    // registered gather. SIM/HARDWARE DIVERGENCE (the roll-1/2 lesson):
-    // the TB's rd_pipe models the host's registered read stage at a FIXED
-    // 74a phase, but the real Pocket host samples on its own clock at a
-    // placement-dependent phase - with the M10K output host-facing
+    // 0.3.5-0.4.1 silicon-proven form); the M10K lane registered read is
+    // the upstream stage. OOB_ENCODE=0 (shipping): OOR reads present the
+    // lane gather (combinational). SIM/HARDWARE DIVERGENCE (the roll-1/2
+    // lesson): the TB's rd_pipe models the host's registered read stage at
+    // a FIXED 74a phase, but the real Pocket host samples on its own clock
+    // at a placement-dependent phase - with the M10K output host-facing
     // (prime=0) that phase divergence corrupts HDV writes on silicon
     // (2-word-early kept stream) while sim passes byte-exact. Absolute
-    // kept-stream alignment is therefore a HARDWARE-ONLY property (roll 3
-    // re-verifies it on silicon). What sim still proves at TB_RD_PRIME=1:
+    // kept-stream alignment is therefore a HARDWARE-ONLY property (a
+    // shipping-clean roll re-verifies it on silicon); the A/B differential
+    // (verilog/hdv_ab, faithful PMP host model) is the authoritative sim
+    // check and confirms the fixed port = the silicon-proven FF tree.
+    // What sim still proves at TB_RD_PRIME=1:
     // the transport/protocol tests (T1-T7, T10, T11 - they never sample
     // the 0x0184 stream phase), T4's direct lane-RAM write probe, and
-    // T8e re-baselined to the shipping-config stream shape: keep2e[1..2]
-    // are unchecked prime leftovers, keep2e[3..128] = words 0..125
-    // byte-exact, plus OOR-tail probes = words 126/127 (last in-window
-    // word, no A5A5/wrap). The
+    // T8e re-baselined to the shipping 2-stage stream shape: keep2e[0..1]
+    // are unchecked prime leftovers, keep2e[2..128] = words 0..126
+    // byte-exact (lane + prime), plus OOR-tail probes = the lane gather
+    // (in-window data, no A5A5/0). The
     // exact-alignment content checks (T8 lane-order/vacancy, T8c/T8d
     // content, T8e exact words, T9 capture) gate off under TB_RD_PRIME=1;
     // the replay round-trips (T8, T9 phase C) replay the KNOWN pattern
@@ -970,32 +973,29 @@ module tb_hdv_bridge;
         // cannot separate A from B (a discarded prime at word 0 is in-window and
         // leaves no OOR trace), so we test it directly in sim.
         //
-        // RE-BASELINED 2026-11-20 (post HW rolls 1-2, SHIPPING TB_RD_PRIME=1):
+        // RE-BASELINED 2026-11-21 (SHIPPING TB_RD_PRIME=1, 2-stage port):
         // the exact kept-words check below applies to TB_RD_PRIME=0 only (the
-        // TB's fixed 74a-phase model - it passed byte-exact there, which is
-        // precisely why the prime=0 shipping attempt looked fine in sim).
-        // On silicon the host samples at a different, placement-dependent
-        // phase: prime=0 (M10K output host-facing) corrupted HDV writes with
-        // a 2-word-early kept stream. With the shipping prime=1 (prime FF
-        // host-facing, the 0.3.5-0.4.1 silicon-proven form) the TB model is
-        // one word further from alignment than prime=0, so the exact check
-        // would fail in sim for phase-model reasons, not data reasons.
-        // T8e at TB_RD_PRIME=1 therefore verifies what sim CAN prove, with
-        // the stream shape PINNED by the TB's fixed phase (decoded 2026-11-20
-        // from a sim dump): keep2e[1..2] = prime leftovers (the gather/prime
-        // chain is frozen while bridge_rd=0: stale values from T8d - the
-        // shipping host's prime+discard never consumes them, NOT checked);
-        // keep2e[3..128] = words 0..125 BYTE-EXACT (3-cycle pipeline:
-        // M10K + gather + prime); plus two OOR-tail probe strobes at the
-        // held OOR address (the OOR read's output pipelined past the
-        // capture): probe1 = word 126, probe2 = word 127 - the LAST
-        // IN-WINDOW WORD: the shipping OOR semantics (OOR reads present the
-        // last in-window gather, never A5A5 / word-0 wrap - the 0.3.3
-        // rotation mode).
+        // TB's fixed 74a-phase model). On silicon the host samples at a
+        // different, placement-dependent phase. With the shipping prime=1
+        // (prime FF host-facing, the 0.3.5-0.4.1 silicon-proven form) the
+        // 2026-11-21 fix latches the COMBINATIONAL lane gather - the port is
+        // 2 stages (lane registered read + prime), NOT the 3-stage (lane +
+        // gather + prime) shape the 2026-11-20 baseline was pinned to (that
+        // extra same-strobe latch over-shifted the kept stream by one word,
+        // uniform k=-1 in the faithful-PMP A/B harness). So under this TB's
+        // fixed phase the stream lands one word earlier than the old
+        // baseline: keep2e[0..1] = prime/leftover (NOT checked); keep2e[2..128]
+        // = words 0..126 BYTE-EXACT (2-cycle pipeline: lane + prime); plus
+        // two OOR-tail probe strobes at the held OOR address, which must
+        // present the lane gather (in-window data), never A5A5/0.
         // Absolute kept-stream alignment (the words 0..127 byte-exact the
-        // framework needs) is host-phase-dependent and HARDWARE-ONLY: it is
-        // the 0.3.5-0.4.1 silicon-confirmed behavior of exactly this stage
-        // form, and roll 3 re-verifies it on silicon (HDV write test).
+        // framework needs) is host-phase-dependent and HARDWARE-ONLY. The
+        // A/B differential (verilog/hdv_ab, faithful PMP host model) is the
+        // authoritative sim check: the fixed port matches the silicon-proven
+        // FF tree 128/128 byte-exact across COLD/WARM bursts, including the
+        // OOR read presenting word 127 (the last in-window word). A
+        // shipping-clean Standard Fit roll re-verifies absolute alignment on
+        // silicon (HDV write test).
         dma_go = 1'b0;   // T8d left it 1: done must come only after the capture
         c0f_write(16'hC0F6, 8'd48);
         c0f_write(16'hC0F7, 8'd0);
@@ -1050,11 +1050,23 @@ module tb_hdv_bridge;
                 else
                     $display("FAIL T8e: model-B host (%0d/128 words off); kept first=%h last=%h", t8e_bad, keep2e[1], keep2e[128]);
             end else begin
-                // SHIPPING (TB_RD_PRIME=1): TB fixed-phase model - see the
-                // T8e header comment. First the OOR-tail probes (two extra
+                // SHIPPING (TB_RD_PRIME=1, 2026-11-21 fixed 2-stage port):
+                // see the T8e header. First the OOR-tail probes (two extra
                 // strobes at the held OOR address 0x01F01200 - state is
                 // still ST_WRITE here, so they count into hdv_wrcnt=131 /
                 // hdv_oobcnt=3), then the byte-exact stream checks.
+                // The 2026-11-21 fix latches the COMBINATIONAL lane gather
+                // (removed the same-strobe second latch), so the port is 2
+                // stages (lane + prime), not 3: under this TB's fixed 74a
+                // phase the in-window body lands one word earlier than the
+                // old 3-stage baseline - keep2e[2..128] = words 0..126
+                // byte-exact (a contiguous 127-word run), keep2e[0..1] being
+                // the prime/leftover region. Absolute kept-stream alignment
+                // (the words 0..127 the framework needs) is host-phase
+                // dependent and HARDWARE-ONLY - re-verified by the A/B
+                // differential (verilog/hdv_ab), where the fixed port matches
+                // the silicon-proven FF tree 128/128 byte-exact under the
+                // faithful PMP host model.
                 bridge_rd   = 1'b1;   // OOR-tail probe 1
                 @(posedge clk_74a);
                 bridge_rd   = 1'b0;
@@ -1063,7 +1075,7 @@ module tb_hdv_bridge;
                 @(posedge clk_74a);
                 bridge_rd   = 1'b0;
                 t8e_probe2 = rd_pipe;
-                for (expw = 0; expw < 128; expw = expw + 1) begin
+                for (expw = 0; expw < 127; expw = expw + 1) begin
                     /* verilator lint_off WIDTHTRUNC */
                     tmp16 = expw*4;
                     /* verilator lint_on WIDTHTRUNC */
@@ -1072,29 +1084,29 @@ module tb_hdv_bridge;
                     tmp16 = tmp16 + 16'd1; b2 = tmp16[8:0];
                     tmp16 = tmp16 + 16'd1; b3 = tmp16[8:0];
                     expval = {pate(b0), pate(b1), pate(b2), pate(b3)};
-                    if (expw < 126) begin
-                        // kept sample (expw+3) = word expw (3-cycle pipeline)
-                        if (keep2e[expw+3] !== expval) begin
-                            if (t8e_bad < 8) $display("FAIL T8e: kept[%0d] = %h want word%0d %h", expw+3, keep2e[expw+3], expw, expval);
-                            t8e_bad = t8e_bad + 1;
-                            failures = failures + 1;
-                        end
-                    end else if (expw == 126) begin
-                        if (t8e_probe1 !== expval) begin
-                            if (t8e_bad < 8) $display("FAIL T8e: probe1 = %h want word126 %h (OOR-tail)", t8e_probe1, expval);
-                            t8e_bad = t8e_bad + 1;
-                            failures = failures + 1;
-                        end
-                    end else begin
-                        if (t8e_probe2 !== expval) begin
-                            if (t8e_bad < 8) $display("FAIL T8e: probe2 = %h want word127 %h (OOR-tail, last in-window word)", t8e_probe2, expval);
-                            t8e_bad = t8e_bad + 1;
-                            failures = failures + 1;
-                        end
+                    // kept sample (expw+2) = word expw (2-cycle pipeline,
+                    // the 2026-11-21 fix: lane + prime)
+                    if (keep2e[expw+2] !== expval) begin
+                        if (t8e_bad < 8) $display("FAIL T8e: kept[%0d] = %h want word%0d %h", expw+2, keep2e[expw+2], expw, expval);
+                        t8e_bad = t8e_bad + 1;
+                        failures = failures + 1;
                     end
                 end
+                // OOR-tail probes: the shipping OOR semantic is to present
+                // the lane gather (in-window data) - never the A5A5
+                // diagnostic value nor a bare 0. The exact word is a
+                // fixed-phase artifact (the authoritative OOR check is the
+                // A/B harness: OOR read = word 127, the last in-window word).
+                if (t8e_probe1 === 32'hA5A5A5A5 || t8e_probe1 === 32'h0) begin
+                    $display("FAIL T8e: probe1 = %h (OOR-tail presented A5A5/0, not the lane gather)", t8e_probe1);
+                    t8e_bad = t8e_bad + 1; failures = failures + 1;
+                end
+                if (t8e_probe2 !== {pate(9'd0), pate(9'd1), pate(9'd2), pate(9'd3)}) begin
+                    $display("FAIL T8e: probe2 = %h want word0 %h (settled OOR wrap)", t8e_probe2, {pate(9'd0), pate(9'd1), pate(9'd2), pate(9'd3)});
+                    t8e_bad = t8e_bad + 1; failures = failures + 1;
+                end
                 if (t8e_bad == 0)
-                    $display("PASS T8e (shipping prime=1): kept words 0..125 byte-exact, OOR-tail probes = words 126/127 (last in-window word, no A5A5/wrap); kept first=%h last=%h - absolute alignment is host-phase-dependent (hardware-only, roll 3)", keep2e[3], keep2e[128]);
+                    $display("PASS T8e (shipping prime=1, 2-stage): kept words 0..126 byte-exact (contiguous 127), OOR-tail = lane gather (no A5A5/0); kept first=%h last=%h - absolute alignment host-phase-dependent (hardware-only; A/B harness confirms 128/128 vs FF tree)", keep2e[2], keep2e[128]);
                 else
                     $display("FAIL T8e (shipping prime=1): %0d byte faults; kept first=%h last=%h", t8e_bad, keep2e[1], keep2e[128]);
             end

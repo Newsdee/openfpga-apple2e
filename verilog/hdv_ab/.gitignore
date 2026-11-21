@@ -1,0 +1,9 @@
+# hdv_ab: keep only the source (bench, runner, generator, probe, README).
+# Verilator objects, generated DUT/wrapper extracts, ROM copies, and run
+# logs are throwaway - `bash run_hdv_ab.sh clean` wipes them.
+obj_*/
+work/
+build/
+rtl/
+*.log
+transcript_*.log

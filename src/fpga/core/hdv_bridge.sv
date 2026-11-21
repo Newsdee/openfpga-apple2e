@@ -93,20 +93,21 @@ module hdv_bridge #(
     //   the TB's rd_pipe models the host's registered read stage at a fixed
     //   74a phase (T8e passes byte-exact with prime=0 in sim), while the
     //   real host samples on its own clock at a placement-dependent phase.
-    //   SHIPPING CONFIG (2026-11-20, post-roll-2): RD_PRIME_STAGE=1 - the
-    //   prime FF is the host-facing stage again (exactly the 0.3.5-0.4.1
-    //   silicon-proven form: plain ALM register presenting to the host,
-    //   which the framework's prime+discard aligns to), with the M10K
-    //   registered read providing the upstream data. In the TB's fixed
-    //   phase model that is one word further from alignment than prime=0
-    //   (T8e re-baselined to an offset-agnostic integrity/contiguity check
-    //   - absolute kept-stream alignment is host-phase-dependent and
-    //   hardware-only; re-verified on silicon by the roll-3 HDV-write test).
-    //   OOR reads with prime on present the registered gather
-    //   (hdv_ram_word_ww_q): the 129th (OOR) read's sample is word 126 in
-    //   the TB model, and the gather (word 127) latched at the OOR read
-    //   surfaces at the non-existent read 130 - no OOR value ever enters
-    //   the kept 128, matching the 0.3.5 OOR behavior.
+    //   SHIPPING CONFIG: RD_PRIME_STAGE=1 - the prime FF is the
+    //   host-facing stage (exactly the 0.3.5-0.4.1 silicon-proven form: a
+    //   plain ALM register presenting to the host, which the framework's
+    //   prime+discard aligns to). 2026-11-21 (A/B differential, verilog/
+    //   hdv_ab/): the prime must latch the COMBINATIONAL lane gather at
+    //   strobe time - the lane's registered address already provides the
+    //   one upstream stage (settled at address presentation, before the
+    //   host's sample). A same-strobe second latch on top (the removed
+    //   hdv_ram_word_ww_q) over-shifted the kept stream by one word in the
+    //   faithful-PMP harness (uniform k=-1 on every read; the FF tree
+    //   samples one word behind, the double-latched M10K tree two).
+    //   OOR reads with prime on: the 129th (OOR) read's sample is word 127
+    //   (the last valid word, retained), and the value latched at the OOR
+    //   strobe surfaces at the non-existent read 130 - no OOR value ever
+    //   enters the kept 128, matching the 0.3.5 OOR behavior.
     , parameter RD_PRIME_STAGE = 1'b1
 ) (
     input  wire        clk_74a,        // bridge clock
@@ -189,8 +190,7 @@ module hdv_bridge #(
     // host's early-in-cycle sampling window does not see the M10K output
     // as a stage; see the header STAGE ACCOUNTING comment and
     // docs/PLAN_HDV_M10K_2026-11-20.md §11). OOR reads present the
-    // registered gather (last latched in-window word, one read delayed -
-    // readout comment).
+    // combinational gather through the prime (see the readout comment).
     // Port B (CLOCK1 = clk_14a): walk_in reads only (wren_b tied off),
     // same 1-cycle read; the walk_in (we, addr) pair is delayed one 14M
     // cycle (wi_we_d/wi_addr_d below) so hdd latches the IDENTICAL
@@ -417,37 +417,50 @@ module hdv_bridge #(
     // the lane RAMs' port A 1-cycle read (one clock behind the presented
     // address). SHIPPING CONFIG (2026-11-20, post HW rolls 1-2):
     // RD_PRIME_STAGE=1 - the prime FF is the host-facing stage (the
-    // 0.3.5-0.4.1 silicon-proven form); the M10K's registered read provides
-    // the upstream data. The M10K output MUST NOT be host-facing directly:
-    // with RD_PRIME_STAGE=0 the Pocket host's sampling window (early in the
-    // 74a cycle, placement-dependent) saw the M10K registered output as
-    // effectively transparent and the kept 128 landed 2 words early (roll 2:
-    // SmartportHD_test.HDV sector 2, file[x]=C[x+8] over 502/512 bytes;
-    // roll 1: different corruption shape + a hang). The sim cannot detect
-    // this - the TB samples at a fixed 74a phase (see the header comment).
+    // 0.3.5-0.4.1 silicon-proven form); it latches the COMBINATIONAL lane
+    // gather at strobe time (see the 2026-11-21 note above - a second
+    // same-strobe latch on top of the lane's registered read over-shifted
+    // the stream by one word in the A/B harness). The M10K output MUST NOT
+    // be host-facing directly: with RD_PRIME_STAGE=0 the host's sampling
+    // window (early in the 74a cycle, placement-dependent) saw the M10K
+    // registered output as effectively transparent and the kept 128 landed
+    // 2 words early (roll 2: SmartportHD_test.HDV sector 2, file[x]=C[x+8]
+    // over 502/512 bytes; roll 1: different corruption shape + a hang); the
+    // fixed-phase TB sees the same direction (k=+1 in the A/B harness).
     //
-    // OOR-READ VALUE: an out-of-window read presents the GATHER (in-window
-    // words: hdv_ram_word_ww with prime off; the registered gather
-    // hdv_ram_word_ww_q with prime on - the SHIPPING case). With prime on,
-    // the 129th (OOR) read's sample is the word latched one read earlier
-    // (word 126 in the TB model) and the gather latched at the OOR read
-    // (word 127) surfaces at the non-existent read 130 - no OOR value ever
-    // enters the kept 128, exactly the 0.3.5 OOR behavior. (OOB_ENCODE=1
-    // diagnostic mode presents the A5A5 tag at the OOR read position -
-    // one read earlier than the old port's OOR sample, acceptable in an
-    // instrumented build by definition.)
+    // OOR-READ VALUE: an out-of-window read presents the GATHER (the
+    // combinational lane gather in both prime modes). With prime on,
+    // the 129th (OOR) read's sample is word 127 (the last valid word, kept)
+    // and the value latched at the OOR read (word 127 gather, or oob_val
+    // with OOB_ENCODE=1) surfaces at the non-existent read 130 - no OOR
+    // value ever enters the kept 128, exactly the 0.3.5 OOR behavior.
+    // (OOB_ENCODE=1 diagnostic mode presents the A5A5 tag at the OOR read
+    // position - one read earlier than the old port's OOR sample, acceptable
+    // in an instrumented build by definition.)
     // Out-of-window value: the gather (shipping) or the address's
     // word index tagged with A5A5 (diagnostic build; see OOB_ENCODE).
     wire [31:0] oob_val = OOB_ENCODE ? {16'hA5A5, bridge_addr[9:2], 8'h00}
                                      : 32'h0000_0000;
     wire [31:0] hdv_ram_word_ww = {lane0_qa, lane1_qa, lane2_qa, lane3_qa};
-    reg  [31:0] hdv_ram_word_ww_q;
-    always @(posedge clk_74a)
-        if (bridge_rd)
-            hdv_ram_word_ww_q <= hdv_ram_word_ww;
+
+    // 2026-11-21 (A/B differential, verilog/hdv_ab): the prime register must
+    // latch the COMBINATIONAL lane gather at strobe time - exactly what
+    // the pre-M10K prime latched from the combinational array. An earlier
+    // revision also registered the gather (hdv_ram_word_ww_q) and, with
+    // RD_PRIME_STAGE=1, made the prime re-latch that register on the SAME
+    // strobe (same-edge NBA chain = one stage behind the lane gather):
+    // the A/B harness measured the host sample two words behind the
+    // address (uniform k=-1 on every read), while the silicon-proven FF
+    // tree samples one word behind. The lane's registered address already
+    // IS the stage that settled early (at address presentation, not at
+    // the strobe); stacking a second strobe-time latch on top of it
+    // over-shifts. With prime on, the OOR (129th) read's sample is word
+    // 127 (the last valid word, retained as kept[127]) and the value
+    // latched at the OOR strobe (word 127 gather, or oob_val with
+    // OOB_ENCODE=1) surfaces at the non-existent read 130 - identical to
+    // the 0.3.5 FF behavior (the OOR value never enters the kept 128).
     wire [31:0] hdv_ram_word_c = (rd_oob && OOB_ENCODE) ? oob_val
-                                        : (RD_PRIME_STAGE ? hdv_ram_word_ww_q
-                                                          : hdv_ram_word_ww);
+                                        : hdv_ram_word_ww;
 
     // 2026-11-07 (expert Problem 2, model B proven in sim by T8e): the
     // framework's 0x0184 DMA PRIMES one beat against the documented read
@@ -469,7 +482,12 @@ module hdv_bridge #(
     // first M10K shipping attempt and CORRUPTED HDV writes on hardware
     // (2-word-early kept stream; see the header STAGE ACCOUNTING comment):
     // the host's early-in-cycle sampling window does not see the M10K
-    // registered output as a stage. Legacy (pre-M10K combinational
+    // registered output as a stage. 2026-11-21 (A/B differential): with
+    // the M10K lane RAMs the prime must latch the COMBINATIONAL gather
+    // (hdv_ram_word_c) at strobe time - a second same-strobe latch
+    // (the removed hdv_ram_word_ww_q) over-shifted the kept stream by
+    // one word (uniform k=-1 in the faithful-PMP harness, verilog/hdv_ab).
+    // Legacy (pre-M10K combinational
     // array): 1 = the 0.3.5 shipping stage.
     reg [31:0] hdv_ram_word_q;
     always @(posedge clk_74a)
