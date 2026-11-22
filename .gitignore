@@ -28,7 +28,12 @@ sd_root/Cores/Newsdee.Apple2e/bitstream.rbf_r
 
 # --- Per-card staging, not repo content ---
 # Disk images (several are commercial software - never commit these).
-sd_root/Assets/
+# Assets: bulky media fixtures stay untracked, but the tiny .a2k joy2key
+# profiles + their README ARE source (tracked via the exceptions below).
+sd_root/Assets/*
+!sd_root/Assets/apple2e/
+sd_root/Assets/apple2e/common/*.woz
+sd_root/Assets/apple2e/common/*.hdv
 
 # --- Bitstream binaries: generated artifacts everywhere they live ---
 **/bitstream.rbf_r
