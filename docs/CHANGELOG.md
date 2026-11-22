@@ -7,6 +7,11 @@ at-a-glance index.
 
 ## Releases
 
+### 0.4.4 — 2026-11-22
+**joy2key per-slot "Custom (.a2k profile)" options (working off-switch); joy2key profiles tracked + shipped in the release.**
+
+0.4.3 plus the joy2key activation redesign: each of DPad Keys (value 5) and Fire Keys (value 3) can now select the loaded `.a2k` file as the source for its table bytes (DPad = slots 0-3, Fire = slots 4-15, mixable), and any Off/preset value ignores the file — closing the 0.4.3 gap where a loaded profile could not be switched off. One-time change: a present profile no longer auto-activates (pick Custom once after updating). The Joy2key profile set (layouts, `Game Specific\`, `Others\`, `off.a2k`, `tester.a2k`), `disk.a2k` and the Assets README become git-tracked (gitignore exception; `.woz`/`.hdv` fixtures stay out), and this is the first zip that ships the profiles. 11,226 ALM / 61 % (+19), TNS 0, pins 224/224. HW-verified 2026-11-22. See [`RELEASE_NOTES_0.4.4.md`](RELEASE_NOTES_0.4.4.md).
+
 ### 0.4.3 — 2026-11-22
 **joy2key `.a2k` profile fix (big-endian capture); WOZ load-window flux fix.**
 
