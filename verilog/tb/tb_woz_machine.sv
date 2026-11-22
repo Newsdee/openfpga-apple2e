@@ -20,6 +20,12 @@
 //   T3  machine reset (DD_RESET): mount levels held, engine self re-pulses
 //   T4  new-generation load (second 0082, different size) -> eject +
 //       remount; engine re-scans (fresh LBA-0 request after remount)
+//   T5  scan-window flux (ADDENDUM_WOZ_LOAD_IOERR_SCAN_WINDOW_2026-11-22):
+//       while mounted and the metadata scan is in flight (woz_valid low,
+//       no scan failure), the engine must NOT present bit_count=0 - a
+//       silent flux stream makes the Disk II ROM time out ("I/O ERROR").
+//       Continuous monitor over every mount/scan window in this test plus
+//       an end-of-test coverage gate (windows sampled must be > 0).
 //
 // Build (MSYS2 UCRT64, from repo root):
 //   see verilog/README.md pattern (--binary --timing)
@@ -429,6 +435,33 @@ module tb_woz_machine;
     end
 
     // ==================================================================
+    // T5: scan-window flux monitor (ADDENDUM_WOZ_LOAD_IOERR_SCAN_WINDOW)
+    //
+    // Hierarchical taps into drive 0's controller: between img_mounted
+    // rising and woz_valid (metadata scan in flight), bit_count must be
+    // non-zero so flux_drive keeps generating flux. Pre-fix this window
+    // returned bit_count=0 -> total flux silence -> RWTS timeout. The taps
+    // are combinational outputs / event-set regs of the REAL engine (no
+    // patching), sampled in the machine clock domain.
+    // ==================================================================
+    wire [31:0] t5_bit_count  = woz.drive_g[0].ctrl.bit_count;
+    wire        t5_woz_valid  = woz.drive_g[0].ctrl.woz_valid;
+    wire        t5_scan_failed = woz.drive_g[0].ctrl.scan_failed;
+    integer scanwin_samples = 0;
+    integer scanwin_silent  = 0;
+    always @(posedge clk_mach) begin
+        if (mc_img_mounted && !t5_woz_valid && !t5_scan_failed) begin
+            scanwin_samples = scanwin_samples + 1;
+            if (t5_bit_count == 32'd0) begin
+                scanwin_silent = scanwin_silent + 1;
+                if (scanwin_silent <= 4)
+                    $display("FAIL T5: scan-window silence: bit_count=0 while mounted+scanning at %0t", $time);
+                nfail = nfail + 1;
+            end
+        end
+    end
+
+    // ==================================================================
     // test sequencing
     //
     // NOTE: task arguments are value copies, NOT live aliases - a
@@ -593,6 +626,12 @@ module tb_woz_machine;
             $display("TB WOX MACHINE: FAIL nfail=%0d (bytes_checked=%0d)", nfail, bytes_checked);
             $fatal(1);
         end
+        if (scanwin_samples == 0) begin
+            $display("TB WOX MACHINE: FAIL T5 coverage: no scan-window samples observed");
+            $fatal(1);
+        end
+        $display("OK  T5: scan-window flux non-silent (%0d samples, %0d silent)",
+                 scanwin_samples, scanwin_silent);
         $display("TB WOX MACHINE: ALL PASS (nfail=0, bytes=%0d) at %0t",
                  bytes_checked, $time);
         $finish;

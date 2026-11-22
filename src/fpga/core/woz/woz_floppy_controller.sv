@@ -212,9 +212,24 @@ module woz_floppy_controller #(
         end
     endgenerate
 
+    // Scan window: media is present (img_mounted, no scan failure) but the
+    // metadata scan has not completed (woz_valid low). disk_mounted is
+    // deliberately asserted at mount, BEFORE the scan (see the disk_mounted
+    // comment below), so the ROM may already be reading. bit_count=0 in this
+    // window means flux_drive never advances -> NO flux transitions at all ->
+    // RWTS sync timeout -> "I/O ERROR" (the exact failure the garbage-flux
+    // load-window design avoids; see ADDENDUM_WOZ_LOAD_IOERR_SCAN_WINDOW).
+    // Fix: emit deterministic non-silent garbage during the scan window -
+    // a nominal 5.25" track bit_count and a transition-rich 0x96 byte pattern
+    // (freshly-zeroed BRAMs would replay silence even with a non-zero count).
+    wire scan_window = img_mounted && !scan_failed && !woz_valid;
+    localparam [31:0] SCAN_BIT_COUNT = 32'd40000; // nominal 5.25" GCR track length
+    localparam [7:0]  SCAN_FLUX_BYTE = 8'h96;     // classic GCR sync-style pattern
+
     // Use stable_side for data reads - this prevents SEL toggling during status reads
     // from causing the mux to return data from the wrong side
-    assign bit_data = (IS_35_INCH && stable_side) ? bit_data1 : bit_data0;
+    assign bit_data = scan_window ? SCAN_FLUX_BYTE :
+                      ((IS_35_INCH && stable_side) ? bit_data1 : bit_data0);
 
     // bit_count: Return the correct bit_count for the requested track.
     //
@@ -251,7 +266,8 @@ module woz_floppy_controller #(
     wire loading_matches_stable = (!IS_35_INCH) || (load_side == stable_side);
     wire [31:0] loading_bit_count = (trk_bit_count > 0 && loading_matches_stable) ? trk_bit_count : selected_bit_count;
     assign bit_count = woz_valid ? (selected_track_match ? selected_bit_count :
-                                    (is_loading ? loading_bit_count : selected_bit_count)) : 32'd0;
+                                    (is_loading ? loading_bit_count : selected_bit_count)) :
+                       (scan_window ? SCAN_BIT_COUNT : 32'd0);
 
     // FLUX track format selection - use stable_side like bit_count
     wire selected_is_flux = (IS_35_INCH && stable_side) ? is_flux_side1 : is_flux_side0;
