@@ -7,6 +7,26 @@ at-a-glance index.
 
 ## Releases
 
+### 0.4.3 — 2026-11-22
+**joy2key `.a2k` profile fix (big-endian capture); WOZ load-window flux fix.**
+
+0.4.2 plus two hardware-verified bug fixes, machine behavior otherwise
+unchanged (11,207 ALM / 61 %, TNS 0, pins 224/224). (1) joy2key `.a2k`
+profiles loaded with every 4-byte group byte-reversed: the capture
+unpacked host DMA words little-endian while the host delivers them
+big-endian (first file byte in `[31:24]`, same as the working WOZ/HDD
+paths) — profiles that map correctly on MiSTer came out cross-wired on
+the Pocket (D-pad/face/shoulder hitting each other's slots, X/Y in the
+Select layer). Found via a 16-byte label-test profile that transcribed
+the exact per-word reversal; the sim masked it for five weeks because
+the TB host model wrote LE words matching the wrong unpack (same trap
+as the 0.4.2-lineage HDV `0x0180` fix). (2) WOZ load-window flake
+(mechanism B′): between mount and `woz_valid` the controller reported
+`bit_count=0` — total flux silence, so one RWTS read attempt timed out
+into a spurious "I/O ERROR"; the scan window now presents a nominal
+40,000-bit track with a deterministic transition-rich pattern. See
+[`RELEASE_NOTES_0.4.3.md`](RELEASE_NOTES_0.4.3.md).
+
 ### 0.4.2 — 2026-11-21
 **HDV sector storage on M10K block RAM (structural placement fix); final
 beeper ladder; diagnostic console out.**
