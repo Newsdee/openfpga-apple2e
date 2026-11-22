@@ -1560,10 +1560,17 @@ reg [7:0] a2k_map [0:15];
 wire [4:0] a2k_wi = {1'b0, bridge_addr[3:0]};   // 0, 4, 8 or 12 for word writes
 always @(posedge clk_74a) begin
     if (bridge_wr && bridge_addr[31:4] == 28'h01F1000) begin  // 0x01F10000..0C
-        a2k_map[a2k_wi + 5'd0] <= bridge_wr_data[7:0];
-        a2k_map[a2k_wi + 5'd1] <= bridge_wr_data[15:8];
-        a2k_map[a2k_wi + 5'd2] <= bridge_wr_data[23:16];
-        a2k_map[a2k_wi + 5'd3] <= bridge_wr_data[31:24];
+        // Host DMA words are BIG-ENDIAN: the first file byte arrives in
+        // [31:24] (bridge_endian_little = 0; same convention as the WOZ/HDD
+        // file DMA that sdram_sector_fetch and hdv_bridge unpack). The
+        // original little-endian unpack here stored every 4-byte group
+        // byte-reversed on the real device (found 2026-11-22 via a label-test
+        // .a2k profile: every press hit a byte-reversed slot; the sim masked
+        // it because the TB host model wrote LE words matching the unpack).
+        a2k_map[a2k_wi + 5'd0] <= bridge_wr_data[31:24];
+        a2k_map[a2k_wi + 5'd1] <= bridge_wr_data[23:16];
+        a2k_map[a2k_wi + 5'd2] <= bridge_wr_data[15:8];
+        a2k_map[a2k_wi + 5'd3] <= bridge_wr_data[7:0];
     end
 end
 

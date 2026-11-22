@@ -112,6 +112,15 @@ verilator_bin --cc --timing -j 4 \
     "$ROOT/src/fpga/core/apple2e/io_sdram_pocket.v" \
     "$ROOT/src/fpga/core/apple2e/sdram_status_overlay.v" \
     "$ROOT/src/fpga/core/apple2e/speaker_i2s.v" \
+    "$ROOT/src/fpga/core/apple2e/apple2e_ram_bank.v" \
+    "$ROOT/src/fpga/core/apple2e/savestate_bridge.v" \
+    "$ROOT/src/fpga/core/apple2e/savestate_slot.v" \
+    "$ROOT/src/fpga/core/apple2e/savestate_manager.sv" \
+    "$ROOT/src/fpga/core/sound/floppy_sound.sv" \
+    "$ROOT/src/fpga/ip/debug_key.v" \
+    "$ROOT/src/fpga/core/mockingboard/mockingboard.v" \
+    "$ROOT/src/fpga/core/mockingboard/YM2149.sv" \
+    "$ROOT/src/fpga/core/mockingboard/via6522.v" \
     "$ROOT/src/fpga/core/woz/disk_ii_rom.v" \
     "$ROOT/src/fpga/core/hdd.v" \
     "$ROOT/src/fpga/core/hdd_rom.v" \

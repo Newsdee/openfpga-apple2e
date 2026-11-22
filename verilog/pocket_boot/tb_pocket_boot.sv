@@ -1613,12 +1613,15 @@ module tb_pocket_boot;
             hb_wr(32'h01F00008, 32'd2);
             hb_wr(32'h01F0000C, 32'd2);
             // File bytes: dir C/D/E/F, A/B = S/T, +Sel A/B = W/X.
-            // The host DMAs with 32-bit LITTLE-ENDIAN word writes (file byte i
-            // in data[8*(i%4)]), so model the real write stream - byte-wise
-            // writes would hide the low-byte-only capture bug (2026-10-27).
-            hb_wr(32'h01F1_0000, 32'h46454443);  // bytes 0-3:  C D E F
-            hb_wr(32'h01F1_0004, 32'h00005453);  // bytes 4-7:  S T . .
-            hb_wr(32'h01F1_0008, 32'h58570000);  // bytes 8-11: . . W X
+            // The host DMAs with 32-bit BIG-ENDIAN word writes (first byte of
+            // each 4-byte group in data[31:24]) - the real convention
+            // (bridge_endian_little = 0; matches the WOZ/HDD unpack in
+            // sdram_sector_fetch / hdv_bridge). The LE words previously here
+            // matched the RTL's wrong LE unpack and masked the on-device word
+            // reversal (found in hardware 2026-11-22).
+            hb_wr(32'h01F1_0000, 32'h43444546);  // bytes 0-3:  C D E F
+            hb_wr(32'h01F1_0004, 32'h53540000);  // bytes 4-7:  S T . .
+            hb_wr(32'h01F1_0008, 32'h00005758);  // bytes 8-11: . . W X
             hb_wr(32'h01F1_000C, 32'h00000000);  // bytes 12-15: . . . .
             // declare the slot (id 3, size 16) - the poller picks this up
             // at the entry-1 size sample = the LAST tick of a full scan
@@ -1662,7 +1665,7 @@ module tb_pocket_boot;
             $display("TB: J2K a2k file overrides preset OK (46/53/57) t_ms=%0.3f", $time/1e6);
             // reload on byte change (the a2k_changed path): up -> G.
             // The host re-DMAs the whole file, so rewrite word 0.
-            hb_wr(32'h01F1_0000, 32'h47454443);
+            hb_wr(32'h01F1_0000, 32'h43444547);
             #300_000;
             j2k_press(32'd1, jk_code, jk_seen);
             if (!jk_seen || jk_code !== 7'h47)
