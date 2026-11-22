@@ -1783,9 +1783,12 @@ function [7:0] j2k_table_byte;
                 3'd3:    j2k_table_byte = (byt == 4'd0) ? 8'h4B :
                                        (byt == 4'd1) ? 8'h4A :
                                        (byt == 4'd2) ? 8'h4D : 8'h49;
-                default: j2k_table_byte = (byt == 4'd0) ? 8'h15 :
+                3'd4:    j2k_table_byte = (byt == 4'd0) ? 8'h15 :
                                        (byt == 4'd1) ? 8'h08 :
                                        (byt == 4'd2) ? 8'h5A : 8'h41;
+                default: j2k_table_byte = 8'h00;   // 5 = Custom (.a2k):
+                                                   // preset path unused;
+                                                   // 6-7 reserved, blank
             endcase
         end else begin
             // Both presets carry a Select layer (2026-10-27): holding
@@ -1793,8 +1796,8 @@ function [7:0] j2k_table_byte;
             //   preset 1: A/B = U/O,  +Select = Space/Return
             //   preset 2: A/B = Space/Return, +Select = Y/N
             // The old preset 3 ("U/O + Select") was absorbed into preset 1
-            // and is gone from the option list; out-of-range values (3-7)
-            // stay blank.
+            // and is gone from the option list; 3 is now "Custom (.a2k
+            // profile)" (preset path unused for custom) and 4-7 stay blank.
             case (btn)
                 3'd0:    j2k_table_byte = 8'h00;
                 3'd1:    j2k_table_byte = (byt == 4'd4)  ? 8'h55 :
@@ -1837,14 +1840,26 @@ always @(*) begin
         default: j2k_a2k_byte = j2k_ld_a2k[127:120];
     endcase
 end
-wire [7:0] j2k_byte = j2k_ld_a2k_present ? j2k_a2k_byte : j2k_preset_byte;
+// Source selection (2026-11-22): each option independently chooses where
+// its table bytes come from. DPad Keys (bytes 0-3): value 5 =
+// "Custom (.a2k profile)" -> the loaded file, blank if absent. Fire Keys
+// (bytes 4-15): value 3 = "Custom (.a2k profile)" -> the loaded file,
+// blank if absent. Any non-Custom value uses the preset table and ignores
+// the file, so Off / any preset is a working off-switch for a loaded
+// profile (and mixes freely: e.g. profile dpad + preset fire keys).
+wire j2k_dir_custom = (j2k_ld_dir == 3'd5);
+wire j2k_btn_custom = (j2k_ld_btn == 3'd3);
+wire [7:0] j2k_file_byte = j2k_ld_a2k_present ? j2k_a2k_byte : 8'h00;
+wire [7:0] j2k_byte = (j2k_cnt[3:0] < 4'd4) ?
+    (j2k_dir_custom ? j2k_file_byte : j2k_preset_byte) :
+    (j2k_btn_custom ? j2k_file_byte : j2k_preset_byte);
 
 // Enable: off while the OSK is open (the face buttons are the OSK's then -
 // the same ~osk_visible term the paddle path uses, so the two paths cannot
-// disagree), and off while both presets are Off AND no .a2k file is
-// present. A present file is itself the enable.
-wire j2k_en = ~osk_visible & ((j2k_dir_m != 3'd0) | (j2k_btn_m != 3'd0) |
-                              a2k_present_m);
+// disagree). A loaded .a2k file no longer forces the enable: it is only
+// live in Custom mode (DPad=5 and/or Fire=3, both non-zero), so Off / any
+// preset is a working switch for a loaded profile.
+wire j2k_en = ~osk_visible & ((j2k_dir_m != 3'd0) | (j2k_btn_m != 3'd0));
 
 wire [6:0] j2k_key_code;
 wire       j2k_key_press;

@@ -178,6 +178,10 @@
           {
             "value": 4,
             "name": "A/Z/left/right"
+          },
+          {
+            "value": 5,
+            "name": "Custom (.a2k profile)"
           }
         ]
       },
@@ -202,6 +206,10 @@
           {
             "value": 2,
             "name": "Space / Return"
+          },
+          {
+            "value": 3,
+            "name": "Custom (.a2k profile)"
           }
         ]
       },

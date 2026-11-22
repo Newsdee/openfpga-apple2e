@@ -1603,15 +1603,31 @@ module tb_pocket_boot;
         $display("TB: J2K kbd.joy_valid + latched 49 OK (macro in, end-to-end) t_ms=%0.3f", $time/1e6);
 
         // (6) .a2k profile slot (data.json id 3 @0x01F10000, Phase 2):
-        //     the file REPLACES the whole 16-byte table, overriding the
-        //     presets; size->0 (remount without file) drops back to presets.
-        //     Datatable words (declaration order): 0/1 = disk slot,
-        //     2/3 = a2k slot (id / size in bytes); bridge 0xF8xx2xxx.
+        //     per-slot source selection (2026-11-22): DPad Keys = 5 or
+        //     Fire Keys = 3 ("Custom (.a2k profile)") takes that slot's
+        //     bytes from the loaded file (blank if absent); every other
+        //     value uses the preset and ignores the file, so Off / any
+        //     preset is a working off-switch for a loaded profile.
+        //     size->0 (remount without file) drops presence. Datatable
+        //     words (declaration order): 0/1 = disk slot, 2/3 = a2k slot
+        //     (id / size in bytes); bridge 0xF8xx2xxx.
         begin : j2k_a2k
-            // fallback presets while the file is absent:
+            // baseline presets:
             //   dir=2 (IJKL: up=49), btn=2 (Space/Return: A=20, +Sel A=59)
             hb_wr(32'h01F00008, 32'd2);
             hb_wr(32'h01F0000C, 32'd2);
+            // Both slots Custom, no file loaded: joy2key must be fully off
+            // (dpad AND face bytes both blank).
+            hb_wr(32'h01F00008, 32'd5);
+            hb_wr(32'h01F0000C, 32'd3);
+            #500_000;
+            j2k_press(32'd1, jk_code, jk_seen);
+            if (jk_seen)
+                $fatal(1, "TB: J2K Custom w/o file up emitted %02h - must be off", jk_code);
+            j2k_press(32'h10, jk_code, jk_seen);
+            if (jk_seen)
+                $fatal(1, "TB: J2K Custom w/o file A emitted %02h - must be off", jk_code);
+            $display("TB: J2K Custom w/o file = off OK t_ms=%0.3f", $time/1e6);
             // File bytes: dir C/D/E/F, A/B = S/T, +Sel A/B = W/X.
             // The host DMAs with 32-bit BIG-ENDIAN word writes (first byte of
             // each 4-byte group in data[31:24]) - the real convention
@@ -1662,9 +1678,28 @@ module tb_pocket_boot;
             if (!jk_seen || jk_code !== 7'h57)
                 $fatal(1, "TB: J2K a2k A+Sel -> seen=%b code=%02h, expected 57 (file layer, not preset 59)",
                        jk_seen, jk_code);
-            $display("TB: J2K a2k file overrides preset OK (46/53/57) t_ms=%0.3f", $time/1e6);
-            // reload on byte change (the a2k_changed path): up -> G.
-            // The host re-DMAs the whole file, so rewrite word 0.
+            $display("TB: J2K a2k Custom + file table OK (46/53/57) t_ms=%0.3f", $time/1e6);
+            // Off-switch: with the profile still loaded (size 16), any
+            // non-Custom values on both options must ignore the file and
+            // use the presets (this is how a loaded profile gets turned
+            // off).
+            hb_wr(32'h01F00008, 32'd2);
+            hb_wr(32'h01F0000C, 32'd2);
+            #500_000;
+            j2k_press(32'd1, jk_code, jk_seen);
+            if (!jk_seen || jk_code !== 7'h49)
+                $fatal(1, "TB: J2K file-ignored up -> seen=%b code=%02h, expected 49 (preset IJKL)",
+                       jk_seen, jk_code);
+            j2k_press(32'h10, jk_code, jk_seen);
+            if (!jk_seen || jk_code !== 7'h20)
+                $fatal(1, "TB: J2K file-ignored A -> seen=%b code=%02h, expected 20 (preset Space)",
+                       jk_seen, jk_code);
+            $display("TB: J2K loaded profile ignored outside Custom (49/20) OK t_ms=%0.3f", $time/1e6);
+            // reload on byte change (the a2k_changed path): back to both
+            // Custom, up -> G. The host re-DMAs the whole file, so rewrite
+            // word 0.
+            hb_wr(32'h01F00008, 32'd5);
+            hb_wr(32'h01F0000C, 32'd3);
             hb_wr(32'h01F1_0000, 32'h43444547);
             #300_000;
             j2k_press(32'd1, jk_code, jk_seen);
@@ -1690,6 +1725,17 @@ module tb_pocket_boot;
                 $display("TB: J2K a2k size word readback 0 OK t_ms=%0.3f", $time/1e6);
             end
             #2_000_000;
+            // still both Custom, file gone -> off again (dpad AND face).
+            j2k_press(32'd1, jk_code, jk_seen);
+            if (jk_seen)
+                $fatal(1, "TB: J2K Custom after unmount up emitted %02h - must be off", jk_code);
+            j2k_press(32'h10, jk_code, jk_seen);
+            if (jk_seen)
+                $fatal(1, "TB: J2K Custom after unmount A emitted %02h - must be off", jk_code);
+            // back to presets -> fully restored.
+            hb_wr(32'h01F00008, 32'd2);
+            hb_wr(32'h01F0000C, 32'd2);
+            #500_000;
             j2k_press(32'd1, jk_code, jk_seen);
             if (!jk_seen || jk_code !== 7'h49)
                 $fatal(1, "TB: J2K a2k absent -> seen=%b code=%02h, expected 49 (preset IJKL up)",
@@ -1698,7 +1744,7 @@ module tb_pocket_boot;
             if (!jk_seen || jk_code !== 7'h20)
                 $fatal(1, "TB: J2K a2k absent A -> seen=%b code=%02h, expected 20 (preset Space)",
                        jk_seen, jk_code);
-            $display("TB: J2K a2k absent -> presets restored OK (49/20) t_ms=%0.3f", $time/1e6);
+            $display("TB: J2K a2k absent -> Custom off, presets restored OK t_ms=%0.3f", $time/1e6);
         end
 
         // restore defaults (Off/Off)
