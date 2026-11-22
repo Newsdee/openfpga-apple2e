@@ -129,6 +129,17 @@ are reverted for shipping. See [`RELEASE_NOTES_0.3.5.md`](RELEASE_NOTES_0.3.5.md
 - Joystick relative mode (0.3.1 feature).
 - Video & identity fixes (0.3.0). See [`RELEASE_NOTES_0.3.2.md`](RELEASE_NOTES_0.3.2.md).
 
+## Maintenance notes
+
+- **2026-11-22 — M10K transport placement sensitivity: gate closed.** The
+  host→machine transport placement sensitivity tracked since 0.4.1 (structural
+  fix in 0.4.2: the ~4,096-FF `hdv_ram` sector array - the largest non-video
+  monolith in the suspect region - split into four 128×8 M10K lanes) is
+  hardware-cleared: consecutive clean rolls through 0.4.2 → 0.4.4,
+  user-confirmed 2026-11-22. The companion "shared transport region /
+  HW-gated ships" caveat (0.4.2) closes with it. No longer carried as a
+  known issue in future releases.
+
 ## Milestone history (build-up)
 
 The core was brought up in phases (as of 2026-10-19; the "Phase 2 streaming" core is
