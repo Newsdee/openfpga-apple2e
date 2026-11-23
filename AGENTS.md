@@ -78,7 +78,7 @@ sd_root/                      EXACT card layout - copy to the Pocket SD root
   Cores/Newsdee.Apple2e/   all manifests + bitstream.rbf_r
   Platforms/apple2e.json
 docs/                         plans, briefs, expert reviews, handovers
-refs/                         reference material: basicassets/, nes-pocket/
+refs/                         reference material: basicassets/ (nes-pocket/ moved to docs/refs/ 2026-11-22)
 check_machine_sync.sh         pinned-file parity check vs the donor
 apf_apple2_build.bat    full compile + stage; errors on root-level manifests
 repackage.bat                 bitstream-only repackaging
