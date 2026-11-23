@@ -22,6 +22,7 @@ joystick and paddle support, a docked USB keyboard, and seven colour presets.
 - **On-screen keyboard** — press **START** to open a full Apple II keyboard on screen.
 - **Joystick & paddles** — the d-pad and face buttons drive the Apple II paddle port,
   so both digital and analog (paddle) games work; there are options to calibrate the analog stick.
+  **Mockingboard Sound card** - you can run games with Mockingboard sound support (Berzap, Zaxxon, etc.)
 - **Docked USB keyboard** — the Pocket dock's physical keyboard works as a PS/2 Apple
   keyboard.
 - **Colour presets** — NTSC //e, Old TV, AppleWin, Muted Sharp, Monochrome, Green, Amber.
@@ -134,16 +135,17 @@ files.
 
 This core builds on a long lineage of Apple IIe work:
 
-- **Stephen Edwards** — the original Apple II+ core (Altera DE2); the root of the machine.
-- **Gyurco** — the original MiST port, and many later improvements.
-- **Sorgelig / Alexey Melnikov** — the MiSTer framework the machine was ported under.
-- **Kitrinx** — the 6502 / 65C02 CPU code and the NTSC colour encoding.
-- **AlanSWX** — WOZ floppy support (the Disk II drive).
-- **Steven A. Wilson** — the ProDOS hard-disk (HDV) interface.
-- **Newsdee** — this Pocket port, on-screen keyboard, colour tuning and presets, and the main curator of the MiSTer FPGA Apple2 core.
-- **Analogue** — the openFPGA `core-template` APF shell the core is built on.
+- **Stephen Edwards** - the original Apple II+ core (Altera DE2); the root of the machine.
+- **Gyurco** - the original MiST port, and many later improvements.
+- **Sorgelig / Alexey Melnikov** - the MiSTer framework the machine was ported under.
+- **Wsoltys** - original Mockingboard implementation
+- **Kitrinx** - the 6502 / 65C02 CPU code and the NTSC colour encoding.
+- **AlanSWX** - WOZ floppy support (the Disk II drive).
+- **Steven A. Wilson** - the ProDOS hard-disk (HDV) interface.
+- **Newsdee** - this Pocket port, on-screen keyboard, colour tuning and presets, and the main curator of the MiSTer FPGA Apple2 core.
+- **Analogue** - the openFPGA `core-template` APF shell the core is built on.
 
-The MiSTer core's Mockingboard, Saturn, Super Serial, and Mouse cards are not part of
+The MiSTer core's Saturn RAM adapter, Super Serial Card, and Mouse cards are not part of
 this core, so they are not credited here.
 
 ## For developers
