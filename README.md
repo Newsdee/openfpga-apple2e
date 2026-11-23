@@ -14,15 +14,14 @@ joystick and paddle support, a docked USB keyboard, and seven colour presets.
 ## What it does
 
 - **Boots real Apple IIe software** — a 65C02 CPU with the standard Applesoft + Monitor
-  ROMs, 64K of RAM. Load a floppy or a hard disk and it runs.
+  ROMs, 128K of RAM.
 - **Floppy disk** — mount a WOZ (`.woz`) Disk II image. Currently **read-only**
-  (write-back — saves to the image — is in development).
-- **Hard disk** — mount a ProDOS `.hdv` image (up to 2 GiB). Readable **and writable**
-  (since 0.3.5). It appears to the machine as the hard-disk volume (ProDOS volume 2 /
-  the DOS "HD" drive).
+  (write-back - saves to the image - is in development).
+- **Hard disk** — mount a ProDOS `.hdv` image (up to 32MiB). Readable **and writable**
+  (since 0.3.5). 
 - **On-screen keyboard** — press **START** to open a full Apple II keyboard on screen.
 - **Joystick & paddles** — the d-pad and face buttons drive the Apple II paddle port,
-  so both digital and analog (paddle) games work.
+  so both digital and analog (paddle) games work; there are options to calibrate the analog stick.
 - **Docked USB keyboard** — the Pocket dock's physical keyboard works as a PS/2 Apple
   keyboard.
 - **Colour presets** — NTSC //e, Old TV, AppleWin, Muted Sharp, Monochrome, Green, Amber.
