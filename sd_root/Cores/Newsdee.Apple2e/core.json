@@ -7,7 +7,7 @@
             "description": "Apple IIe (native 560x192 streaming raster, no frame buffer; WOZ floppy drive via Pocket SDRAM, on-screen keyboard; NTSC color; APF sync contract fix; merged Color Preset option; diagnostics hidden while keyboard is open; joy2key gamepad-to-keystroke presets or .a2k profiles (per-slot Custom option, off.a2k off-profile); docked USB HID keyboard, Player-3 slot; savestate save/load; Mockingboard card (slot 4) with volume slider; synthesized floppy drive sound; per-source volume ladders (Mockingboard/floppy/beeper))",
             "author": "Newsdee",
             "url": "https://github.com/Newsdee",
-            "version": "0.4.4",
+            "version": "0.4.5",
             "date_release": "2026-11-22"
         },
         "framework": {

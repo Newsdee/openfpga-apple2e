@@ -166,3 +166,5 @@ verilog/rtl/
 # bulky Quartus detailed reports - keep summaries only
 builds/*/apf_apple2.fit.rpt
 builds/*/apf_apple2.map.rpt
+verilog/obj_mb_*/
+output_files_apple2e_staged/

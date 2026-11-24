@@ -2337,9 +2337,19 @@ wire [7:0]  woz_dout;    // engine D_OUT (ROM on IO_SELECT, data reg elsewhere)
 wire        woz_sd_rd, woz_sd_wr;
 wire [31:0] woz_sd_lba;
 wire        woz_sd_ack;
-wire [8:0]  woz_sd_buff_addr;
+// 14-bit: [13:9] = block index within a multi-block track read. The ported
+// controller (PLAN_WOZ_GS_MULTIBLOCK step 2) drives all 14 bits; the 0.4.4
+// single-block transport consumes [8:0] only, and [13:9] read as 0 keeps the
+// engine's rd_blk_index = blocks_processed (byte-exact 0.4.4 behavior).
+wire [13:0] woz_sd_buff_addr;
+wire [5:0]  woz_sd_blk_cnt0, woz_sd_blk_cnt1;  // blocks-1 per drive (track reads)
 wire [7:0]  woz_sd_buff_dout, woz_sd_buff_din;
 wire        woz_sd_buff_wr;
+// Drive 1 has no Pocket transport service (drive 0 only); its SD outputs are
+// explicitly wired (plan step 2) so nothing dangles off the controller.
+wire [31:0] woz_sd_lba1;
+wire        woz_sd_rd1, woz_sd_wr1;
+wire [7:0]  woz_sd_buff_din1;
 wire        woz_wr_fault, woz_oor_fault, woz_transport_fault;
 wire        mc_img_mounted;
 wire [63:0] mc_img_size;
@@ -2477,9 +2487,13 @@ disk_ii_woz woz (
     .SD_WR0          ( woz_sd_wr ),
     .SD_ACK0         ( woz_sd_ack ),
     .SD_BUFF_DIN0    ( woz_sd_buff_din ),
-    .SD_LBA1         ( ), .SD_RD1 ( ), .SD_WR1 ( ),
+    .SD_BLK_CNT0     ( woz_sd_blk_cnt0 ),
+    .SD_LBA1         ( woz_sd_lba1 ),
+    .SD_RD1          ( woz_sd_rd1 ),
+    .SD_WR1          ( woz_sd_wr1 ),
     .SD_ACK1         ( 1'b0 ),
-    .SD_BUFF_DIN1    ( ),
+    .SD_BUFF_DIN1    ( woz_sd_buff_din1 ),
+    .SD_BLK_CNT1     ( woz_sd_blk_cnt1 ),
     .SD_BUFF_ADDR    ( woz_sd_buff_addr ),
     .SD_BUFF_DOUT    ( woz_sd_buff_dout ),
     .SD_BUFF_WR      ( woz_sd_buff_wr ),
@@ -2489,6 +2503,12 @@ disk_ii_woz woz (
     .IMG_SIZE        ( mc_img_size )
 );
 
+// PLAN_WOZ_GS_MULTIBLOCK bisection build A (2026-11-24): ported controller
+// + TMAP guard, but the 0.4.4 single-block transport - isolates whether the
+// burst transport or the ported controller breaks the disk-load path on
+// hardware. sd_buff_addr is 14-bit at the top; the single-block transport
+// consumes [8:0] only and [13:9] read as 0 (byte-exact 0.4.4 transport
+// behavior).
 sdram_woz_transport woz_tr (
     .clk            ( clk_core_14318 ),
     .rst_n          ( ~sdram_path_rst ),
@@ -2496,7 +2516,7 @@ sdram_woz_transport woz_tr (
     .sd_lba         ( woz_sd_lba ),
     .sd_ack         ( woz_sd_ack ),
     .sd_wr          ( woz_sd_wr ),
-    .sd_buff_addr   ( woz_sd_buff_addr ),
+    .sd_buff_addr   ( woz_sd_buff_addr[8:0] ),   // 0.4.4 single-block transport: byte address only
     .sd_buff_din    ( woz_sd_buff_din ),
     .sd_buff_wr     ( woz_sd_buff_wr ),
     .sd_buff_dout   ( woz_sd_buff_dout ),
