@@ -1258,11 +1258,39 @@ always @(posedge clk_core_14318) begin
 end
 wire ntsc_vbl_aligned = vbl_align_pipe[VBL_ALIGN];
 
+// ---- HBL window alignment for decoded content (2026-11-25, edge probe) ----
+// Measured with verilog/edge_probe (PLAN_VIDEO_40COL_ENCODER_EDGE): the
+// donor hshift_idx tap (HSHIFT_COMP-8, video_pipeline_q17.sv:284) is MiSTer
+// vga_controller calibration; with the Pocket adapter's level-window DE
+// (!hbl && !vbl) the decoded picture lands 6 samples RIGHT of the DE window
+// in every mode and preset: 6-sample black strip left, right edge cropped.
+// Fix in Pocket glue only (donor/q17 stay byte-pinned): delay the pipeline
+// HBL by HBL_ALIGN so the window starts where the decoded content starts.
+// Same pattern as VBL_ALIGN above. Post-fix expectation: marker windows at
+// DE samples 0/266/280/546 (40-col), 0/364/532 (HGR); one contiguous
+// 560-sample DE run; HS/VS structure unchanged (6 ticks later).
+//
+// HGR80 (DHGR) is EXEMPT (2026-11-26, hardware-confirmed): its donor tap
+// already differs (-1 vs -8, "aligns its CTV content to x0"), so it was
+// aligned before this fix. Applying the extra 6-clock delay shifted DHGR
+// 6 samples left on hardware: ~3 black pixels on the right edge
+// (K:\Memories\Screenshots\20261126_102930.png) while 40-col text/GR
+// measured fixed. Zero delay for HGR80 restores its pre-fix alignment.
+// Mode switches take effect within a line; a one-line transient during a
+// soft-switch change is acceptable (any mode change repaints anyway).
+localparam HBL_ALIGN = 6;
+reg [HBL_ALIGN-1:0] hbl_align_pipe;
+always @(posedge clk_core_14318) begin
+    if (machine_reset) hbl_align_pipe <= {HBL_ALIGN{1'b1}};
+    else               hbl_align_pipe <= {hbl_align_pipe[HBL_ALIGN-2:0], ntsc_hbl};
+end
+wire ntsc_hbl_aligned = m_hgr80_mode ? ntsc_hbl : hbl_align_pipe[HBL_ALIGN-1];
+
 // ---- selected video: RGB and its OWN blanking always travel together ----
 // Plan section 4: do not combine delayed decoded RGB with raw machine blanking.
 wire [23:0] mono_rgb = m_video ? 24'hFFFFFF : 24'h000000;
 wire [23:0] sel_rgb  = NTSC_EN ? ntsc_rgb : mono_rgb;
-wire        sel_hbl  = NTSC_EN ? ntsc_hbl : m_hbl;
+wire        sel_hbl  = NTSC_EN ? ntsc_hbl_aligned : m_hbl;
 wire        sel_vbl  = NTSC_EN ? ntsc_vbl_aligned : m_vbl;
 
 // ---- OSK (buttons -> keystrokes; overlay over the native video) ----
