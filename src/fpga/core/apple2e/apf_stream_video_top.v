@@ -1270,12 +1270,22 @@ wire ntsc_vbl_aligned = vbl_align_pipe[VBL_ALIGN];
 // DE samples 0/266/280/546 (40-col), 0/364/532 (HGR); one contiguous
 // 560-sample DE run; HS/VS structure unchanged (6 ticks later).
 //
-// HGR80 (DHGR) is EXEMPT (2026-11-26, hardware-confirmed): its donor tap
-// already differs (-1 vs -8, "aligns its CTV content to x0"), so it was
-// aligned before this fix. Applying the extra 6-clock delay shifted DHGR
-// 6 samples left on hardware: ~3 black pixels on the right edge
-// (K:\Memories\Screenshots\20261126_102930.png) while 40-col text/GR
-// measured fixed. Zero delay for HGR80 restores its pre-fix alignment.
+// Exemption keyed on EARLY_VIDEO, not HGR80_MODE (round 3, 2026-11-26).
+// Round 2 bypassed the delay for m_hgr80_mode only, and hardware confirmed
+// that improved the DHGR quirk state - but 16-colour DHGR
+// (HIRES + DHIRES + COL80 ON) reads HGR80_MODE=0 / COL80=1 (measured,
+// verilog/edge_probe/run_dhgr16.out), so it kept the +6 and stayed shifted
+// left. The donor assigns the early/720 grid to EARLY_VIDEO =
+// COL80 | (HIRES_MODE & DHIRES_MODE) (machine/apple2.v:451), which covers
+// DHGR-16, the quirk state, and 80-col text. Using it here also gives the
+// donor's exported EARLY_VIDEO flag a Pocket consumer: on MiSTer its only
+// user is vga_controller ("shifts its window 7 samples left when set"),
+// which is dead code at use_composite=1.
+// TEXT80 is also EARLY_VIDEO=1 and returns to its round-1 window, which
+// hardware round 1 confirmed good.
+// Caveat: the sim DHGR-16 fixture did not reproduce the 7-tick interleaved
+// fetch (serializer ran plain-HGR 14-tick pitch), so DHGR-16's exact
+// residual offset is NOT sim-measured - hardware A/B decides this mode.
 // Mode switches take effect within a line; a one-line transient during a
 // soft-switch change is acceptable (any mode change repaints anyway).
 localparam HBL_ALIGN = 6;
@@ -1284,7 +1294,7 @@ always @(posedge clk_core_14318) begin
     if (machine_reset) hbl_align_pipe <= {HBL_ALIGN{1'b1}};
     else               hbl_align_pipe <= {hbl_align_pipe[HBL_ALIGN-2:0], ntsc_hbl};
 end
-wire ntsc_hbl_aligned = m_hgr80_mode ? ntsc_hbl : hbl_align_pipe[HBL_ALIGN-1];
+wire ntsc_hbl_aligned = m_early_video ? ntsc_hbl : hbl_align_pipe[HBL_ALIGN-1];
 
 // ---- selected video: RGB and its OWN blanking always travel together ----
 // Plan section 4: do not combine delayed decoded RGB with raw machine blanking.

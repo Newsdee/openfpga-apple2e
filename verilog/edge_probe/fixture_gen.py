@@ -187,6 +187,31 @@ def build_gr():
     a.resolve()
     return a
 
+def _hgr_markers(a):
+    # clear $2000-$3FFF via zero-page indirect indexed, then write the
+    # marker bytes at hgr_off(80) = $828 (appears at line_cnt 67; see
+    # RESULTS.md coordinate caveat)
+    a.lda_imm(0x00)
+    a.sta_zp(0x02)
+    a.lda_imm(0x20)
+    a.sta_zp(0x03)
+    a.ldx_imm(0x20)
+    a.ldy_imm(0x00)
+    a.label("clrh")
+    a.emit(0x92, 0x02)          # STA ($02),Y
+    a.iny()
+    a.bne("clrh")
+    a.emit(0xE6, 0x03)          # INC $03
+    a.emit(0xCA)                # DEX
+    a.bne("clrh")
+    off = hgr_off(80)
+    for b in (0, 1, 26, 27, 38, 39):
+        store_pair(a, 0x2000 + off + b, 0x7F)
+
+def hgr_off(line):
+    # HGR: $80*(L&7) + $400*((L>>3)&7) + $28*(L>>6)  (NOT the text-row form)
+    return (line & 7) * 0x80 + ((line >> 3) & 7) * 0x400 + (line >> 6) * 0x28
+
 def build_t40():
     a = Asm()
     prologue(a)
@@ -224,9 +249,22 @@ def build_t80():
     a.resolve()
     return a
 
-def build_hgr(dhgr=False):
+def build_hgr(dhgr=False, col80=False):
     a = Asm()
     prologue(a)
+    if col80:
+        # 16-color DHGR: HIRES + DHIRES + COL80 ON + ~TEXT (EARLY_VIDEO=1,
+        # HGR80_MODE=0). Aux page first (WRMAIN off), then main page.
+        soft(a, ALTCHAROFF, STORE80OFF, PAGE1, TEXTCLR, MIXCLR, HIRES)
+        a.sta_abs(COL80ON)
+        a.bit_abs(0xC05F)   # DHIRES on
+        a.sta_abs(WRMAIN_OFF)
+        _hgr_markers(a)
+        a.sta_abs(WRMAIN_ON)
+        _hgr_markers(a)
+        finish(a)
+        a.resolve()
+        return a
     if dhgr:
         # DHGR quirk state: HIRES + DHIRES(AN3 on, $C05F) + ~TEXT + ~COL80
         soft(a, COL80OFF, ALTCHAROFF, STORE80OFF, PAGE1,
@@ -274,7 +312,8 @@ def build_hgr(dhgr=False):
 def main():
     outdir = os.path.dirname(os.path.abspath(__file__))
     builds = {"gr": build_gr, "t40": build_t40, "t80": build_t80,
-              "hgr": build_hgr, "dhgr": lambda: build_hgr(dhgr=True)}
+              "hgr": build_hgr, "dhgr": lambda: build_hgr(dhgr=True),
+              "dhgr16": lambda: build_hgr(col80=True)}
     for name, fn in builds.items():
         a = fn()
         hexpath = os.path.join(outdir, f"fixture_{name}.hex")

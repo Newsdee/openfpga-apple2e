@@ -29,16 +29,21 @@ if not "%CAPLINE%"=="" goto :havecap
 if "%MODE%"=="gr"  set CAPLINE=67
 if "%MODE%"=="t40" set CAPLINE=83
 if "%MODE%"=="t80" set CAPLINE=83
-if "%MODE%"=="hgr" set CAPLINE=80
-if "%MODE%"=="dhgr" set CAPLINE=80
+if "%MODE%"=="hgr" set CAPLINE=67
+if "%MODE%"=="dhgr" set CAPLINE=67
+if "%MODE%"=="dhgr16" set CAPLINE=67
 :havecap
 
 set MEXP=0,13;266,279;280,293;546,559
+rem gr col19 is $F0 (white row 8 / black row 9): the captured scanline shows
+rem the dark nibble, so window 266..279 is expected dark - omit it.
+if "%MODE%"=="gr" set MEXP=0,13;280,293;546,559
 if "%MODE%"=="hgr" set MEXP=0,27;364,391;532,559
 if "%MODE%"=="t80" set MEXP=0,6;266,272;546,552;553,559
 rem dhgr: no marker scoreboard (different pixel grid + line map); the
 rem left-edge timeline + DE geometry are the measurement here.
 if "%MODE%"=="dhgr" set MEXP=
+if "%MODE%"=="dhgr16" set MEXP=
 
 set PATH=C:\msys64\tmp\makeshim;C:\msys64\ucrt64\bin;C:\msys64\usr\bin;%PATH%
 set TMP=C:\msys64\tmp

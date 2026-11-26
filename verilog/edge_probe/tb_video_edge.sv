@@ -676,7 +676,7 @@ module tb_video_edge;
         end
         if (dlscan_on && frame_new) begin
             dls_frames = dls_frames + 1;
-            if (dls_frames == 2) begin
+            if (dls_frames == 4) begin
                 for (si = 0; si < 256; si = si + 1)
                     if (|dls_mask[si])
                         $display("DLSCAN line=%0d bytes=%h", si, dls_mask[si]);
