@@ -160,6 +160,18 @@ whose comments record a prior purple-seam incident at FRONT_PORCH=124) ->
 owner decision required; hardware A/B should check whether real panels show
 a dark last 80-col column today.
 
+**Owner hardware check (2026-11-26): "it seems OK, at least for now"** - the
+last-cell drop is not visibly objectionable on the panel, so NO change is
+proposed and the donor constants stay untouched. Scope clarified by
+measurement: this is a 7-tick-cell (80-column grid) effect, NOT text-
+specific - it applies to TEXT80 and DHGR-16 (both EARLY_VIDEO), while
+40-col modes (TEXT40/GR/HGR) serialize 14-tick cells ending inside the
+machine window and measured clean through sample 559. In DHGR-16 only the
+rightmost ~4 colour pixels are involved, which is why it is hard to see
+without an image lit flush to the right edge. Re-open only if a future
+report shows a dark last 80-col column; the harness measures any candidate
+to 1-sample resolution before Quartus.
+
 ## Candidate fix (original proposal, superseded by the applied version above)
 
 Pocket-glue only, mirroring the existing `VBL_ALIGN` precedent (the top
