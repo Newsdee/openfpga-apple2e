@@ -1,5 +1,13 @@
 # Video edge-probe results — PLAN_VIDEO_40COL_ENCODER_EDGE_2026-11-25
 
+**FINAL VERDICT (2026-11-26, hardware round 3): ALL MODES ALIGNED — owner
+confirmed "perfect! it's all aligned as I expected".** Shipped candidate =
+commit `cb9455c` (branch `video-40col-diag`), bitstream sha256
+`8df43c03…0ee089`, deployed to K: and verified. Fix = Pocket-glue
+`HBL_ALIGN=6` delay pipe on `ntsc_hbl`, bypassed when `m_early_video`
+(COL80 | HIRES&DHIRES) — the donor's own early-grid flag, previously dead
+on Pocket.
+
 **Baseline:** worktree `apple2e-pocket-video` @ `53451f9` (0.4.5, released).
 No RTL modified. Design as shipped: `video_pipeline_q17` NTSC_EN=1, real
 `video2.hex` ROM, shipping `apf_stream_video` adapter (DEC2X=0).
@@ -74,6 +82,14 @@ sides. The −8 is **donor (MiSTer) calibration for vga_controller**; the
 Pocket adapter derives DE differently. The separate HGR80 −1 ("aligns its
 CTV content to x0") confirms these taps are per-consumer calibration.
 
+## Hardware A/B round 3 (2026-11-26, owner, K: card) — FINAL
+
+Candidate = EARLY_VIDEO-keyed bypass (sha256 `8df43c03…0ee089`, compile
+9:10, TNS 0.000, slack 1.745, RAM gate PASS):
+- DHGR-16: aligned (was slightly left in round 2).
+- DHGR quirk, TEXT80, 40-col TEXT, GR, HGR: all confirmed aligned.
+- Owner verdict: "perfect! it's all aligned as I expected."
+
 ## Hardware A/B round 1 (2026-11-26, owner, K: card)
 
 Candidate = uniform HBL_ALIGN 6 (sha256 `562588…93ab3`):
@@ -87,14 +103,15 @@ Candidate = uniform HBL_ALIGN 6 (sha256 `562588…93ab3`):
 ## Fix round 2: mode-aware HBL_ALIGN (applied, sim-verified)
 
 `ntsc_hbl_aligned = m_hgr80_mode ? ntsc_hbl : hbl_align_pipe[5]` — zero glue
--delay in the DHGR quirk state (restores its exact pre-fix window), 6 clocks
+delay in the DHGR quirk state (restores its exact pre-fix window), 6 clocks
 everywhere else. Sim: dhgr fixture shows HGR80=1 and DE start tick 24
 (= donor tap-13 window, identical to pre-fix); t40 still tick 23 with
 first_lit=0/266/280/546 ALL PASS; eol_guard clean (Quartus's CRLF smudge on
 build_id.mif repaired to LF).
 
-Awaiting: owner recompile (`apf_apple2_build.bat`) + redeploy to K: +
-hardware re-check (DHGR right edge restored, 40-col still fixed).
+Hardware round 2 verdict (owner): "that's better" — DHGR quirk improved,
+HGR fine, 40-col still fixed; but 16-colour DHGR (COL80 on) still slightly
+left → round 3 re-keyed the bypass on EARLY_VIDEO (see above; FINAL).
 
 ## Candidate fix APPLIED + verified in sim (2026-11-25, owner approved)
 
@@ -175,13 +192,10 @@ needed.
 
 ## Not yet done
 
-- Hardware A/B of the HBL_ALIGN fix (the real gate): black strip gone on
-  40-col text/GR, 80-col & HGR unchanged-or-better, colour presets checked,
-  panel scaling/sharpness interaction.
-- Owner decision on the 80-col last-cell right-edge finding (donor decoder
-  constants).
+- Owner decision on the 80-col last-cell right-edge finding (pre-existing,
+  donor decoder constants).
+- sim dhgr16 fixture does not reproduce the 7-tick interleaved DHGR fetch
+  (serializer ran plain-HGR pitch) - fix if DHGR sim measurement ever needed.
 - Mixed-mode boundary lines (GR row 19/20 transition) - harness ready.
-- ntsc parity harness re-run (`verilate_ntsc_parity.sh`) - the fix is in
-  Pocket glue OUTSIDE the pinned pipeline, so parity is untouched by
-  construction; run once before release for hygiene.
-- Commit the worktree branch once owner signs off on the diff.
+- HGR line_cnt coordinate map (probe aiming only).
+- Deferred: SDL video preview .bat with preset hotkeys (TASKS.md item 8).
