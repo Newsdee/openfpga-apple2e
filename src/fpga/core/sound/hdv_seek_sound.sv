@@ -61,7 +61,7 @@ module hdv_seek_sound #(
     parameter integer ENV_PEAK_I    = 1500,
     parameter integer ENV_FLOOR_I   = 900,
     parameter integer DECAY_DIV_I   = 192, // env decay: 1 unit / N clks
-    parameter integer OUT_SHIFT     = -5   // final level: negative = gain
+    parameter integer OUT_SHIFT     = -4   // final level: negative = gain
                                            // (see "final voice level")
 ) (
     input  wire        clk,          // machine 14.318 MHz
@@ -127,9 +127,9 @@ module hdv_seek_sound #(
 
     // final voice level: v = ((body>>BODY_SHIFT) + (grit>>GRIT_SHIFT)) * env
     // >> 15, then sample = v * edge/8192 >> OUT_SHIFT. With preset Q the
-    // pre-OUT_SHIFT peak is ~98 (measured), so OUT_SHIFT = -5 (i.e. >> 8
-    // instead of >> 13) gives ~3100 signed peak ~= 9.5% FS - a clearly
-    // audible but non-dominant effect next to the floppy/speaker terms.
+    // pre-OUT_SHIFT peak is ~98, so OUT_SHIFT = -4 (i.e. >> 9 instead of
+    // >> 13) gives ~1550 signed peak ~= 4.7% FS. Owner hardware feedback
+    // 2026-11-28: -5 (~3100, 9.5% FS) was "a bit too loud"; halved.
     // OUT_SHIFT may be negative (gain); the mixer saturates independently.
     // Verified by render: Q UNNORMALIZED peak, see tone_lab.html mirror.
 
