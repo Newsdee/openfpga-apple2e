@@ -40,7 +40,7 @@
   <button data-p="M">M soft-grind (default)</button>
   <button data-p="N">N st225 beep</button>
   <button data-p="P">P st225 soft/ethereal</button>
-  <button data-p="Q">Q sweet spot (3040→3240 rising)</button>
+  <button data-p="Q">Q sweet spot (3040 flat)</button>
 </div>
 
 <div class="grid" id="grid"></div>
@@ -78,7 +78,7 @@ const PRESETS = {
       SCRAPE_HZ_S:130, SCRAPE_HZ_L:100, ENV_PEAK_I:2200, ENV_FLOOR_I:500, DECAY_DIV_I:96},
   P: {BODY_START_HZ:2640, BODY_END_HZ:2590, BODY_SHIFT:2, GRIT_SHIFT:3, ATK_MS:16, REL_MS:30,
       SCRAPE_HZ_S:70, SCRAPE_HZ_L:55, ENV_PEAK_I:1500, ENV_FLOOR_I:900, DECAY_DIV_I:192},
-  Q: {BODY_START_HZ:3040, BODY_END_HZ:3240, BODY_SHIFT:4, GRIT_SHIFT:2, ATK_MS:16, REL_MS:30,
+  Q: {BODY_START_HZ:3040, BODY_END_HZ:3040, BODY_SHIFT:4, GRIT_SHIFT:2, ATK_MS:16, REL_MS:30,
       SCRAPE_HZ_S:70, SCRAPE_HZ_L:55, ENV_PEAK_I:1500, ENV_FLOOR_I:900, DECAY_DIV_I:192},
 };
 

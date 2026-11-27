@@ -39,13 +39,17 @@
 
 module hdv_seek_sound #(
     // Timbre parameters. DEFAULTS = preset "Q", the owner-approved sweet
-    // spot (2026-11-27): a 3040->3240 Hz RISING body sweep with light grit
-    // and a soft/ethereal envelope. Found by ear in tone_lab.html, which is
-    // an exact integer mirror of this module - keep the two in sync.
-    //   Q: {3040, 3240, BODY_SHIFT 4, GRIT_SHIFT 2, ATK 16, REL 30,
+    // spot (2026-11-27): a FLAT 3040 Hz body with light grit and a
+    // soft/ethereal envelope. Found by ear in tone_lab.html, which is an
+    // exact integer mirror of this module - keep the two in sync.
+    //   Q: {3040 FLAT (START == END: the lab's down-only sweep silently
+    //       rendered a constant tone when the owner dialed END=3240; the
+    //       approved sound IS the constant one - a rising sweep sounds
+    //       "too chirpy, like a bird", hardware feedback 2026-11-27),
+    //       BODY_SHIFT 4, GRIT_SHIFT 2, ATK 16, REL 30,
     //       SWELL 70/55 Hz, ENV 1500/900, DECAY 192}
     parameter integer BODY_START_HZ = 3040,
-    parameter integer BODY_END_HZ   = 3240,
+    parameter integer BODY_END_HZ   = 3040,
     parameter integer BODY_SHIFT    = 4,   // body scale = 1/2^BODY_SHIFT
     parameter integer GRIT_SHIFT    = 2,   // extra grit attenuation
     // envelope / swell profile (soft/ethereal = slower swell, gentler
