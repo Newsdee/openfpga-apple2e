@@ -44,7 +44,16 @@ module hdv_seek_sound #(
     parameter integer BODY_START_HZ = 800,
     parameter integer BODY_END_HZ   = 710,
     parameter integer BODY_SHIFT    = 3,   // body scale = 1/2^BODY_SHIFT
-    parameter integer GRIT_SHIFT    = 0    // extra grit attenuation
+    parameter integer GRIT_SHIFT    = 0,   // extra grit attenuation
+    // envelope / scrape profile (defaults = the percussive "grind" feel;
+    // softer/ethereal = slower scrape, gentler edges, shallower peak-floor)
+    parameter integer ATK_MS        = 6,
+    parameter integer REL_MS        = 12,
+    parameter integer SCRAPE_HZ_S   = 130, // swell rate, short seeks
+    parameter integer SCRAPE_HZ_L   = 100, // swell rate, long seeks
+    parameter integer ENV_PEAK_I    = 2200,
+    parameter integer ENV_FLOOR_I   = 500,
+    parameter integer DECAY_DIV_I   = 96   // env decay: 1 unit / N clks
 ) (
     input  wire        clk,          // machine 14.318 MHz
     input  wire        reset,        // active-high machine reset
@@ -78,8 +87,8 @@ module hdv_seek_sound #(
     // ------------------------------------------------------------------
     localparam [20:0] DUR_SHORT = 21'd744_545;    //  52 ms
     localparam [20:0] DUR_LONG  = 21'd1_918_636;  // 134 ms
-    localparam [20:0] ATK_LEN   = 21'd85_909;     // ~6 ms
-    localparam [20:0] REL_LEN   = 21'd171_818;    // ~12 ms
+    localparam [20:0] ATK_LEN   = ATK_MS * 21'd14_318;   // ms -> machine clks
+    localparam [20:0] REL_LEN   = REL_MS * 21'd14_318;
     localparam [20:0] REL_OFF_S = DUR_SHORT - REL_LEN;   // 658,636
     localparam [20:0] REL_OFF_L = DUR_LONG  - REL_LEN;   // 1,746,818
 
@@ -92,20 +101,17 @@ module hdv_seek_sound #(
     localparam [24:0] SWEEP_DIV_S = 25'd744545  / (INC_SPAN != 0 ? INC_SPAN : 1);
     localparam [24:0] SWEEP_DIV_L = 25'd1918636 / (INC_SPAN != 0 ? INC_SPAN : 1);
 
-    // scrape period: 130 Hz short / 100 Hz long, in machine clocks
-    localparam [15:0] SCRAPE_S = 16'd110_140;   // 14.318e6/130
-    localparam [15:0] SCRAPE_L = 16'd143_182;   // 14.318e6/100
-    localparam [15:0] SCRAPE_JIT = 16'd64;      // jitter = jit[9:0]*64 clks
-                                                // = 0..4.5 ms (+/- ~3%)
+    // scrape/swell period in machine clocks (20 bits: 14.318e6/55 = 260,330
+    // max at the soft preset - a 16-bit counter would silently wrap)
+    localparam [19:0] SCRAPE_S = 20'd14_318_180 / SCRAPE_HZ_S[19:0];
+    localparam [19:0] SCRAPE_L = 20'd14_318_180 / SCRAPE_HZ_L[19:0];
+    localparam [19:0] SCRAPE_JIT = 20'd64;    // jitter = jit[9:0]*64 clks
+                                              // = 0..4.5 ms (+/- ~3%)
 
     // decay floor between scrape peaks: amp = FLOOR + decayed peak
-    localparam signed [15:0] ENV_PEAK  = 16'sd2200;
-    localparam signed [15:0] ENV_FLOOR = 16'sd500;
-    localparam [6:0] DECAY_DIV = 7'd96;    // decay 1 unit / 96 clks (~1700
-                                           // units in ~163k clks; both scrape
-                                           // periods are shorter, so env
-                                           // never reaches the floor: "reduce
-                                           // between peaks without muting")
+    localparam signed [15:0] ENV_PEAK  = ENV_PEAK_I[15:0];
+    localparam signed [15:0] ENV_FLOOR = ENV_FLOOR_I[15:0];
+    localparam [8:0] DECAY_DIV = DECAY_DIV_I[8:0];
 
     // final voice level: ((body/8 + grit) * env) >>15 = +/-172 pk, then
     // * edge/8192, then >> OUT_SHIFT. OUT_SHIFT=0 -> +/-172 signed peak,
@@ -121,7 +127,7 @@ module hdv_seek_sound #(
     reg [20:0] elapsed;
     reg [20:0] dur;         // latched duration
     reg [24:0] sweep_div;   // latched per duration
-    reg [15:0] scrape_per;  // latched per duration
+    reg [19:0] scrape_per;  // latched per duration
     reg [20:0] rel_off;     // latched release start
 
     reg        hist_valid;
@@ -144,11 +150,11 @@ module hdv_seek_sound #(
     reg [12:0] lfsr;         // nonzero seed, never all-zero
     reg signed [15:0] n1, n2, nlp1, nlp2, noise_lp;
 
-    reg [15:0] scrape_cnt;
-    reg [15:0] scrape_next;
+    reg [19:0] scrape_cnt;
+    reg [19:0] scrape_next;
     reg [12:0] jit_lfsr;     // separate small LFSR: deterministic jitter
     reg signed [15:0] env;   // scrape envelope FLOOR..ENV_PEAK
-    reg [6:0]  decay_cnt;
+    reg [8:0]  decay_cnt;
 
     reg [20:0] edge_len;     // current attack/release length
     reg signed [15:0] edge_mul; // progress along the edge, 0..EDGE_SCALE
@@ -173,11 +179,11 @@ module hdv_seek_sound #(
             sweep_cnt    <= 32'd0;
             lfsr         <= 13'h1ACE;   // nonzero seed (plan)
             n1 <= 0; n2 <= 0; nlp1 <= 0; nlp2 <= 0; noise_lp <= 0;
-            scrape_cnt   <= 16'd0;
+            scrape_cnt   <= 20'd0;
             scrape_next  <= SCRAPE_S;
             jit_lfsr     <= 13'h05B3;
             env          <= 16'sd0;
-            decay_cnt    <= 7'd0;
+            decay_cnt    <= 9'd0;
             sample       <= 16'sd0;
             body_s       <= 16'sd0;
             grit_s       <= 16'sd0;
@@ -220,9 +226,9 @@ module hdv_seek_sound #(
                             freq_inc   <= INC_800;
                             sweep_cnt  <= 32'd0;
                             env        <= ENV_FLOOR;
-                            scrape_cnt <= 16'd0;
+                            scrape_cnt <= 20'd0;
                             scrape_next <= SCRAPE_L +
-                                           {3'd0, jit_lfsr[9:0]} * SCRAPE_JIT;
+                                           {7'd0, jit_lfsr[9:0]} * SCRAPE_JIT;
                             jit_lfsr   <= {jit_lfsr[11:0],
                                            jit_lfsr[12] ^ jit_lfsr[7]};
                         end else if (trig_short) begin
@@ -236,9 +242,9 @@ module hdv_seek_sound #(
                             freq_inc   <= INC_800;
                             sweep_cnt  <= 32'd0;
                             env        <= ENV_FLOOR;
-                            scrape_cnt <= 16'd0;
+                            scrape_cnt <= 20'd0;
                             scrape_next <= SCRAPE_S +
-                                           {3'd0, jit_lfsr[9:0]} * SCRAPE_JIT;
+                                           {7'd0, jit_lfsr[9:0]} * SCRAPE_JIT;
                             jit_lfsr   <= {jit_lfsr[11:0],
                                            jit_lfsr[12] ^ jit_lfsr[7]};
                         end
@@ -271,15 +277,15 @@ module hdv_seek_sound #(
                 // scrape envelope: re-trigger at scrape_next, else slow
                 // decay toward (never reaching) the floor
                 scrape_cnt <= scrape_cnt + 16'd1;
-                decay_cnt  <= decay_cnt + 7'd1;
+                decay_cnt  <= decay_cnt + 9'd1;
                 if (scrape_cnt >= scrape_next) begin
-                    scrape_cnt <= 16'd0;
+                    scrape_cnt <= 20'd0;
                     env        <= ENV_PEAK;
                     scrape_next <= scrape_per +
-                                   {3'd0, jit_lfsr[9:0]} * SCRAPE_JIT;
+                                   {7'd0, jit_lfsr[9:0]} * SCRAPE_JIT;
                     jit_lfsr   <= {jit_lfsr[11:0], jit_lfsr[12] ^ jit_lfsr[7]};
                 end else if (decay_cnt == DECAY_DIV && env > ENV_FLOOR) begin
-                    decay_cnt <= 7'd0;
+                    decay_cnt <= 9'd0;
                     env <= env - 16'sd1;
                 end
 

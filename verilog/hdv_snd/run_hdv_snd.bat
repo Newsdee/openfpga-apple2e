@@ -50,6 +50,8 @@ C:\msys64\ucrt64\bin\python.exe pcm2wav.py hdv_seek_render_a.pcm hdv_seek_render
 if errorlevel 1 goto :run_fail
 C:\msys64\ucrt64\bin\python.exe pcm2wav.py hdv_seek_render_b.pcm hdv_seek_render_b.wav
 if errorlevel 1 goto :run_fail
+C:\msys64\ucrt64\bin\python.exe pcm2wav.py hdv_seek_render_s.pcm hdv_seek_render_s.wav
+if errorlevel 1 goto :run_fail
 
 rem ---- Phase B: event acceptance ----
 "%OBJ%\Vtb_hdv_seek_sound.exe" +EVENTS
