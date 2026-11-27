@@ -37,7 +37,15 @@
 // ============================================================================
 `timescale 1ns / 1ps
 
-module hdv_seek_sound (
+module hdv_seek_sound #(
+    // Timbre parameters (defaults = the "soft grind" M voice). Variants
+    // for the ST-225 beep preview: A = 2650->2580 Hz body, low grit
+    // (GRIT_SHIFT 4, BODY_SHIFT 2); B is an A+M mix made in the TB.
+    parameter integer BODY_START_HZ = 800,
+    parameter integer BODY_END_HZ   = 710,
+    parameter integer BODY_SHIFT    = 3,   // body scale = 1/2^BODY_SHIFT
+    parameter integer GRIT_SHIFT    = 0    // extra grit attenuation
+) (
     input  wire        clk,          // machine 14.318 MHz
     input  wire        reset,        // active-high machine reset
     input  wire        enable,       // HDV Sound option (machine-domain sync)
@@ -75,12 +83,14 @@ module hdv_seek_sound (
     localparam [20:0] REL_OFF_S = DUR_SHORT - REL_LEN;   // 658,636
     localparam [20:0] REL_OFF_L = DUR_LONG  - REL_LEN;   // 1,746,818
 
-    // body oscillator: inc = f * 2^32 / 14.31818e6  (~299.97 per Hz)
-    localparam [31:0] INC_800 = 32'd239_975;
-    localparam [31:0] INC_710 = 32'd212_978;
-    localparam [31:0] INC_SPAN = INC_800 - INC_710;      // 26,997
-    localparam [31:0] SWEEP_DIV_S = 32'd28;   // 744,545 / 26,997 ~ 27.6
-    localparam [31:0] SWEEP_DIV_L = 32'd71;   // 1,918,636 / 26,997 ~ 71.1
+    // body oscillator: inc = f * 2^32 / 14.31818e6 (~299.97 per Hz)
+    localparam [31:0] INC_800 = (64'd4294967296 * BODY_START_HZ) / 64'd14318180;
+    localparam [31:0] INC_710 = (64'd4294967296 * BODY_END_HZ)   / 64'd14318180;
+    localparam [31:0] INC_SPAN = INC_800 - INC_710;      // sweep span
+    // sweep: decrement once per SWEEP_DIV clocks; DIV = dur_clks / span
+    // (25 bits: long 1.92M / typical span 27k ~ 71; beep span ~2.1k -> 900)
+    localparam [24:0] SWEEP_DIV_S = 25'd744545  / (INC_SPAN != 0 ? INC_SPAN : 1);
+    localparam [24:0] SWEEP_DIV_L = 25'd1918636 / (INC_SPAN != 0 ? INC_SPAN : 1);
 
     // scrape period: 130 Hz short / 100 Hz long, in machine clocks
     localparam [15:0] SCRAPE_S = 16'd110_140;   // 14.318e6/130
@@ -110,7 +120,7 @@ module hdv_seek_sound (
     reg [1:0]  state;
     reg [20:0] elapsed;
     reg [20:0] dur;         // latched duration
-    reg [31:0] sweep_div;   // latched per duration
+    reg [24:0] sweep_div;   // latched per duration
     reg [15:0] scrape_per;  // latched per duration
     reg [20:0] rel_off;     // latched release start
 
@@ -315,7 +325,7 @@ module hdv_seek_sound (
                 reg signed [27:0] v28;
                 reg signed [35:0] p36;
                 reg signed [35:0] s36;
-                v28 = ((body_s >>> 3) + grit_s) * env_q;   // +/-10.2M, 26 bit
+                v28 = ((body_s >>> BODY_SHIFT) + (grit_s >>> GRIT_SHIFT)) * env_q; // +/-10.2M max, 28 bit
                 p36 = v28 >>> 15;                          // +/-310
                 s36 = (p36 * edge_q) >>> (13 + OUT_SHIFT); // +/-310
                 if (s36 > 36'sd32767)       sample <= 16'sd32767;

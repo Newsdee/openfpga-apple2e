@@ -38,6 +38,21 @@ module tb_hdv_seek_sound;
         .sample(sample), .sample_tick(sample_tick)
     );
 
+    // Variant A: ST-225 beep timbre - 2650->2580 Hz body (recording: 2616 Hz
+    // dominant), grit attenuated 16x, body x2 louder
+    wire signed [15:0] sample_a;
+    hdv_seek_sound #(.BODY_START_HZ(2650), .BODY_END_HZ(2580),
+                     .BODY_SHIFT(2), .GRIT_SHIFT(4)) dutA (
+        .clk(clk), .reset(reset), .enable(enable),
+        .cmd_valid(cmd_valid), .cmd_sector(cmd_sector), .mounted(mounted),
+        .sample(sample_a), .sample_tick()
+    );
+    // Variant B: hybrid, beep:mechanical = 2:1 as measured in the recording
+    // (explicit signed wires: concatenations would be UNSIGNED and wrap)
+    wire signed [16:0] b_aext  = sample_a;
+    wire signed [16:0] b_mhalf = $signed({sample[15], sample});  // M as 17-bit signed
+    wire signed [17:0] sample_b = b_aext + (b_mhalf >>> 1);      // A + M/2
+
     // ------------------------------------------------------------------
     // helpers
     // ------------------------------------------------------------------
@@ -59,8 +74,10 @@ module tb_hdv_seek_sound;
     endtask
 
     integer pcm_fd;
+    integer pcm_fd_a, pcm_fd_b;
     integer n_samp;
     integer peak_pos, peak_neg;
+    integer peak_a, peak_b;
     integer i;
 
     // event-phase helpers
@@ -116,9 +133,13 @@ module tb_hdv_seek_sound;
     // ------------------------------------------------------------------
     initial begin
         pcm_fd     = 0;
+        pcm_fd_a   = 0;
+        pcm_fd_b   = 0;
         n_samp     = 0;
         peak_pos   = 0;
         peak_neg   = 0;
+        peak_a     = 0;
+        peak_b     = 0;
         ev_fail    = 0;
         capturing  = 0;
         scnt       = 0;
@@ -315,8 +336,10 @@ module tb_hdv_seek_sound;
         end
 
         // ================= Phase A: voice render =================
-        pcm_fd = $fopen("hdv_seek_render.pcm", "wb");
-        if (pcm_fd == 0) begin
+        pcm_fd   = $fopen("hdv_seek_render.pcm", "wb");
+        pcm_fd_a = $fopen("hdv_seek_render_a.pcm", "wb");
+        pcm_fd_b = $fopen("hdv_seek_render_b.pcm", "wb");
+        if (pcm_fd == 0 || pcm_fd_a == 0 || pcm_fd_b == 0) begin
             $display("TB: FAIL - cannot open PCM output");
             $fatal(1);
         end
@@ -357,17 +380,23 @@ module tb_hdv_seek_sound;
     // Phase A PCM writer + peak tracker (independent of the event buffer)
     always @(posedge clk) begin
         if (sample_tick && !capturing && pcm_fd != 0) begin
-            $fwrite(pcm_fd, "%c%c", sample[7:0], sample[15:8]);
+            $fwrite(pcm_fd,   "%c%c", sample[7:0],   sample[15:8]);
+            $fwrite(pcm_fd_a, "%c%c", sample_a[7:0], sample_a[15:8]);
+            $fwrite(pcm_fd_b, "%c%c", sample_b[7:0], sample_b[15:8]);
             n_samp = n_samp + 1;
             if (sample > peak_pos) peak_pos = sample;
             if (sample < peak_neg) peak_neg = sample;
+            if (sample_a > peak_a) peak_a = sample_a;
+            if (sample_b > peak_b) peak_b = sample_b;
         end
     end
 
     final begin
-        if (pcm_fd != 0) $fclose(pcm_fd);
-        $display("TB: rendered %0d samples (%.3f s), peak +%0d / %0d",
-                 n_samp, n_samp/48000.0, peak_pos, peak_neg);
+        if (pcm_fd   != 0) $fclose(pcm_fd);
+        if (pcm_fd_a != 0) $fclose(pcm_fd_a);
+        if (pcm_fd_b != 0) $fclose(pcm_fd_b);
+        $display("TB: rendered %0d samples (%.3f s), M peak +%0d/%0d, A peak %0d, B peak %0d",
+                 n_samp, n_samp/48000.0, peak_pos, peak_neg, peak_a, peak_b);
     end
 
     // watchdog
