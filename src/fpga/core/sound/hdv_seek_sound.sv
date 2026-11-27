@@ -38,22 +38,27 @@
 `timescale 1ns / 1ps
 
 module hdv_seek_sound #(
-    // Timbre parameters (defaults = the "soft grind" M voice). Variants
-    // for the ST-225 beep preview: A = 2650->2580 Hz body, low grit
-    // (GRIT_SHIFT 4, BODY_SHIFT 2); B is an A+M mix made in the TB.
-    parameter integer BODY_START_HZ = 800,
-    parameter integer BODY_END_HZ   = 710,
-    parameter integer BODY_SHIFT    = 3,   // body scale = 1/2^BODY_SHIFT
-    parameter integer GRIT_SHIFT    = 0,   // extra grit attenuation
-    // envelope / scrape profile (defaults = the percussive "grind" feel;
-    // softer/ethereal = slower scrape, gentler edges, shallower peak-floor)
-    parameter integer ATK_MS        = 6,
-    parameter integer REL_MS        = 12,
-    parameter integer SCRAPE_HZ_S   = 130, // swell rate, short seeks
-    parameter integer SCRAPE_HZ_L   = 100, // swell rate, long seeks
-    parameter integer ENV_PEAK_I    = 2200,
-    parameter integer ENV_FLOOR_I   = 500,
-    parameter integer DECAY_DIV_I   = 96   // env decay: 1 unit / N clks
+    // Timbre parameters. DEFAULTS = preset "Q", the owner-approved sweet
+    // spot (2026-11-27): a 3040->3240 Hz RISING body sweep with light grit
+    // and a soft/ethereal envelope. Found by ear in tone_lab.html, which is
+    // an exact integer mirror of this module - keep the two in sync.
+    //   Q: {3040, 3240, BODY_SHIFT 4, GRIT_SHIFT 2, ATK 16, REL 30,
+    //       SWELL 70/55 Hz, ENV 1500/900, DECAY 192}
+    parameter integer BODY_START_HZ = 3040,
+    parameter integer BODY_END_HZ   = 3240,
+    parameter integer BODY_SHIFT    = 4,   // body scale = 1/2^BODY_SHIFT
+    parameter integer GRIT_SHIFT    = 2,   // extra grit attenuation
+    // envelope / swell profile (soft/ethereal = slower swell, gentler
+    // edges, shallow peak-floor; percussive = faster + deeper)
+    parameter integer ATK_MS        = 16,
+    parameter integer REL_MS        = 30,
+    parameter integer SCRAPE_HZ_S   = 70,  // swell rate, short seeks
+    parameter integer SCRAPE_HZ_L   = 55,  // swell rate, long seeks
+    parameter integer ENV_PEAK_I    = 1500,
+    parameter integer ENV_FLOOR_I   = 900,
+    parameter integer DECAY_DIV_I   = 192, // env decay: 1 unit / N clks
+    parameter integer OUT_SHIFT     = -5   // final level: negative = gain
+                                           // (see "final voice level")
 ) (
     input  wire        clk,          // machine 14.318 MHz
     input  wire        reset,        // active-high machine reset
@@ -93,11 +98,14 @@ module hdv_seek_sound #(
     localparam [20:0] REL_OFF_L = DUR_LONG  - REL_LEN;   // 1,746,818
 
     // body oscillator: inc = f * 2^32 / 14.31818e6 (~299.97 per Hz)
-    localparam [31:0] INC_800 = (64'd4294967296 * BODY_START_HZ) / 64'd14318180;
-    localparam [31:0] INC_710 = (64'd4294967296 * BODY_END_HZ)   / 64'd14318180;
-    localparam [31:0] INC_SPAN = INC_800 - INC_710;      // sweep span
-    // sweep: decrement once per SWEEP_DIV clocks; DIV = dur_clks / span
-    // (25 bits: long 1.92M / typical span 27k ~ 71; beep span ~2.1k -> 900)
+    localparam [31:0] INC_START = (64'd4294967296 * BODY_START_HZ) / 64'd14318180;
+    localparam [31:0] INC_END   = (64'd4294967296 * BODY_END_HZ)   / 64'd14318180;
+    // sweep span is UNSIGNED magnitude: the sweep is bidirectional, so
+    // BODY_END_HZ may be above OR below BODY_START_HZ (preset Q rises).
+    localparam [31:0] INC_SPAN = (INC_START > INC_END) ? (INC_START - INC_END)
+                                                       : (INC_END - INC_START);
+    // step once per SWEEP_DIV clocks so the full span is covered by the end
+    // of the seek: DIV = dur_clks / span (25 bits, span!=0 guarded)
     localparam [24:0] SWEEP_DIV_S = 25'd744545  / (INC_SPAN != 0 ? INC_SPAN : 1);
     localparam [24:0] SWEEP_DIV_L = 25'd1918636 / (INC_SPAN != 0 ? INC_SPAN : 1);
 
@@ -113,11 +121,13 @@ module hdv_seek_sound #(
     localparam signed [15:0] ENV_FLOOR = ENV_FLOOR_I[15:0];
     localparam [8:0] DECAY_DIV = DECAY_DIV_I[8:0];
 
-    // final voice level: ((body/8 + grit) * env) >>15 = +/-172 pk, then
-    // * edge/8192, then >> OUT_SHIFT. OUT_SHIFT=0 -> +/-172 signed peak,
-    // in mixer terms ~2.7x the x16 floppy scale at full fs - a quiet bed.
-    // Tune AFTER the unnormalized render (plan section 1).
-    localparam integer OUT_SHIFT = 0;
+    // final voice level: v = ((body>>BODY_SHIFT) + (grit>>GRIT_SHIFT)) * env
+    // >> 15, then sample = v * edge/8192 >> OUT_SHIFT. With preset Q the
+    // pre-OUT_SHIFT peak is ~98 (measured), so OUT_SHIFT = -5 (i.e. >> 8
+    // instead of >> 13) gives ~3100 signed peak ~= 9.5% FS - a clearly
+    // audible but non-dominant effect next to the floppy/speaker terms.
+    // OUT_SHIFT may be negative (gain); the mixer saturates independently.
+    // Verified by render: Q UNNORMALIZED peak, see tone_lab.html mirror.
 
     // ------------------------------------------------------------------
     // Trigger / state
@@ -175,7 +185,7 @@ module hdv_seek_sound #(
             hist_sector  <= 16'd0;
             mounted_d    <= 1'b0;
             phase_acc    <= 32'd0;
-            freq_inc     <= INC_800;
+            freq_inc     <= INC_START;
             sweep_cnt    <= 32'd0;
             lfsr         <= 13'h1ACE;   // nonzero seed (plan)
             n1 <= 0; n2 <= 0; nlp1 <= 0; nlp2 <= 0; noise_lp <= 0;
@@ -223,7 +233,7 @@ module hdv_seek_sound #(
                             scrape_per <= SCRAPE_L;
                             elapsed    <= 21'd0;
                             phase_acc  <= 32'd0;
-                            freq_inc   <= INC_800;
+                            freq_inc   <= INC_START;
                             sweep_cnt  <= 32'd0;
                             env        <= ENV_FLOOR;
                             scrape_cnt <= 20'd0;
@@ -239,7 +249,7 @@ module hdv_seek_sound #(
                             scrape_per <= SCRAPE_S;
                             elapsed    <= 21'd0;
                             phase_acc  <= 32'd0;
-                            freq_inc   <= INC_800;
+                            freq_inc   <= INC_START;
                             sweep_cnt  <= 32'd0;
                             env        <= ENV_FLOOR;
                             scrape_cnt <= 20'd0;
@@ -263,8 +273,11 @@ module hdv_seek_sound #(
                 sweep_cnt <= sweep_cnt + 32'd1;
                 if (sweep_cnt >= sweep_div) begin
                     sweep_cnt <= 32'd0;
-                    if (freq_inc > INC_710)
+                    // bidirectional sweep: step toward INC_END (preset Q rises)
+                    if (freq_inc > INC_END)
                         freq_inc <= freq_inc - 32'd1;
+                    else if (freq_inc < INC_END)
+                        freq_inc <= freq_inc + 32'd1;
                 end
 
                 // noise + two-pole smoothing (shift/add lowpass)
