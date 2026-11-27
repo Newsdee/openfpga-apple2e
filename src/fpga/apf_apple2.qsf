@@ -777,6 +777,7 @@ set_global_assignment -name VERILOG_FILE core/mockingboard/mockingboard.v
 set_global_assignment -name VERILOG_FILE core/mockingboard/via6522.v
 set_global_assignment -name SYSTEMVERILOG_FILE core/mockingboard/YM2149.sv
 set_global_assignment -name SYSTEMVERILOG_FILE core/sound/floppy_sound.sv
+set_global_assignment -name SYSTEMVERILOG_FILE core/sound/hdv_seek_sound.sv
 set_global_assignment -name VERILOG_FILE ip/debug_key.v
 set_global_assignment -name VERILOG_FILE ../../machine/apple2.v
 set_global_assignment -name VERILOG_FILE ../../machine/timing_generator.v
