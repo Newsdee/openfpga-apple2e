@@ -87,6 +87,7 @@ module tb_floppy_sound_chain;
         .spk_gain_m(spk_gain),
         .fs_boost_m(fs_boost_w),
         .fs_l(fs_l), .fs_r(fs_r),
+        .hdv_s(16'sd0),   // HDV seek voice: tied off - floppy-chain parity
         .mclk(mclk), .sclk(sclk), .lrck(i2s_lrck), .dac(i2s_dac)
     );
 

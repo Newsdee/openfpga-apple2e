@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HDV seek sound lab — RTL mirror</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background:#14161a; color:#dde; margin:0; padding:24px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:#89a; font-size:12px; margin-bottom:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:10px 18px; max-width:1100px; }
+  .ctl { background:#1c1f26; border:1px solid #2a2f3a; border-radius:8px; padding:8px 10px; }
+  .ctl label { display:flex; justify-content:space-between; font-size:12px; color:#9ab; }
+  .ctl label output { color:#7fd1ff; font-weight:600; font-variant-numeric:tabular-nums; }
+  .ctl input[type=range] { width:100%; margin:4px 0 0; }
+  .ctl .hint { font-size:10px; color:#667; }
+  button { background:#2563eb; color:#fff; border:0; border-radius:8px; padding:10px 18px;
+           font-size:14px; font-weight:600; cursor:pointer; margin:14px 8px 0 0; }
+  button.sec { background:#374151; }
+  button:hover { filter:brightness(1.15); }
+  button:disabled { opacity:.4; cursor:wait; }
+  #status { font-size:12px; color:#89a; margin-top:10px; min-height:16px; }
+  .presets { margin-top:6px; }
+  .presets button { padding:6px 12px; font-size:12px; background:#374151; }
+  #wave { width:100%; max-width:1100px; height:120px; background:#101216; border:1px solid #2a2f3a;
+          border-radius:8px; margin-top:14px; }
+</style>
+</head>
+<body>
+<h1>HDV seek sound — parameter lab</h1>
+<div class="sub">
+  Exact integer mirror of <code>hdv_seek_sound.sv</code> (14.318&nbsp;MHz tick, 298:1 to 48&nbsp;kHz,
+  same shifts/LFSR/envelopes). Renders offline, then plays. Parameter names match the RTL — copy your
+  sweet-spot values straight into the module/TB instantiation. Scene = the reference timeline:
+  5 short seeks (0.35…2.11&nbsp;s) + 5 long (3.30…5.06&nbsp;s).
+</div>
+
+<div class="presets">
+  Presets:
+  <button data-p="M">M soft-grind (default)</button>
+  <button data-p="N">N st225 beep</button>
+  <button data-p="P">P st225 soft/ethereal</button>
+  <button data-p="Q">Q sweet spot (3040 flat)</button>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<button id="playScene">Render &amp; play scene</button>
+<button id="playShort" class="sec">Play one SHORT seek</button>
+<button id="playLong" class="sec">Play one LONG seek</button>
+<button id="stop" class="sec">Stop</button>
+<button id="saveWav" class="sec">Save WAV</button>
+<div id="status"></div>
+<canvas id="wave" width="1100" height="120"></canvas>
+
+<script>
+"use strict";
+
+// ---------------- parameter definitions (name = RTL parameter) ------------
+const PARAMS = [
+  {n:"BODY_START_HZ", min:200,  max:4000, step:10,  dflt:2640, hint:"body triangle start pitch"},
+  {n:"BODY_END_HZ",   min:200,  max:4000, step:10,  dflt:2590, hint:"body pitch at seek end (sweep fall)"},
+  {n:"BODY_SHIFT",    min:0,    max:6,    step:1,   dflt:2,    hint:"body scale 1/2^n (lower = louder tone)"},
+  {n:"GRIT_SHIFT",    min:0,    max:8,    step:1,   dflt:3,    hint:"extra noise attenuation (higher = less grit)"},
+  {n:"ATK_MS",        min:1,    max:40,   step:1,   dflt:16,   hint:"attack ramp"},
+  {n:"REL_MS",        min:1,    max:60,   step:1,   dflt:30,   hint:"release ramp (ATK+REL must fit in 52 ms short)"},
+  {n:"SCRAPE_HZ_S",   min:10,   max:300,  step:1,   dflt:70,   hint:"swell rate, short seeks"},
+  {n:"SCRAPE_HZ_L",   min:10,   max:300,  step:1,   dflt:55,   hint:"swell rate, long seeks"},
+  {n:"ENV_PEAK_I",    min:200,  max:4000, step:50,  dflt:1500, hint:"swell peak amplitude"},
+  {n:"ENV_FLOOR_I",   min:0,    max:3000, step:50,  dflt:900,  hint:"swell floor (peak-floor = pulsing depth)"},
+  {n:"DECAY_DIV_I",   min:8,    max:500,  step:4,   dflt:192,  hint:"env decay: 1 unit / N machine clks"},
+  {n:"GAIN_PCT",      min:10,   max:800,  step:10,  dflt:400,  hint:"LISTEN-ONLY output gain %, not an RTL param"},
+];
+const PRESETS = {
+  M: {BODY_START_HZ:800, BODY_END_HZ:710, BODY_SHIFT:3, GRIT_SHIFT:0, ATK_MS:6, REL_MS:12,
+      SCRAPE_HZ_S:130, SCRAPE_HZ_L:100, ENV_PEAK_I:2200, ENV_FLOOR_I:500, DECAY_DIV_I:96},
+  N: {BODY_START_HZ:2650, BODY_END_HZ:2580, BODY_SHIFT:2, GRIT_SHIFT:4, ATK_MS:6, REL_MS:12,
+      SCRAPE_HZ_S:130, SCRAPE_HZ_L:100, ENV_PEAK_I:2200, ENV_FLOOR_I:500, DECAY_DIV_I:96},
+  P: {BODY_START_HZ:2640, BODY_END_HZ:2590, BODY_SHIFT:2, GRIT_SHIFT:3, ATK_MS:16, REL_MS:30,
+      SCRAPE_HZ_S:70, SCRAPE_HZ_L:55, ENV_PEAK_I:1500, ENV_FLOOR_I:900, DECAY_DIV_I:192},
+  Q: {BODY_START_HZ:3040, BODY_END_HZ:3040, BODY_SHIFT:4, GRIT_SHIFT:2, ATK_MS:16, REL_MS:30,
+      SCRAPE_HZ_S:70, SCRAPE_HZ_L:55, ENV_PEAK_I:1500, ENV_FLOOR_I:900, DECAY_DIV_I:192},
+};
+
+const grid = document.getElementById("grid");
+const inputs = {};
+for (const p of PARAMS) {
+  const div = document.createElement("div");
+  div.className = "ctl";
+  div.innerHTML = `<label>${p.n} <output id="o_${p.n}"></output></label>
+    <input type="range" id="i_${p.n}" min="${p.min}" max="${p.max}" step="${p.step}" value="${p.dflt}">
+    <div class="hint">${p.hint}</div>`;
+  grid.appendChild(div);
+  inputs[p.n] = div.querySelector("input");
+  const out = div.querySelector("output");
+  const upd = () => out.textContent = inputs[p.n].value;
+  inputs[p.n].addEventListener("input", upd); upd();
+}
+function loadPreset(name) {
+  const pr = PRESETS[name];
+  for (const k in pr) if (inputs[k]) inputs[k].value = pr[k];
+  for (const p of PARAMS) inputs[p.n].dispatchEvent(new Event("input"));
+  setStatus(`preset ${name} loaded`);
+}
+document.querySelectorAll(".presets button").forEach(b =>
+  b.addEventListener("click", () => loadPreset(b.dataset.p)));
+
+function getParams() {
+  const o = {};
+  for (const p of PARAMS) o[p.n] = parseInt(inputs[p.n].value, 10);
+  return o;
+}
+function setStatus(t) { document.getElementById("status").textContent = t; }
+
+// ---------------- RTL mirror ---------------------------------------------
+const F_CLK = 14318180;            // machine clock Hz
+const TICK_DIV = 298;              // 48 kHz sample tick
+const DUR_SHORT = Math.round(0.052 * F_CLK);
+const DUR_LONG  = Math.round(0.134 * F_CLK);
+const OUT_SR = 48000;
+
+function incFor(hz) { return Math.round(hz * Math.pow(2,32) / F_CLK); }
+
+// events: [{t_sec, long:bool}]
+function render(P, events, tailSec = 0.3) {
+  const totalSec = Math.max(...events.map(e => e.t)) + (events.length ? 0.15 : 0) + tailSec;
+  const totalClks = Math.round(totalSec * F_CLK);
+  const out = new Float32Array(Math.ceil(totalSec * OUT_SR));
+
+  // state (mirrors the always block)
+  let tickCnt = 0, sampleTick = false;
+  let state = 0;                   // 0 IDLE, 1 SEEK
+  let elapsed = 0, dur = 0, sweepDiv = 1, scrapePer = 1, relOff = 0;
+  let phaseAcc = 0, freqInc = incFor(P.BODY_START_HZ), sweepCnt = 0;
+  let lfsr = 0x1ACE, jitLfsr = 0x05B3;
+  let n1 = 0, nlp1 = 0, nlp2 = 0, noiseLp = 0;
+  let scrapeCnt = 0, scrapeNext = 0, env = 0, decayCnt = 0;
+  let edgeMul = 0;
+  let bodyS = 0, gritS = 0, envQ = 0, edgeQ = 0;
+  let sample = 0;
+
+  const incHi = incFor(P.BODY_START_HZ), incLo = incFor(P.BODY_END_HZ);
+  const span = Math.max(Math.abs(incHi - incLo), 1);   // bidirectional sweep
+  const sweepDivS = Math.max(1, Math.floor(DUR_SHORT / span));
+  const sweepDivL = Math.max(1, Math.floor(DUR_LONG  / span));
+  const scrapeS = Math.floor(F_CLK / P.SCRAPE_HZ_S);
+  const scrapeL = Math.floor(F_CLK / P.SCRAPE_HZ_L);
+  const atkLen = P.ATK_MS * 14318, relLen = P.REL_MS * 14318;
+  const EDGE = 8192;
+  const gain = P.GAIN_PCT / 100;
+
+  // trigger schedule: convert to clock indices; dist 10 -> short, 150 -> long
+  const queue = events.map(e => ({clk: Math.round(e.t * F_CLK), lng: !!e.long})).sort((a,b)=>a.clk-b.clk);
+  let qi = 0, outPos = 0;
+
+  const s16 = x => (x | 0);
+  const asr = (v, s) => Math.floor(v / Math.pow(2, s));   // arithmetic shift for signed
+
+  for (let c = 0; c < totalClks; c++) {
+    // sample tick generator
+    sampleTick = (tickCnt === TICK_DIV - 2);
+    tickCnt = (tickCnt + 1) % TICK_DIV;
+
+    // trigger
+    if (qi < queue.length && c === queue[qi].clk) {
+      if (state === 0) {
+        state = 1;
+        dur = queue[qi].lng ? DUR_LONG : DUR_SHORT;
+        relOff = dur - relLen;
+        sweepDiv = queue[qi].lng ? sweepDivL : sweepDivS;
+        scrapePer = queue[qi].lng ? scrapeL : scrapeS;
+        elapsed = 0; phaseAcc = 0; freqInc = incHi; sweepCnt = 0;
+        env = P.ENV_FLOOR_I; scrapeCnt = 0;
+        scrapeNext = (queue[qi].lng ? scrapeL : scrapeS) + (jitLfsr & 0x3FF) * 64;
+        jitLfsr = ((jitLfsr << 1) | (((jitLfsr >> 12) ^ (jitLfsr >> 7)) & 1)) & 0x1FFF;
+      }
+      qi++;
+    }
+
+    if (state === 1) {
+      elapsed++;
+      phaseAcc = (phaseAcc + freqInc) >>> 0;
+      sweepCnt++;
+      if (sweepCnt >= sweepDiv) { sweepCnt = 0;
+        if (freqInc > incLo) freqInc--;
+        else if (freqInc < incLo) freqInc++; }
+
+      // LFSR + 2-pole smooth (exact RTL shifts on signed ints)
+      const fb = ((lfsr >> 12) ^ (lfsr >> 7)) & 1;
+      lfsr = ((lfsr << 1) | fb) & 0x1FFF;
+      n1 = fb ? 900 : -900;
+      nlp1 = n1 - (n1 >> 2) + (nlp1 >> 2);
+      nlp2 = nlp1 - (nlp1 >> 2) + (nlp2 >> 2);
+      noiseLp = nlp2 >> 1;
+
+      // swell envelope
+      scrapeCnt++; decayCnt++;
+      if (scrapeCnt >= scrapeNext) {
+        scrapeCnt = 0; env = P.ENV_PEAK_I;
+        scrapeNext = scrapePer + (jitLfsr & 0x3FF) * 64;
+        jitLfsr = ((jitLfsr << 1) | (((jitLfsr >> 12) ^ (jitLfsr >> 7)) & 1)) & 0x1FFF;
+      } else if (decayCnt >= P.DECAY_DIV_I && env > P.ENV_FLOOR_I) {
+        decayCnt = 0; env--;
+      }
+
+      // edge envelope
+      if (elapsed < atkLen) edgeMul = Math.floor(elapsed * EDGE / atkLen);
+      else if (elapsed >= relOff) edgeMul = Math.floor((dur - elapsed) * EDGE / relLen);
+      else edgeMul = EDGE;
+
+      if (elapsed >= dur - 1) { state = 0; env = 0; sample = 0; edgeQ = 0; }
+    } else {
+      env = 0; edgeQ = 0;
+    }
+
+    // sample capture
+    if (sampleTick) {
+      const p31 = (phaseAcc >>> 31) & 1;
+      const f15 = (phaseAcc >>> 16) & 0x7FFF;
+      bodyS = p31 ? -(0x7FFF ^ f15) : f15;
+      gritS = noiseLp;
+      envQ = env;
+      edgeQ = edgeMul;
+      if (outPos < out.length) {
+        // mix (mirrors mix_block; magnitudes are small so >> via floor is exact)
+        const v = asr(((asr(bodyS, P.BODY_SHIFT) + asr(gritS, P.GRIT_SHIFT)) * envQ), 15);
+        let s = asr(v * edgeQ, 13);
+        s = Math.max(-32768, Math.min(32767, s));
+        out[outPos++] = s / 32768 * gain;
+      }
+    }
+  }
+  return out;
+}
+
+// ---------------- playback / WAV / scope ----------------------------------
+let actx = null, curBuf = null, curSrc = null, lastWav = null;
+function ctx() { if (!actx) actx = new AudioContext(); return actx; }
+
+function play(buf) {
+  stop();
+  const a = ctx();
+  const ab = a.createBuffer(1, buf.length, OUT_SR);
+  ab.copyToChannel(buf, 0);
+  curBuf = ab;
+  curSrc = a.createBufferSource();
+  curSrc.buffer = ab; curSrc.connect(a.destination);
+  curSrc.start();
+  drawScope(buf);
+}
+function stop() { if (curSrc) { try { curSrc.stop(); } catch(e){} curSrc = null; } }
+
+function encodeWav(buf) {
+  const n = buf.length;
+  const bytes = new Uint8Array(44 + n * 2);
+  const dv = new DataView(bytes.buffer);
+  const ws = (o, s) => { for (let i=0;i<s.length;i++) dv.setUint8(o+i, s.charCodeAt(i)); };
+  ws(0,"RIFF"); dv.setUint32(4, 36+n*2, true); ws(8,"WAVEfmt ");
+  dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,1,true);
+  dv.setUint32(24,OUT_SR,true); dv.setUint32(28,OUT_SR*2,true);
+  dv.setUint16(32,2,true); dv.setUint16(34,16,true);
+  ws(36,"data"); dv.setUint32(40,n*2,true);
+  for (let i=0;i<n;i++) {
+    const v = Math.max(-1, Math.min(1, buf[i]));
+    dv.setInt16(44+i*2, v<0 ? v*32768 : v*32767, true);
+  }
+  return bytes;
+}
+
+function drawScope(buf) {
+  const cv = document.getElementById("wave"), g = cv.getContext("2d");
+  g.clearRect(0,0,cv.width,cv.height);
+  g.strokeStyle = "#2a2f3a"; g.beginPath();
+  g.moveTo(0,cv.height/2); g.lineTo(cv.width,cv.height/2); g.stroke();
+  g.strokeStyle = "#7fd1ff"; g.beginPath();
+  const step = Math.max(1, Math.floor(buf.length / cv.width));
+  let peak = 0; for (let i=0;i<buf.length;i++) peak = Math.max(peak, Math.abs(buf[i]));
+  const scale = peak > 0 ? (cv.height/2 - 4) / peak : 1;
+  for (let x=0, i=0; x<cv.width; x++, i+=step) {
+    let mx = 0;
+    for (let k=0;k<step && i+k<buf.length;k++) mx = Math.max(mx, Math.abs(buf[i+k]));
+    const y = cv.height/2 - mx*scale;
+    if (x===0) g.moveTo(x,y); else g.lineTo(x,y);
+  }
+  g.stroke();
+}
+
+const SCENE = [
+  {t:0.35},{t:0.79},{t:1.23},{t:1.67},{t:2.11},
+  {t:3.30,long:true},{t:3.74,long:true},{t:4.18,long:true},{t:4.62,long:true},{t:5.06,long:true},
+];
+
+document.getElementById("playScene").onclick = () => {
+  setStatus("rendering scene…");
+  setTimeout(() => {
+    const buf = render(getParams(), SCENE);
+    lastWav = encodeWav(buf);
+    play(buf);
+    setStatus(`scene rendered: ${(buf.length/OUT_SR).toFixed(2)} s, peak ${(Math.max(...[0], 0))||""}${peakOf(buf).toFixed(3)}`);
+  }, 20);
+};
+document.getElementById("playShort").onclick = () => {
+  setStatus("rendering short seek…");
+  setTimeout(() => { const b = render(getParams(), [{t:0.05}]); play(b); setStatus("short seek (52 ms, dist 10)"); }, 20);
+};
+document.getElementById("playLong").onclick = () => {
+  setStatus("rendering long seek…");
+  setTimeout(() => { const b = render(getParams(), [{t:0.05,long:true}]); play(b); setStatus("long seek (134 ms, dist 150)"); }, 20);
+};
+document.getElementById("stop").onclick = () => { stop(); setStatus("stopped"); };
+document.getElementById("saveWav").onclick = () => {
+  const buf = lastWav || encodeWav(render(getParams(), SCENE));
+  const blob = new Blob([buf], {type:"audio/wav"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "hdv_seek_scene.wav";
+  a.click();
+  setStatus("WAV saved (current GAIN_PCT baked in — set 100% for the true mixer level)");
+};
+function peakOf(buf) { let p=0; for (const v of buf) p=Math.max(p,Math.abs(v)); return p; }
+
+loadPreset("Q");
+</script>
+</body>
+</html>

@@ -123,6 +123,7 @@ verilator_bin --binary --timing -j 4 --top tb_video_edge ^
   "%ROOT%\src\fpga\core\apple2e\savestate_slot.v" ^
   "%ROOT%\src\fpga\core\apple2e\savestate_manager.sv" ^
   "%ROOT%\src\fpga\core\sound\floppy_sound.sv" ^
+  "%ROOT%\src\fpga\core\sound\hdv_seek_sound.sv" ^
   "%ROOT%\src\fpga\ip\debug_key.v" ^
   "%ROOT%\src\fpga\core\mockingboard\mockingboard.v" ^
   "%ROOT%\src\fpga\core\mockingboard\YM2149.sv" ^

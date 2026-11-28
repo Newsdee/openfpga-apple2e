@@ -160,6 +160,7 @@ module tb_mb_audio;
         .mb_gain_m(mb_gain),
         .spk_gain_m(2'd0),   // beeper slider: 0 = OFF (beeper silent - MB isolation)
         .fs_boost_m(1'b0),   // floppy boost: off
+        .hdv_s(16'sd0),      // HDV seek voice: tied off - MB isolation
         .mb_l(mb_l), .mb_r(mb_r), .mclk(mclk), .sclk(sclk),
         .lrck(i2s_lrck), .dac(i2s_dac)
     );

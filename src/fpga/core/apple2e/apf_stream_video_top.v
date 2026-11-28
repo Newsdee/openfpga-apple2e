@@ -1483,6 +1483,12 @@ reg  [31:0] cfg_mb_word = 32'd0;
 // ON (1): synthesized Disk II drive sound mixed into the I2S output
 // (PLAN_FLOPPY_SOUND_PORT_2026-11-19.md). write-only, like cfg_mb_word.
 reg  [31:0] cfg_fs_word = 32'd1;
+// "HDV Sound" check (interact.json id 15) @0x01F00030 - next free slot
+// (map: 24 floppy sound, 28 floppy vol, 2C beeper vol, 30 free). Default
+// OFF (0) per PLAN_HDV_PROCEDURAL_SEEK_SOUND_2026-11-26: procedural HDV
+// seek voice (hdv_seek_sound.sv, preset Q - owner-approved 2026-11-27).
+// write-only, like cfg_fs_word.
+reg  [31:0] cfg_hdv_snd_word = 32'd0;
 // Floppy volume slider (PLAN_AUDIO_VOLUME_BALANCE_2026-11-19.md):
 // 0=off, 1=2x, 2=4x, 3=8x (donor gain ladder x2/x4/x4+boost; default
 // 1 = 2x). Ladder raised one step after hardware feedback (the old
@@ -1534,6 +1540,10 @@ always @(posedge clk_74a) begin
     // Beeper volume slider (0=off, 1=1/4x default, 2=1/2x, 3=1x). write-only.
     if (bridge_wr && bridge_addr == 32'h01F0002C)
         cfg_spkgain_word <= bridge_wr_data;
+    // HDV Sound on/off (default OFF - cfg_hdv_snd_word inits to 0).
+    // write-only (same safe pattern; no read-back arm).
+    if (bridge_wr && bridge_addr == 32'h01F00030)
+        cfg_hdv_snd_word <= bridge_wr_data;
 end
 // ---- Combined HDD decode (74a domain) ----
 // media (2 bits, feeds the existing media_m sync): 0/1->00, 2->01, 3/4->10,
@@ -2033,6 +2043,29 @@ end
         .sample(fs_sample_l),
         .sample_r(fs_sample_r)
     );
+    // ---- HDV seek sound (PLAN_HDV_PROCEDURAL_SEEK_SOUND_2026-11-26) ----
+    // Procedural voice (preset Q defaults): observes the ACCEPTED guest
+    // command pulses hdd.v already emits (single 14M-domain cycles, writes
+    // gated by protect inside hdd.v - rejected/protected commands never
+    // pulse), distance >= 2 blocks sounds a seek. hdv_snd_m is the option
+    // bit synced bridge(74a)->machine(14M); the voice silences itself and
+    // outputs exact zeros when disabled/unmounted, so the mixer term stays
+    // bit-identical to the pre-feature build (option default OFF).
+    wire hdv_snd_m;
+    synch_3 #(.WIDTH(1)) s_hdv_snd (
+        .i(cfg_hdv_snd_word[0]), .o(hdv_snd_m), .clk(clk_core_14318)
+    );
+    wire signed [15:0] hdv_sample;
+    hdv_seek_sound u_hdv_seek_sound (
+        .clk        ( clk_core_14318 ),
+        .reset      ( machine_reset ),
+        .enable     ( hdv_snd_m ),
+        .cmd_valid  ( hdd_read | hdd_write ),
+        .cmd_sector ( hdd_sector ),
+        .mounted    ( hdv_mounted_m ),
+        .sample     ( hdv_sample ),
+        .sample_tick( )
+    );
     speaker_i2s u_spk_i2s (
         .clk_14m  ( clk_core_14318 ),
         .spk_bit  ( m_spk ),
@@ -2044,6 +2077,7 @@ end
         .mb_r     ( mb_audio_r ),
         .fs_l     ( fs_sample_l ),
         .fs_r     ( fs_sample_r ),
+        .hdv_s    ( hdv_sample ),
         .mclk     ( audgen_mclk ),
         .sclk     ( audgen_sclk ),
         .lrck     ( spk_lrck ),

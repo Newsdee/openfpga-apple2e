@@ -46,6 +46,7 @@ module tb_speaker_i2s;
         .mb_r   (10'd0),
         .fs_l   (10'd0),
         .fs_r   (10'd0),
+        .hdv_s  (16'sd0),   // HDV seek voice: tied off - pre-feature parity
         .mclk   (mclk),
         .sclk   (sclk),
         .lrck   (lrck),

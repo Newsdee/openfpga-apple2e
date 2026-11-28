@@ -35,6 +35,10 @@ module speaker_i2s (
     input  wire [9:0]  mb_r,      // MB O_AUDIO_R 10-bit sample sum (machine domain)
     input  wire [9:0]  fs_l,      // floppy sound LEFT amplitude 0..1023 (machine dom, 0 = idle)
     input  wire [9:0]  fs_r,      // floppy sound RIGHT amplitude (machine dom, 0 = idle)
+    // HDV seek sound (hdv_seek_sound.sv, PLAN_HDV_PROCEDURAL_SEEK_SOUND):
+    // SIGNED 16-bit mono amplitude, machine domain, zero-idle (option off /
+    // no seek -> exact 0). Mixed equally into L and R before saturation.
+    input  wire signed [15:0] hdv_s,
     input  wire        mclk,      // 12.288 MHz audio master (CDC clock)
     input  wire        sclk,      // 3.072 MHz = mclk/4 (I2S shift clock)
     output wire        lrck,      // 48 kHz word select
@@ -113,6 +117,24 @@ module speaker_i2s (
         end
     end
 
+    // HDV seek-sound CDC: same valid/ack pattern (independent handshake).
+    // hdv_s is quasi-static (updates once per 298-clk 48 kHz tick, same
+    // domain as this capture), zero-idle; disable/reset in the voice
+    // module forces sample=0, which crosses here and replaces any stale
+    // held value within one handshake (plan: no stale sample on disable).
+    reg signed [15:0] hdv_x = 16'sd0;
+    reg        hdv_vld = 1'b0;
+    reg        hdv_ack = 1'b0;
+    reg        hdv_ack_s1 = 1'b0, hdv_ack_s2 = 1'b0;
+    always @(posedge clk_14m) begin
+        hdv_ack_s1 <= hdv_ack;
+        hdv_ack_s2 <= hdv_ack_s1;
+        if (hdv_ack_s2 == hdv_vld) begin
+            hdv_x   <= hdv_s;
+            hdv_vld <= ~hdv_vld;
+        end
+    end
+
     // ------------------------------------------------------------------
     // 2. CDC to the audio domain + DC blocker
     // ------------------------------------------------------------------
@@ -134,7 +156,9 @@ module speaker_i2s (
     // signal.
     reg [ 9:0] mb_l_c = 10'd0, mb_r_c = 10'd0;   // latched samples (mclk dom)
     reg [ 9:0] fs_l_c = 10'd0, fs_r_c = 10'd0;   // floppy latched samples (mclk dom)
+    reg signed [15:0] hdv_s_c = 16'sd0;          // HDV seek latched sample (mclk dom)
     reg        fs_vld_s1 = 1'b0, fs_vld_s2 = 1'b0;
+    reg        hdv_vld_s1 = 1'b0, hdv_vld_s2 = 1'b0;
     reg        mb_vld_s1 = 1'b0, mb_vld_s2 = 1'b0;
     reg        mb_in_s1, mb_in_s2;
     reg [1:0]  mb_gain_s1, mb_gain_s2;
@@ -156,6 +180,12 @@ module speaker_i2s (
             fs_l_c <= fs_x_l;
             fs_r_c <= fs_x_r;
             fs_ack <= ~fs_ack;
+        end
+        hdv_vld_s1 <= hdv_vld;
+        hdv_vld_s2 <= hdv_vld_s1;
+        if (hdv_vld_s2 !== hdv_ack) begin
+            hdv_s_c <= hdv_x;
+            hdv_ack <= ~hdv_ack;
         end
         mb_in_s1 <= mb_in_m;  mb_in_s2 <= mb_in_s1;
         mb_gain_s1 <= mb_gain_m;  mb_gain_s2 <= mb_gain_s1;
@@ -287,12 +317,18 @@ module speaker_i2s (
     wire [17:0]  fs_x16_r  = {4'b0000, fs_r_c, 4'b0000};
     wire signed [18:0] fs_s19_l = fs_boost_s2 ? {1'b0, fs_x16_l} : {3'b000, fs_word_l};
     wire signed [18:0] fs_s19_r = fs_boost_s2 ? {1'b0, fs_x16_r} : {3'b000, fs_word_r};
+    // HDV seek sound: SIGNED 16-bit, mono -> equal L/R. Sign-extend 16->19
+    // by replicating the sign bit THREE times (the constant-0-prefix bug,
+    // 2026-11-19, applies here: hdv_s_c IS signed, unlike fs). Peak ~+/-3200
+    // (voice OUT_SHIFT=-5); worst-case +/-32767 keeps |sum| <= 212,974 <
+    // 262,143, so the saturator's bit18 sign test stays valid.
+    wire signed [18:0] hdv_s19 = {hdv_s_c[15], hdv_s_c[15], hdv_s_c[15], hdv_s_c};
     // 19-bit sum: signed addends sign-extend with THEIR SIGN BIT (a
     // constant-0 prefix flips negative addends positive - found
     // 2026-11-19). fs is unsigned (floppy amplitude, top bit always 0)
     // so its 0-prefix is exact.
-    wire signed [18:0] sum_l = spk_g19_l + mbt_s19_l + fs_s19_l;
-    wire signed [18:0] sum_r = spk_g19_r + mbt_s19_r + fs_s19_r;
+    wire signed [18:0] sum_l = spk_g19_l + mbt_s19_l + fs_s19_l + hdv_s19;
+    wire signed [18:0] sum_r = spk_g19_r + mbt_s19_r + fs_s19_r + hdv_s19;
     // 19-bit to 16-bit SATURATE, sign-magnitude form (unsigned compares
     // only - Verilator 5.050 evaluates signed-looking comparisons on
     // this sum UNSIGNED, and -32768 has the same top bit in 17 and 18
