@@ -7,6 +7,44 @@ at-a-glance index.
 
 ## Releases
 
+### 0.4.7 — 2026-11-28
+**Procedural HDV seek sound (new "HDV Sound" option, default Off).**
+
+0.4.6 plus a fully synthesized hard-drive seek voice (no samples, no ROM,
+no card assets): a flat 3040 Hz soft grind with slow swells, triggered by
+ACCEPTED guest sector commands — block distance 2..63 plays a 52 ms short
+seek, >=64 a 134 ms long seek, sequential reads stay silent. Independent
+persist option (Interact: HDV Sound, id 15 @0x01F00030); with the option
+Off the I2S mix is bit-identical to 0.4.6 (proven by tb_speaker_i2s).
+Voice tuned by ear against a real Seagate ST-225 recording through a
+browser parameter lab (`verilog/hdv_snd/tone_lab.html`, an exact integer
+mirror of the RTL). 11,771 ALM / 64 %, TNS 0. HW-verified 2026-11-27/28.
+See [`RELEASE_NOTES_0.4.7.md`](RELEASE_NOTES_0.4.7.md).
+
+### 0.4.6 — 2026-11-26
+**Video: 40-column left black-strip fix (decoded-picture/DE-window alignment).**
+
+The NTSC-decoded picture sat 6 samples right of the adapter's DE window in
+every mode and preset (donor `hshift_idx` calibration is MiSTer-`vga_controller`-
+specific), showing as a black strip on the left of 40-col text/GR and a
+cropped right edge. Fixed in Pocket glue only (`HBL_ALIGN=6` delay pipe on
+`ntsc_hbl`, donor/q17 files untouched), bypassed for `EARLY_VIDEO` modes
+(80-col text, DHGR/DHGR-16 — their donor taps already align; hardware A/B
+round 1 caught the uniform delay over-shifting DHGR). Measured with the new
+`verilog/edge_probe` four-boundary harness; all modes owner-confirmed on
+panel. Metadata-only re-release of the same RTL base as 0.4.5.
+
+### 0.4.5 — 2026-11-25
+**WOZ multi-block track reads + TMAP range guard (GS-derived, via MiSTer).**
+
+Track reads now request up to 32 blocks per host round trip and advance by
+the blocks actually returned (short answers load exactly); bit writes,
+ready, track_data_valid and seek triggers gate on `track_id < 160` so an
+out-of-range TMAP index cannot corrupt the cached track or a pending save.
+Donor: Apple-II_MiSTer `4cb1d2c` (Apple-IIgs upstream `6f745a8`/`c3822f8`/
+`47f6e4f`). Ported on the released 0.4.4 base in an isolated worktree;
+differential + transport TBs ALL PASS; hardware-accepted 2026-11-24.
+
 ### 0.4.4 — 2026-11-22
 **joy2key per-slot "Custom (.a2k profile)" options (working off-switch); joy2key profiles tracked + shipped in the release.**
 
